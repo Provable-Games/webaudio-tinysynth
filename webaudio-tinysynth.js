@@ -687,7 +687,7 @@ function WebAudioTinySynthCore(target) {
             case 0x2f:
               return 1;
             case 0x51:
-              var val = Math.floor(60000000 / Get3(s, i + 3));
+              var val = 60000000 / Get3(s, i + 3);
               song.ev.push({t:tick, m:[0xff51, val]});
               break;
             }

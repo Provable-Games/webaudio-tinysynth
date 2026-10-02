@@ -51,6 +51,34 @@ function upstreamSource() {
   return src.toString("utf8");
 }
 
+/*
+ * Behavior changes this fork makes on purpose. The differential test
+ * compares against upstream with exactly these replacements applied (each
+ * must match exactly once), so it asserts "upstream plus these patches,
+ * nothing else".
+ */
+const FORK_PATCHES = [
+  {
+    name: "fractional MIDI tempo (no Math.floor on BPM)",
+    from: "var val = Math.floor(60000000 / Get3(s, i + 3));",
+    to: "var val = 60000000 / Get3(s, i + 3);",
+  },
+];
+
+function applyPatches(src, patches) {
+  for (const p of patches) {
+    const n = src.split(p.from).length - 1;
+    if (n !== 1) fail("patch '" + p.name + "' matches " + n + " times in the upstream reference, expected 1");
+    src = src.replace(p.from, () => p.to);
+  }
+  return src;
+}
+
+/* Upstream with FORK_PATCHES applied: what this fork should behave like. */
+function referenceSource() {
+  return applyPatches(upstreamSource(), FORK_PATCHES);
+}
+
 /* This repo's builds. */
 function forkVariants() {
   return ["webaudio-tinysynth.js", "webaudio-tinysynth.min.js"].map((name) => ({
@@ -258,7 +286,7 @@ const midi = {
 
 module.exports = {
   ROOT, UPSTREAM_COMMIT, UPSTREAM_SHA256,
-  fail, sha256, upstreamSource, forkVariants,
+  FORK_PATCHES, fail, sha256, upstreamSource, applyPatches, referenceSource, forkVariants,
   createEnvironment, createSynth, toArrayBuffer, runUntil,
   makeMidi, midi,
 };

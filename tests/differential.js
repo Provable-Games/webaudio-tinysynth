@@ -2,15 +2,18 @@
 /*
  * Differential test: this fork vs. upstream webaudio-tinysynth.
  *
- * Loads the upstream source (g200kg/webaudio-tinysynth at UPSTREAM_COMMIT),
- * this repo's webaudio-tinysynth.js and webaudio-tinysynth.min.js into
- * separate `vm` contexts backed by a mock WebAudio implementation, plays
- * every MIDI file in the repo through each one on a hand-driven clock, and
- * requires every variant to produce exactly the same
+ * The reference is upstream (g200kg/webaudio-tinysynth at UPSTREAM_COMMIT)
+ * with exactly the documented FORK_PATCHES from harness.js applied. It is
+ * loaded, together with this repo's webaudio-tinysynth.js and
+ * webaudio-tinysynth.min.js, into separate `vm` contexts backed by a mock
+ * WebAudio implementation. Every MIDI file in the repo is played through
+ * each one on a hand-driven clock, and every variant must produce exactly
+ * the same
  *   - sequence of _note(t, ch, n, v, p) calls, and
  *   - trace of WebAudio calls (node creation, connections, AudioParam
  *     scheduling, start/stop),
- * as upstream.
+ * as the reference. Raw, unpatched upstream is run too, and the output
+ * says which files the patches change.
  *
  * See harness.js for how the upstream reference is read. Run: npm test
  */
@@ -49,18 +52,27 @@ function firstDiff(a, b) {
 
 /* ---------- main ---------- */
 
-const variants = [{ name: "upstream@" + H.UPSTREAM_COMMIT.slice(0, 7), source: H.upstreamSource() }].concat(H.forkVariants());
+const upstreamName = "upstream@" + H.UPSTREAM_COMMIT.slice(0, 7);
+const rawUpstream = { name: upstreamName, source: H.upstreamSource() };
+const variants = [{ name: upstreamName + "+patches", source: H.referenceSource() }].concat(H.forkVariants());
 
 const midiFiles = ["ws.mid"].concat(
   fs.readdirSync(path.join(H.ROOT, "test-midi")).filter((f) => /\.midi?$/i.test(f)).sort().map((f) => "test-midi/" + f));
 
 let failures = 0;
 let totalNotes = 0;
-console.log("reference: upstream " + H.UPSTREAM_COMMIT + " (sha256 verified)");
+const changedByPatches = [];
+console.log("reference: upstream " + H.UPSTREAM_COMMIT + " (sha256 verified) with patches:");
+for (const p of H.FORK_PATCHES) console.log("  - " + p.name);
 for (const file of midiFiles) {
   const bytes = fs.readFileSync(path.join(H.ROOT, file));
   const results = variants.map((v) => run(v.source, v.name, bytes));
   const ref = results[0];
+  const raw = run(rawUpstream.source, rawUpstream.name, bytes);
+  const rawNote = firstDiff(raw.notes, ref.notes);
+  const rawCall = firstDiff(raw.trace, ref.trace);
+  if (rawNote !== -1 || rawCall !== -1)
+    changedByPatches.push(file + ": first differing _note #" + rawNote + ", WebAudio call #" + rawCall);
   if (ref.notes.length === 0) { console.log("FAIL " + file + ": upstream produced no notes"); ++failures; continue; }
   totalNotes += ref.notes.length;
   const problems = [];
@@ -86,5 +98,7 @@ for (const file of midiFiles) {
 }
 console.log("\n" + midiFiles.length + " files, " + totalNotes + " notes per variant; compared " +
   variants.slice(1).map((v) => v.name).join(" and ") + " against " + variants[0].name);
+console.log("files whose output the patches change vs raw " + upstreamName + ": " +
+  (changedByPatches.length ? "\n  " + changedByPatches.join("\n  ") : "none"));
 if (failures) H.fail(failures + " file(s) differ");
 console.log("PASS: identical _note sequences and WebAudio call traces");
