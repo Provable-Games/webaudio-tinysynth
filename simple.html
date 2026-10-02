@@ -7,7 +7,7 @@
 <script src="./webaudio-tinysynth.js"></script>
 <script>
 async function Init(){
-  synth=document.getElementById("tinysynth");
+  synth=new WebAudioTinySynth();
   kb=document.getElementById("keyboard");
   kb.addEventListener("change",KeyIn);
 
@@ -25,6 +25,14 @@ function Prog(pg){
 function KeyIn(e){
   synth.send([0x90,e.note[1],e.note[0]?100:0]);
 }
+function LoadMidi(files){
+  var reader=new FileReader();
+  reader.onload=function(){
+    synth.loadMIDI(reader.result);
+    synth.playMIDI();
+  };
+  reader.readAsArrayBuffer(files[0]);
+}
 window.onload=function(){
   Init();
 }
@@ -36,13 +44,15 @@ window.onload=function(){
 <ul>
   <li>Select timbre with dropdown</li>
   <li>Playable with mouse or qwerty-keyboard.</li>
-  <li>Drop MIDI-file(.mid) to TinySynth for play.</li>
+  <li>Choose a MIDI file (.mid) to play it.</li>
 </ul>
 Prog : <select id="prog" onchange="Prog(this.selectedIndex)"></select>
 <br/>
 <webaudio-keyboard id="keyboard" min="48"></webaudio-keyboard>
 <br/>
-<webaudio-tinysynth id="tinysynth"></webaudio-tinysynth>
+MIDI file : <input type="file" accept=".mid,.midi" onchange="LoadMidi(this.files)"/>
+<button onclick="synth.playMIDI()">Play</button>
+<button onclick="synth.stopMIDI()">Stop</button>
 <hr/>
 Repository : <b><a href="https://github.com/g200kg/webaudio-tinysynth">https://github.com/g200kg/webaudio-tinysynth</a></b>
 </body>

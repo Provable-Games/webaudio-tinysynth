@@ -75,7 +75,14 @@ var midiPort=[];
 var currentPort=-1;
 function Init(){
   InitMidi();
-  synth=document.getElementById("tinysynth");
+  synth=new WebAudioTinySynth({quality:1});
+  synth.setLoop(1);
+  synth.setMasterVol(0.3);
+  synth.loadMIDIUrl("ws.mid");
+  setInterval(function(){
+    var st=synth.getPlayStatus();
+    document.getElementById("status").innerHTML=(st.play?"Playing ":"Stopped ")+st.curTick+" / "+st.maxTick;
+  },100);
   kb=document.getElementById("kb");
   kb.addEventListener("change",KeyIn);
   var sh=document.getElementById("shot");
@@ -149,9 +156,9 @@ function loadMidi(files){
 }
 function Ctrl(){
   if(typeof(synth)!="undefined"){
-    synth.masterVol=document.getElementById("vol").value;
-    synth.reverbLev=document.getElementById("rev").value;
-    synth.loop=document.getElementById("loop").value;
+    synth.setMasterVol(+document.getElementById("vol").value);
+    synth.setReverbLev(+document.getElementById("rev").value);
+    synth.setLoop(+document.getElementById("loop").value);
   }
 }
 function KeyIn(e){
@@ -281,7 +288,7 @@ function ProgChange(p){
 }
 function SetQuality(n){
   var pg;
-  synth.quality=n;
+  synth.setQuality(n);
   if(curMidi==9)
     pg=synth.drummap[curNote];
   else
@@ -351,7 +358,7 @@ The demo on this page is based on webauido-tinysynth, and you can do the followi
   <li>Play by MIDI keyboard also available via WebMIDI API(Chrome).</li>
   <li>Selectable timbre with GM map. Ch10 is drum track.</li>
   <li>Quality setting switches two timbre set. light-weighted 1 osc or FM based 2 or more osc.</li>
-  <li>webaudio-tinysynth also has built-in MIDI sequencer. Select local MIDI file by DnD to 'TinySynth' or file selector to play.</li>
+  <li>webaudio-tinysynth also has built-in MIDI sequencer. Select a local MIDI file with the file selector, then press Play.</li>
 </ul>
 <hr/>
 </div>
@@ -359,7 +366,7 @@ The demo on this page is based on webauido-tinysynth, and you can do the followi
 <p style="font-family:AudioWide">WebAudio-TinySynth : GM Synth / MIDI Player</p>
 <table>
 <tr>
-  <td><webaudio-tinysynth id="tinysynth" src="ws.mid" quality="1" loop="1" disableDrop="0" masterVol="0.3"></webaudio-tinysynth></td>
+  <td><button onclick="synth.playMIDI()">Play</button> <button onclick="synth.stopMIDI()">Stop</button><br/><span id="status"></span></td>
   <td><webaudio-knob colors="#c00;#ccf;#fff" diameter="40" min="0" max="1" step="0.01" id="vol" value="0.5" oninput="Ctrl()"></webaudio-knob></td>
   <td><webaudio-knob colors="#c00;#ccf;#fff" diameter="40" min="0" max="1" step="0.01" id="rev" value="0.2" oninput="Ctrl()"></webaudio-knob></td>
   <td><webaudio-switch id="loop" onchange="Ctrl()" value="1"></webaudio-switch></td>
