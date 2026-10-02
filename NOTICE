@@ -1,0 +1,17 @@
+webaudio-tinysynth (Provable Games fork)
+https://github.com/Provable-Games/webaudio-tinysynth
+
+This product is a modified version of webaudio-tinysynth by
+Tatsuya Shinyagaito (g200kg), https://github.com/g200kg/webaudio-tinysynth,
+licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Modifications by Provable Games, based on upstream commit
+3d75aee4b3f43cbd932265e7d60201fd5b770397:
+
+  - webaudio-tinysynth.js: removed the GUI panel (canvas display,
+    play/seek/volume controls, MIDI file drag-and-drop) and the
+    <webaudio-tinysynth> custom element. The WebAudioTinySynth
+    JavaScript API is unchanged.
+  - webaudio-tinysynth.min.js and its source map are regenerated from
+    the modified source.
+  - Demo pages and README updated to use the JavaScript API; tests added.

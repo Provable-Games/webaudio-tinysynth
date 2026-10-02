@@ -1,3 +1,10 @@
+/*
+ * webaudio-tinysynth by Tatsuya Shinyagaito (g200kg)
+ * https://github.com/g200kg/webaudio-tinysynth - Apache License 2.0
+ *
+ * Modified by Provable Games: GUI and custom element removed.
+ * The WebAudioTinySynth JavaScript API is unchanged. See NOTICE.
+ */
 ( function(window){
 "use strict";
 
@@ -14,20 +21,7 @@ function WebAudioTinySynthCore(target) {
       tsmode:     {type:Number, value:0},
       voices:     {type:Number, value:64},
       useReverb:  {type:Number, value:1},
-      /*@@gui*/
-      width:      {type:String, value:"300px", observer:"layout"},
-      height:     {type:String, value:"32px", observer:"layout"},
-      graph:      {type:Number, value:1},
-      disabledrop:{type:Number, value:0},
-      perfmon:    {type:Number, value:0},
-      /*@@guiEND*/
     },
-    /*@@gui*/
-    layout:(()=>{
-      this.canvas.style.width=this.width;
-      this.canvas.style.height=this.height; 
-    }),
-    /*@@guiEND*/
     program:[
 // 1-8 : Piano
       {name:"Acoustic Grand Piano"},    {name:"Bright Acoustic Piano"},
@@ -440,209 +434,6 @@ function WebAudioTinySynthCore(target) {
       [{w:"sine",t:0,f:1200,v:0.3,d:0.2,r:0.2,}],
 
     ],
-    /*@@gui*/
-    _guiInit:()=>{
-      if(this.canvas){
-        this.ctx=this.canvas.getContext("2d");
-        this.ctx.fillStyle="#000";
-        this.ctx.fillRect(0,0,300,32);
-        this.canvas.addEventListener("dragover",this.dragOver.bind(this),false);
-        this.canvas.addEventListener("dragleave",this.dragLeave.bind(this),false);
-        this.canvas.addEventListener("drop",this.execDrop.bind(this),false);
-        this.canvas.addEventListener("click",this.click.bind(this),false);
-        this.canvas.addEventListener("mousedown",this.pointerdown.bind(this),false);
-        this.canvas.addEventListener("mousemove",this.pointermove.bind(this),false);
-        this.canvas.addEventListener("touchstart",this.pointerdown.bind(this),false);
-        this.canvas.addEventListener("touchend",this.pointerup.bind(this),false);
-        this.canvas.addEventListener("touchcancel",this.pointerup.bind(this),false);
-        this.canvas.addEventListener("touchmove",this.pointermove.bind(this),false);
-      }
-    },
-    _guiUpdate:()=>{
-      if(this.canvas){
-        this.ctx.fillStyle="#000";
-        this.ctx.fillRect(0,0,300,32);
-        var row1=8,row2=20;
-        if(this.song)
-          row1=4,row2=24;
-        else {
-          this.ctx.fillStyle="#fff";
-          this.ctx.fillText("TinySynth",8,20);
-        }
-        if(this.graph){
-          this.ctx.fillStyle="#800";
-          this.ctx.fillRect(80,row1,132,4);
-          this.ctx.fillRect(80,row2,132,4);
-          this.ctx.fillStyle="#f00";
-          for(let i=this.notetab.length-1;i>=0;--i){
-            const nt=this.notetab[i];
-            if(!nt.f || this.rhythm[nt.ch]){
-              this.ctx.fillRect(80+nt.n,row1,4,4);
-              this.ctx.fillRect(80+nt.ch*8,row2,6,4);
-            }
-          }
-        }
-        if(this.perfmon){
-          this.ctx.fillStyle="#fff";
-          this.ctx.fillRect(180,30,28,-12);
-          this.ctx.fillStyle="#000";
-          this.ctx.fillText(this.notetab.length,185,28);
-        }
-        this.ctx.fillStyle="#fff";
-        this.ctx.fillRect(250,15,32,2);
-        this.ctx.fillStyle="#fff";
-        this.ctx.strokeStyle="#000";
-        this.ctx.beginPath();
-        this.ctx.arc(250+this.masterVol*32,16,6,0,6.28,0);
-        this.ctx.moveTo(220,12); this.ctx.lineTo(224,12); this.ctx.lineTo(230,6);
-        this.ctx.lineTo(230,26); this.ctx.lineTo(224,20); this.ctx.lineTo(220,20);
-        this.ctx.fill();
-        this.ctx.stroke();
-        this.ctx.strokeStyle="#fff";
-        this.ctx.lineWidth=2;
-        this.ctx.beginPath();
-        this.ctx.arc(230,16,4,-1,1,false);
-        this.ctx.stroke();
-        this.ctx.beginPath();
-        this.ctx.arc(230,16,8,-1,1,false);
-        this.ctx.stroke();
-        if(this.masterVol==0){
-          this.ctx.strokeStyle="#000";
-          this.ctx.lineWidth=4;
-          this.ctx.beginPath();
-          this.ctx.moveTo(220,7);
-          this.ctx.lineTo(238,25);
-          this.ctx.stroke();
-          this.ctx.strokeStyle="#fff";
-          this.ctx.lineWidth=2;
-          this.ctx.stroke();
-        }
-        if(this.song){
-          this.ctx.fillStyle="#fff";
-          this.ctx.fillRect(4,2,28,28);
-          this.ctx.fillRect(80,15,128,2);
-          this.ctx.fillStyle="#000";
-          if(this.playing){
-            this.ctx.fillRect(12,10,4,12);
-            this.ctx.fillRect(22,10,4,12);
-          }
-          else{
-            this.ctx.beginPath();
-            this.ctx.moveTo(12,9);
-            this.ctx.lineTo(25,16);
-            this.ctx.lineTo(12,23);
-            this.ctx.fill();
-          }
-          this.ctx.fillStyle="#fff"
-          this.ctx.fillText(this.toTime(this.playTick),38,14);
-          this.ctx.fillText(this.toTime(this.maxTick),38,28);
-          this.ctx.strokeStyle="#000";
-          this.ctx.beginPath();
-          this.ctx.arc(80+this.playTick/this.maxTick*128,16,6,0,6.28,0);
-          this.ctx.fill();
-          this.ctx.stroke();
-        }
-        if(this.waitdrop){
-          this.ctx.fillStyle="rgba(0,0,0,0.7)"
-          this.ctx.fillRect(0,0,300,32);
-          this.ctx.fillStyle="#fff";
-          this.ctx.fillText("Drop MIDI File Here",100,20);
-        }
-      }
-    },
-    toTime:(ti)=>{
-      ti=(ti*4*60/this.song.timebase/this.song.tempo)|0;
-      const m=(ti/60)|0;
-      const s=ti%60;
-      return ("00"+m).substr(-2)+":"+("00"+s).substr(-2);
-    },
-    preventScroll:(e)=>{
-      e.preventDefault();
-    },
-    pointerup:(ev)=>{
-      document.body.removeEventListener('touchstart',this.preventScroll,false);
-    },
-    getPos:(e)=>{
-      var p=e.target.getBoundingClientRect();
-      if(p.right!=p.left)
-        return {x:(e.clientX-p.left)*300/(p.right-p.left),y:e.clientY-p.top};
-      return {x:0,y:0};
-    },
-    pointerdown:(ev)=>{
-      let e=ev;
-      if(ev.touches)
-        e=ev.touches[0];
-      this.downpos=this.getPos(e);
-      if(ev.touches || (e.buttons&1)){
-        if(this.song&&this.downpos.x>=80&&this.downpos.x<=208){
-          const p=(this.downpos.x-80)/128*this.maxTick;
-          this.locateMIDI(p);
-          document.body.addEventListener('touchstart',this.preventScroll,false);
-        }
-        if(this.downpos.x>=250&&this.downpos.x<282){
-          const p=(this.downpos.x-250)/32;
-          this.setMasterVol(p);
-          document.body.addEventListener('touchstart',this.preventScroll,false);
-        }
-      }
-    },
-    pointermove:(ev)=>{
-      let e=ev;
-      if(ev.touches)
-        e=ev.touches[0];
-      if(ev.touches || (e.buttons&1)){
-        const pos=this.getPos(e);
-        if(this.song&&pos.x>=70&&pos.x<=208){
-          if(pos.x<80) pos.x=80;
-          const p=(pos.x-80)/128*this.maxTick;
-          this.locateMIDI(p);
-        }
-        if(pos.x>=250&&pos.x<282){
-          const p=(pos.x-250)/32;
-          this.setMasterVol(p);
-        }
-      }
-    },
-    click:(e)=>{
-      const pos=this.getPos(e);
-      if(pos.x<40 && this.song){
-        if(this.playing)
-          this.stopMIDI();
-        else if(this.song)
-          this.playMIDI();
-      }
-      if(pos.x>=215&&pos.x<243 && this.downpos.x>=215 && this.downpos.x<243){
-        if(this.masterVol>0){
-          this.lastMasterVol=this.masterVol;
-          this.masterVol=0;
-        }
-        else
-          this.masterVol=this.lastMasterVol;
-      }
-    },
-    dragLeave:(e)=>{
-      this.waitdrop=0;
-    },
-    dragOver:(e)=>{
-      this.waitdrop=1;
-      e.stopPropagation();
-      e.preventDefault();
-      e.dataTransfer.dropEffect = "copy";
-    },
-    execDrop:(e)=>{
-      this.waitdrop=0;
-      const f = e.dataTransfer.files;
-      if(this.disabledrop==0){
-        var reader = new FileReader();
-        reader.onload=function(e){
-          this.loadMIDI(reader.result);
-        }.bind(this);
-        reader.readAsArrayBuffer(f[0]);
-      }
-      e.stopPropagation();
-      e.preventDefault();
-    },
-    /*@@guiEND*/
     ready:()=>{
       return new Promise((resolv)=>{
         const timerid=setInterval(()=>{
@@ -685,8 +476,6 @@ function WebAudioTinySynthCore(target) {
                 this.notetab.splice(i,1);
               }
             }
-            /*@@gui*/
-            /*@@guiEND*/
           }
           if(this.playing && this.song.ev.length>0){
             let e=this.song.ev[this.playIndex];
@@ -1393,82 +1182,6 @@ function WebAudioTinySynthCore(target) {
       this.send([0x90,60,0]);
     },
   });
-}
-if(window && window.customElements){
-  class WebAudioTinySynthElement extends HTMLElement {
-    constructor(){
-      super();
-    }
-    connectedCallback(){
-      const div = document.createElement("div");
-      div.innerHTML=
-  `<canvas
-    id='wa-canvas' width='300' height='32'
-    touch-action='none' tabindex='0'
-    style='
-      position:relative;
-      margin:0;
-      border:none;
-      width:300px;
-      height:32px;
-    '
-  ></canvas>
-  <div id='wa-logo'
-    style='
-      display:none;
-      position:absolute;
-      top:5px;
-      left:5px;
-      color:#fff;
-      font-size:8px;
-      background:rgba(0,0,0,0.5);
-    '
-  >TinySynth</div>`;
-
-      this.getAttr = (n,def)=>{
-        let v=this.getAttribute(n);
-        if(v==""||v==null) return def;
-        switch(typeof(def)){
-        case "number":
-          if(v=="true") return 1;
-          v=+v;
-          if(isNaN(v)) return 0;
-          return v;
-        }
-        return v;
-      };
-
-      this.canvas = div.children[0];
-      this.appendChild(div);
-      WebAudioTinySynthCore.bind(this)(this);
-      const plist=this.properties;
-      for(let k in plist){
-        const v = plist[k];
-        if(v.observer){
-          this["_"+k] = v.value;
-          Object.defineProperty(this, k, {
-            get:()=>{return this["_"+k]},
-            set:(val)=>{
-              this["_"+k] = val;
-              this[v.observer]();
-            }
-          });
-        }
-        else{
-          this[k]=v;
-        }
-      }
-      for(let k in plist){
-        const v = plist[k];
-        this[k] = this.getAttr(k,v.value);
-      }
-      this.setQuality(1);
-      this.init();
-      this._guiInit.bind(this)();
-      setInterval(this._guiUpdate.bind(this),100);
-    }
-  }
-  window.customElements.define('webaudio-tinysynth', WebAudioTinySynthElement);
 }
 
 class WebAudioTinySynth {

@@ -10,10 +10,10 @@
     "synth"
   ],
   "directories": {
-    "test": "test"
+    "test": "tests"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node tests/differential.js",
     "build": "terser webaudio-tinysynth.js --output webaudio-tinysynth.min.js --compress --source-map"
   },
   "repository": {
