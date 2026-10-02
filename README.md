@@ -12,7 +12,12 @@ This is [g200kg/webaudio-tinysynth](https://github.com/g200kg/webaudio-tinysynth
 
 **Why:** Provable Games stores this synth onchain and embeds it in NFT `animation_url` pages. Those pages only use the JavaScript API, so every byte of GUI code would be paid for in storage. Without it, `webaudio-tinysynth.min.js` drops from 43,217 to 36,804 bytes.
 
-**What is unchanged:** `new WebAudioTinySynth(options)`, every function documented below, and the CommonJS / AMD / `window.WebAudioTinySynth` exports. `npm test` plays every MIDI file in this repository through upstream's file and this one against a mock WebAudio, and checks that both make exactly the same calls.
+**What behaves differently:**
+- MIDI tempo is kept fractional. Upstream rounds the BPM down to a whole number (`Math.floor(60000000 / microsecondsPerQuarter)`), so 455,000 µs per quarter note (131.868 BPM) plays at 131 BPM, 0.66% slow.
+
+**What is unchanged:** `new WebAudioTinySynth(options)`, every function documented below, and the CommonJS / AMD / `window.WebAudioTinySynth` exports.
+
+**Tests:** `npm test` plays every MIDI file in this repository through upstream's file (with the tempo change above applied, and nothing else) and through this one, against a mock WebAudio, and checks that both make exactly the same calls. It also checks note timing at fractional tempos (`tests/tempo.js`).
 
 **Usage:**
 ```html
