@@ -15,9 +15,11 @@ This is [g200kg/webaudio-tinysynth](https://github.com/g200kg/webaudio-tinysynth
 **What behaves differently:**
 - MIDI tempo is kept fractional. Upstream rounds the BPM down to a whole number (`Math.floor(60000000 / microsecondsPerQuarter)`), so 455,000 µs per quarter note (131.868 BPM) plays at 131 BPM, 0.66% slow.
 
-**What is unchanged:** `new WebAudioTinySynth(options)`, every function documented below, and the CommonJS / AMD / `window.WebAudioTinySynth` exports.
+**What is added:** the `loopEnd` property and `setLoopEnd(ticks)`. When looping, each pass can start on a bar boundary instead of on the song's last event (see `setLoopEnd()` below). Unset, looping works exactly as upstream.
 
-**Tests:** `npm test` plays every MIDI file in this repository through upstream's file (with the tempo change above applied, and nothing else) and through this one, against a mock WebAudio, and checks that both make exactly the same calls. It also checks note timing at fractional tempos (`tests/tempo.js`).
+**What is unchanged:** `new WebAudioTinySynth(options)`, every upstream function documented below, and the CommonJS / AMD / `window.WebAudioTinySynth` exports.
+
+**Tests:** `npm test` plays every MIDI file in this repository through upstream's file (with the tempo change above applied, and nothing else) and through this one, against a mock WebAudio, and checks that both make exactly the same calls. It also checks note timing at fractional tempos (`tests/tempo.js`) and `loopEnd` looping (`tests/loop-end.js`).
 
 **Usage:**
 ```html
@@ -96,6 +98,7 @@ Settings are changed with the functions below (`setMasterVol()`, `setReverbLev()
 |**useReverb**      | 1        | disable Reverb if 0 (constructor option). It makes a little save the CPU consumption. |
 |**quality**        | 1        | 0: 1osc/note chiptune like<br/> 1: 2 or more oscs/note FM based|
 |**loop**           | 0        | loop playMIDI            |
+|**loopEnd**        | 0        | loop length in MIDI ticks; 0 = loop on the last event (see `setLoopEnd()`) |
 |**tsmode**         | 0        | default timestamp mode   |
 |**voices**         | 64       | Max number of simultaneous voices. Large number needs more CPU. |
 
@@ -139,6 +142,15 @@ Settings are changed with the functions below (`setMasterVol()`, `setReverbLev()
 
 **setLoop(f)**
 > if non zero, MIDI play is looped.
+
+**setLoopEnd(ticks)**
+> Where a looped song wraps, in MIDI ticks from the start of the song (the same unit as `getPlayStatus().maxTick`). Only matters while `setLoop()` is on.
+> - `0` (default): the next pass starts on the song's last event, as upstream does. Any rest after that event is dropped.
+> - Non-zero: each pass starts `max(ticks, tick of the last event)` ticks after the previous one. A value below the last event's tick never cuts the song short.
+>
+> For whole-bar looping, use `bars × quarter notes per bar × ppq`, where ppq is the file's ticks per quarter note. For example, 4 bars of 4/4 at ppq 480 is `setLoopEnd(7680)`. `setLoopEnd(synth.getPlayStatus().maxTick)` loops at the file's end-of-track marker.
+>
+> Timing: the rest after the last event is timed at the tempo in effect at the end of the song. The next pass then starts again at the song's starting tempo (120 BPM until its first tempo event), so a rest before the first event, and any music before the first tempo event, keep their length on every pass.
 
 **setVoices(v)**
 > set max voices that simultaneous sounds, default is 64.

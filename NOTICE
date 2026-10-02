@@ -16,6 +16,9 @@ Modifications by Provable Games, based on upstream commit
     events (microseconds per quarter note) as a fractional BPM instead
     of rounding it down to a whole number, so songs play at their exact
     tempo.
+  - webaudio-tinysynth.js: added the loopEnd property and setLoopEnd()
+    so a looping song can restart on a bar boundary instead of on its
+    last event. With loopEnd unset (0) behavior is unchanged.
   - webaudio-tinysynth.min.js and its source map are regenerated from
     the modified source.
   - Demo pages and README updated to use the JavaScript API; tests added.

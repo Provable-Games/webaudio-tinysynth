@@ -13,7 +13,7 @@
     "test": "tests"
   },
   "scripts": {
-    "test": "node tests/differential.js && node tests/tempo.js",
+    "test": "node tests/differential.js && node tests/tempo.js && node tests/loop-end.js",
     "build": "terser webaudio-tinysynth.js --output webaudio-tinysynth.min.js --compress --source-map"
   },
   "repository": {
