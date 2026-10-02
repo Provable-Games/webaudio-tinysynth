@@ -18,6 +18,7 @@ function WebAudioTinySynthCore(target) {
       debug:      {type:Number, value:0},
       src:        {type:String, value:null, observer:"loadMIDIfromSrc"},
       loop:       {type:Number, value:0},
+      loopEnd:    {type:Number, value:0},
       internalcontext: {type:Number, value:1},
       tsmode:     {type:Number, value:0},
       voices:     {type:Number, value:64},
@@ -491,6 +492,8 @@ function WebAudioTinySynthCore(target) {
               if(this.playIndex>=this.song.ev.length){
                 if(this.loop){
                   e=this.song.ev[this.playIndex=0];
+                  if(this.loopEnd)
+                    this.playTime+=(Math.max(this.loopEnd,this.playTick)-this.playTick+e.t)*this.tick2Time;
                   this.playTick=e.t;
                 }
                 else{
@@ -531,6 +534,9 @@ function WebAudioTinySynthCore(target) {
     },
     setLoop:(f)=>{
       this.loop=f;
+    },
+    setLoopEnd:(t)=>{
+      this.loopEnd=t;
     },
     setVoices:(v)=>{
       this.voices=v;
