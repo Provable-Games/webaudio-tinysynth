@@ -1,3 +1,10 @@
+/*
+ * webaudio-tinysynth by Tatsuya Shinyagaito (g200kg)
+ * https://github.com/g200kg/webaudio-tinysynth - Apache License 2.0
+ *
+ * Modified by Provable Games: GUI and custom element removed.
+ * The WebAudioTinySynth JavaScript API is unchanged. See NOTICE.
+ */
 ( function(window){
 "use strict";
 
