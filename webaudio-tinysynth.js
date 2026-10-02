@@ -493,8 +493,16 @@ function WebAudioTinySynthCore(target) {
               if(this.playIndex>=this.song.ev.length){
                 if(this.loop){
                   e=this.song.ev[this.playIndex=0];
-                  if(this.loopEnd)
-                    this.playTime+=(Math.max(this.loopEnd,this.playTick)-this.playTick+e.t)*this.tick2Time;
+                  if(this.loopEnd){
+                    /* Pad to loopEnd at the tempo the pass ended on. Then restart at
+                       the song's starting tempo: 120 BPM, the MIDI default that
+                       loadMIDI starts from (a tempo event at tick 0 re-applies at
+                       once). Time the leading rest before ev[0] at that tempo. */
+                    this.playTime+=(Math.max(this.loopEnd,this.playTick)-this.playTick)*this.tick2Time;
+                    this.song.tempo=120;
+                    this.tick2Time=4*60/this.song.tempo/this.song.timebase;
+                    this.playTime+=e.t*this.tick2Time;
+                  }
                   this.playTick=e.t;
                 }
                 else{

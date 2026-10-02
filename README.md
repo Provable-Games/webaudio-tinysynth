@@ -148,7 +148,9 @@ Settings are changed with the functions below (`setMasterVol()`, `setReverbLev()
 > - `0` (default): the next pass starts on the song's last event, as upstream does. Any rest after that event is dropped.
 > - Non-zero: each pass starts `max(ticks, tick of the last event)` ticks after the previous one. A value below the last event's tick never cuts the song short.
 >
-> For whole-bar looping, use `bars × quarter notes per bar × ppq`, where ppq is the file's ticks per quarter note. For example, 4 bars of 4/4 at ppq 480 is `setLoopEnd(7680)`. `setLoopEnd(synth.getPlayStatus().maxTick)` loops at the file's end-of-track marker. The gap before the next pass uses the tempo in effect at the end of the song.
+> For whole-bar looping, use `bars × quarter notes per bar × ppq`, where ppq is the file's ticks per quarter note. For example, 4 bars of 4/4 at ppq 480 is `setLoopEnd(7680)`. `setLoopEnd(synth.getPlayStatus().maxTick)` loops at the file's end-of-track marker.
+>
+> Timing: the rest after the last event is timed at the tempo in effect at the end of the song. The next pass then starts again at the song's starting tempo (120 BPM until its first tempo event), so a rest before the first event, and any music before the first tempo event, keep their length on every pass.
 
 **setVoices(v)**
 > set max voices that simultaneous sounds, default is 64.
