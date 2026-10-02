@@ -4,7 +4,8 @@
  *
  * Modified by Provable Games (see NOTICE):
  * - GUI and custom element removed;
- * - MIDI tempo kept fractional instead of rounded down to whole BPM.
+ * - MIDI tempo kept fractional instead of rounded down to whole BPM;
+ * - loopEnd / setLoopEnd added for looping on a bar boundary.
  */
 ( function(window){
 "use strict";
