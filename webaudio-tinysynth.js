@@ -2,8 +2,10 @@
  * webaudio-tinysynth by Tatsuya Shinyagaito (g200kg)
  * https://github.com/g200kg/webaudio-tinysynth - Apache License 2.0
  *
- * Modified by Provable Games: GUI and custom element removed.
- * The WebAudioTinySynth JavaScript API is unchanged. See NOTICE.
+ * Modified by Provable Games (see NOTICE):
+ * - GUI and custom element removed;
+ * - MIDI tempo kept fractional instead of rounded down to whole BPM;
+ * - loopEnd / setLoopEnd added for looping on a bar boundary.
  */
 ( function(window){
 "use strict";
@@ -17,6 +19,7 @@ function WebAudioTinySynthCore(target) {
       debug:      {type:Number, value:0},
       src:        {type:String, value:null, observer:"loadMIDIfromSrc"},
       loop:       {type:Number, value:0},
+      loopEnd:    {type:Number, value:0},
       internalcontext: {type:Number, value:1},
       tsmode:     {type:Number, value:0},
       voices:     {type:Number, value:64},
@@ -490,6 +493,16 @@ function WebAudioTinySynthCore(target) {
               if(this.playIndex>=this.song.ev.length){
                 if(this.loop){
                   e=this.song.ev[this.playIndex=0];
+                  if(this.loopEnd){
+                    /* Pad to loopEnd at the tempo the pass ended on. Then restart at
+                       the song's starting tempo: 120 BPM, the MIDI default that
+                       loadMIDI starts from (a tempo event at tick 0 re-applies at
+                       once). Time the leading rest before ev[0] at that tempo. */
+                    this.playTime+=(Math.max(this.loopEnd,this.playTick)-this.playTick)*this.tick2Time;
+                    this.song.tempo=120;
+                    this.tick2Time=4*60/this.song.tempo/this.song.timebase;
+                    this.playTime+=e.t*this.tick2Time;
+                  }
                   this.playTick=e.t;
                 }
                 else{
@@ -530,6 +543,9 @@ function WebAudioTinySynthCore(target) {
     },
     setLoop:(f)=>{
       this.loop=f;
+    },
+    setLoopEnd:(t)=>{
+      this.loopEnd=t;
     },
     setVoices:(v)=>{
       this.voices=v;
@@ -687,7 +703,7 @@ function WebAudioTinySynthCore(target) {
             case 0x2f:
               return 1;
             case 0x51:
-              var val = Math.floor(60000000 / Get3(s, i + 3));
+              var val = 60000000 / Get3(s, i + 3);
               song.ev.push({t:tick, m:[0xff51, val]});
               break;
             }
