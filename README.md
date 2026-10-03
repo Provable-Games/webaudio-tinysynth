@@ -14,12 +14,26 @@ This is [g200kg/webaudio-tinysynth](https://github.com/g200kg/webaudio-tinysynth
 
 **What behaves differently:**
 - MIDI tempo is kept fractional. Upstream rounds the BPM down to a whole number (`Math.floor(60000000 / microsecondsPerQuarter)`), so 455,000 µs per quarter note (131.868 BPM) plays at 131 BPM, 0.66% slow.
+- `loadMIDI` checks the file before installing it, and throws an `Error` when it cannot use it:
+  - an invalid `MThd` header: `SMF_INVALID_HEADER`;
+  - format 2 or an unknown format: `SMF_UNSUPPORTED_FORMAT`;
+  - an SMPTE or zero time division: `SMF_UNSUPPORTED_DIVISION`;
+  - data that ends inside a header, chunk or event, or fewer track chunks than declared: `SMF_TRUNCATED`;
+  - invalid event data: `SMF_MALFORMED`.
+
+  The error has a `code`, an `offset` (byte offset) and, inside a track, a `track` (0-based track chunk index). A failed load changes nothing: the previous song, playback and channel state are kept. Some irregular files still load, as before: a track without End-of-Track that ends on an event boundary, bytes after End-of-Track, or a header that declares no tracks. So a successful load does not prove a file is strictly valid. Upstream returned silently or loaded what it could read, and some truncated files made it hang.
+
+- Playback no longer hangs or depends on what happened before:
+  - Looping a song that cannot advance, for example with every event on one tick and `loopEnd` unset, plays it once and stops. Upstream hung the page. Each timer callback handles at most 1000 events, and the rest follow in order.
+  - A song with no playable events, only tempo or metadata, stays stopped: `playMIDI()` does nothing. Upstream reported `play: 1` forever.
+  - `playMIDI()` on a finished song starts a new pass at the song's initial tempo and channel state, as `locateMIDI(0)` does. Upstream replayed the opening at the tempo the song ended on. Notes still sounding from the previous pass are not cut.
+  - `locateMIDI(tick)` rebuilds tempo and channel state from the song up to `tick`: programs, controllers, bend and bend range, RPN and SysEx tuning. A seek gives the same result whatever happened before. Upstream kept earlier programs and tempo and replayed only some controllers. Channel changes you made with `setProgram`, `send()` and similar, and controller changes scheduled for later, are replaced. Engine settings (volume, reverb, quality, voices, loop, `loopEnd`, timbres) are kept. Seeking with no song loaded does nothing.
 
 **What is added:** the `loopEnd` property and `setLoopEnd(ticks)`. When looping, each pass can start on a bar boundary instead of on the song's last event (see `setLoopEnd()` below). Unset, looping works exactly as upstream.
 
-**What is unchanged:** `new WebAudioTinySynth(options)`, every upstream function documented below, and the CommonJS / AMD / `window.WebAudioTinySynth` exports.
+**What is unchanged:** `new WebAudioTinySynth(options)`, every upstream function documented below apart from the `loadMIDI`, `playMIDI` and `locateMIDI` changes above, and the CommonJS / AMD / `window.WebAudioTinySynth` exports.
 
-**Tests:** `npm test` plays every MIDI file in this repository through upstream's file (with the tempo change above applied, and nothing else) and through this one, against a mock WebAudio, and checks that both make exactly the same calls. It also checks note timing at fractional tempos (`tests/tempo.js`) and `loopEnd` looping (`tests/loop-end.js`).
+**Tests:** `npm test` runs the unit tests, the native Node tests and the regression scripts. The differential regression plays every MIDI file in this repository through upstream's file (with the tempo change above applied, and nothing else) and through this one, against a mock WebAudio, and checks that both make exactly the same calls. The others check note timing at fractional tempos (`tests/tempo.js`) and `loopEnd` looping (`tests/loop-end.js`). See [Development](#development) for every command.
 
 **Usage:**
 ```html
@@ -156,19 +170,20 @@ Settings are changed with the functions below (`setMasterVol()`, `setReverbLev()
 > set max voices that simultaneous sounds, default is 64.
 
 **loadMIDI(mididata)**
-> load MIDI data to built-in sequencer. mididata is a arraybuffer of SMF (.mid file contents).
+> load MIDI data to built-in sequencer. mididata is a arraybuffer of SMF (.mid file contents).  
+> Throws an `Error` with an `SMF_*` `code` when it cannot parse or does not support the data (see [What behaves differently](#about-this-fork)); the previous song is kept. Some irregular files still load, so it is not a strict validator. Use `try`/`catch` for files you did not create.
 
 **loadMIDIUrl(url)**
 > load MIDI data from specified url
 
 **playMIDI()**
-> play loaded MIDI data.
+> play loaded MIDI data. On a finished song, starts again from the beginning at the song's initial tempo and channel state. Does nothing for a song with no playable events.
 
 **stopMIDI()**
 > stop playing MIDI data.
 
 **locateMIDI(tick)**
-> locate current playing position in tick.
+> locate current playing position in tick. Playback resumes at the first event at or after `tick`. Tempo and channel state are rebuilt from the song up to `tick`, replacing manual channel changes (see [What behaves differently](#about-this-fork)).
 
 **getPlayStatus()**
 > get current MIDI sequence play status.
@@ -315,6 +330,39 @@ Each element of the array means a oscillator and object member means :
 * k: volume key tracking factor
 
 You can test how these parameter work with 'Timbre Editor' panel in 'soundedit.html'.  And the created timbre can be used with `setTimbre()` function.
+
+## Development
+
+Use Node 24.21.0 (`.nvmrc`), which comes with npm 11.19.0, and install the locked development tools with `npm ci`. The library itself has no dependencies.
+
+| Command | What it does |
+| --- | --- |
+| `npm run lint` | ESLint with the recommended rules (`eslint.config.mjs`). |
+| `npm run build` | Minifies `webaudio-tinysynth.js` into `webaudio-tinysynth.min.js` and its source map with the pinned Terser. Every option is in `scripts/build.js`. |
+| `npm run verify` | Rebuilds into a temporary directory and fails if the committed `webaudio-tinysynth.min.js` or its map differ. Also fails if the minified file or the source contains `</script`, `<script` or `<!--` in any letter case, or a non-ASCII byte. Prints sizes and SHA-256. |
+| `npm run size` | Raw size, gzip size and SHA-256 of the source, the minified file and the map. |
+| `npm run pack:check` | Checks the files `npm pack` would publish, installs the tarball in a scratch project outside the repository and `require()`s it there. |
+| `npm test` | `test:unit`, `test:node` and `test:regression`, in that order. It stops at the first failing suite. |
+| `npm run test:unit` | Vitest unit tests, `tests/unit/**/*.test.mjs` (`scripts/run-unit-tests.js` runs `vitest run`). |
+| `npm run test:node` | `node:test` tests, `tests/node/**/*.test.cjs` (`scripts/run-node-tests.js`), killed after 600 s. |
+| `npm run test:regression` | `tests/differential.js`, `tests/tempo.js` and `tests/loop-end.js`, each killed after 300 s. |
+| `npm run test:browser` | Offline smoke test of both builds in headless Chromium. Install the browser first with `npx playwright-core install --with-deps --only-shell chromium`. A missing browser fails the test. Chromium runs with autoplay allowed, so the test does not show that audio starts after a user gesture. |
+
+- The regressions compare against upstream commit `3d75aee`, read from git history. Clone with full history (a shallow clone fails), or set `TINYSYNTH_REFERENCE` to upstream's `webaudio-tinysynth.js` at that commit.
+- Never edit `webaudio-tinysynth.min.js` or its map by hand. After changing the source, run `npm run build` and commit both files. CI fails if they differ from a fresh build.
+- The test commands fail closed. `test:unit` and `test:node` fail when no test file matches, when a file passes no test, when a `node:test` file exits before its tests finish, or when fewer files ran or fewer tests passed than the floors committed in `package.json` (`--min-files`, `--min-tests`). When you add tests, raise the floors to the new counts printed at the end of the run. `test:regression` and `test:browser` require each script to exit 0 and print a final `PASS:` line.
+- The test commands use POSIX process groups to stop hung tests, so they run on Linux and macOS.
+- CI (`.github/workflows/ci.yml`) runs the `lint`, `build-verify`, `test` and `browser-smoke` jobs on pull requests and on pushes to `main`.
+
+## Verifying the minified build
+
+The onchain player embeds the exact bytes of `webaudio-tinysynth.min.js` and publishes their SHA-256. To check that a copy was built from this source:
+
+1. Check out the commit with full history and LF line endings (on Windows, `git clone -c core.autocrlf=false`), use the Node version in `.nvmrc`, and run `npm ci`.
+2. Run `npm run verify`. It rebuilds the minified file and its map with the pinned Terser, requires both to equal the committed files byte for byte, and prints their SHA-256.
+3. Hash your copy (`sha256sum webaudio-tinysynth.min.js`, or `shasum -a 256` on macOS) and compare.
+
+The minified file starts with the source's license header and has no `sourceMappingURL` comment; to debug it, load `webaudio-tinysynth.min.js.map` next to it. Minification renames local variables only: the class, its methods, options and properties keep their names.
 
 ## License
 

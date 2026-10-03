@@ -2,10 +2,8 @@
  * webaudio-tinysynth by Tatsuya Shinyagaito (g200kg)
  * https://github.com/g200kg/webaudio-tinysynth - Apache License 2.0
  *
- * Modified by Provable Games (see NOTICE):
- * - GUI and custom element removed;
- * - MIDI tempo kept fractional instead of rounded down to whole BPM;
- * - loopEnd / setLoopEnd added for looping on a bar boundary.
+ * Modified by Provable Games (https://github.com/Provable-Games/webaudio-tinysynth);
+ * see NOTICE for the changes.
  */
 ( function(window){
 "use strict";
@@ -480,9 +478,11 @@ function WebAudioTinySynthCore(target) {
               }
             }
           }
-          if(this.playing && this.song.ev.length>0){
-            let e=this.song.ev[this.playIndex];
-            while(this.actx.currentTime+this.preroll>this.playTime){
+          /* playMIDI only starts songs with events. At most 1000 events per callback
+             (#8): the rest follow on the next callbacks, in order, at their own times. */
+          if(this.playing){
+            let e=this.song.ev[this.playIndex],n=1e3;
+            while(n-- && this.actx.currentTime+this.preroll>this.playTime){
               if(e.m[0]==0xff51){
                 this.song.tempo=e.m[1];
                 this.tick2Time=4*60/this.song.tempo/this.song.timebase;
@@ -491,7 +491,10 @@ function WebAudioTinySynthCore(target) {
                 this.send(e.m,this.playTime);
               ++this.playIndex;
               if(this.playIndex>=this.song.ev.length){
-                if(this.loop){
+                /* Wrap only if the next pass advances (#8). Without a positive loopEnd,
+                   a song whose events share one tick would repeat at one instant
+                   forever, so it ends here as if looping were off. */
+                if(this.loop && (this.loopEnd>0 || this.playTick>this.song.ev[0].t)){
                   e=this.song.ev[this.playIndex=0];
                   if(this.loopEnd){
                     /* Pad to loopEnd at the tempo the pass ended on. Then restart at
@@ -553,35 +556,33 @@ function WebAudioTinySynthCore(target) {
     getPlayStatus:()=>{
       return {play:this.playing, maxTick:this.maxTick, curTick:this.playTick};
     },
-    locateMIDI:(tick)=>{
-      let i,p=this.playing;
+    locateMIDI:(tick,load)=>{
+      /* Seek (#21, D-005): stop all notes, restore the state loadMIDI installs (reset(),
+         scale tuning 0, 120 BPM), then apply the tempo and channel-state events before
+         tick, in order, through send() and without notes. Playback resumes at the first
+         event at or after tick; with none left, curTick is maxTick and play restarts.
+         Without a song this does nothing. Queued channel volume, pan and modulation
+         changes (from the scheduler's lookahead or a timed send()) are cancelled first,
+         so they cannot override the rebuilt state. loadMIDI passes load, which skips the
+         cancel and keeps the upstream load calls (D-019). */
+      const s=this.song,p=this.playing;
+      let i=0,e;
+      if(!s)
+        return;
       this.stopMIDI();
-      for(i=0;i<this.song.ev.length && tick>this.song.ev[i].t;++i){
-        var m=this.song.ev[i];
-        var ch=m.m[0]&0xf;
-        switch(m.m[0]&0xf0){
-        case 0xb0:
-          switch(m.m[1]){
-          case 1:  this.setModulation(ch,m.m[2]); break;
-          case 7:  this.setChVol(ch,m.m[2]); break;
-          case 10: this.setPan(ch,m.m[2]); break;
-          case 11: this.setExpression(ch,m.m[2]); break;
-          case 64: this.setSustain(ch,m.m[2]); break;
-          }
-          break;
-        case 0xc0: this.pg[m.m[0]&0x0f]=m.m[1]; break;
-        }
-        if(m.m[0]==0xff51)
-          this.song.tempo=m.m[1];
+      for(;!load && i<16;++i)
+        [this.chvol[i].gain,this.chmod[i].gain,(this.chpan[i]||0).pan].forEach(a=>a && a.cancelScheduledValues(this.actx.currentTime));
+      this.reset();
+      for(i=0;i<16;)
+        this.scaleTuning[i++].fill(0);
+      for(s.tempo=120,i=0;(e=s.ev[i]) && e.t<tick;++i){
+        if(e.m[0]==0xff51)
+          s.tempo=e.m[1];
+        else if((e.m[0]&0xe0)!=0x80) // not a note-off or note-on
+          this.send(e.m);
       }
-      if(!this.song.ev[i]){
-        this.playIndex=0;
-        this.playTick=this.maxTick;
-      }
-      else{
-        this.playIndex=i;
-        this.playTick=this.song.ev[i].t;
-      }
+      this.playIndex=i; // ev.length when no event is left: playMIDI restarts the song
+      this.playTick=e?e.t:this.maxTick;
       if(p)
         this.playMIDI();
     },
@@ -601,7 +602,7 @@ function WebAudioTinySynthCore(target) {
       xhr.open("GET",url,true);
       xhr.responseType="arraybuffer";
       xhr.loadMIDI=this.loadMIDI.bind(this);
-      xhr.onload=function(e){
+      xhr.onload=function(){
         if(this.status==200){
           this.loadMIDI(this.response);
         }
@@ -631,128 +632,152 @@ function WebAudioTinySynthCore(target) {
         this.allSoundOff(i);
     },
     playMIDI:()=>{
-      if(!this.song)
+      /* A song with no events other than tempo (empty, metadata-only or tempo-only)
+         stays stopped (#9). A completed song (not one just loaded at maxTick) starts a
+         new pass with the state of locateMIDI(0) (#10, D-005), but the previous pass's
+         sounding and already scheduled notes play on, as upstream (D-019): its voices are
+         kept out of the seek's reach. A song stopped before its end resumes as it is. */
+      const s=this.song,n=this.notetab;
+      if(!s || !s.ev.some(e=>e.m[0]!=0xff51))
         return;
+      if(this.playIndex && this.playTick>=this.maxTick)
+        this.notetab=[], this.playing=0, this.locateMIDI(0), this.notetab=n;
       const dummy=this.actx.createOscillator();
       dummy.connect(this.actx.destination);
       dummy.frequency.value=0;
       dummy.start(0);
       dummy.stop(this.actx.currentTime+0.001);
-      if(this.playTick>=this.maxTick)
-        this.playTick=0,this.playIndex=0;
       this.playTime=this.actx.currentTime+.1;
-      this.tick2Time=4*60/this.song.tempo/this.song.timebase;
+      this.tick2Time=4*60/s.tempo/s.timebase;
       this.playing=1;
     },
     loadMIDI:(data)=>{
-      function Get2(s, i) { return (s[i]<<8) + s[i+1]; }
-      function Get3(s, i) { return (s[i]<<16) + (s[i+1]<<8) + s[i+2]; }
-      function Get4(s, i) { return (s[i]<<24) + (s[i+1]<<16) + (s[i+2]<<8) + s[i+3]; }
-      function GetStr(s, i, len) {
-        return String.fromCharCode.apply(null,s.slice(i,i+len));
+      /* Parse a Standard MIDI File (format 0 or 1, ticks-per-quarter-note division)
+         into a new song, then install it. Each chunk read must lie inside the file,
+         and every read is bounded by its chunk. On failure this throws an Error whose
+         code is SMF_INVALID_HEADER, SMF_UNSUPPORTED_FORMAT, SMF_UNSUPPORTED_DIVISION,
+         SMF_TRUNCATED or SMF_MALFORMED, with offset (absolute byte offset) and, from
+         the first track chunk on, track (0-based MTrk index). Nothing is changed by
+         a failed load: the previous song, playback and channel state remain. Running
+         status is per track and is cancelled by meta and SysEx events. Unknown chunks
+         are skipped. A track without End-of-Track is accepted when its chunk ends
+         right after a complete event and is followed by the end of the file or by
+         an MTrk chunk; the track then ends at that event's tick. */
+      var s=new Uint8Array(data), n=s.length, song={copyright:"",text:"",tempo:120,timebase:0,ev:[]};
+      var TRUNCATED="SMF_TRUNCATED", MALFORMED="SMF_MALFORMED", maxTick=0, tr=-1, ntrk, len, idx, end, p, e0, tick, rs, v, k, m;
+      function Fail(code, msg, off) {
+        var e=new Error(code+": "+msg+" ("+(tr<0?"":"track "+tr+", ")+"byte "+off+")");
+        e.code=code;
+        e.offset=off;
+        if(tr>=0)
+          e.track=tr;
+        throw e;
       }
-      function Delta(s, i) {
-        var v, d;
-        v = 0;
-        datalen = 1;
-        while((d = s[i]) & 0x80) {
-          v = (v<<7) + (d&0x7f);
-          ++datalen;
-          ++i;
+      function Need(k, what, at) {
+        if(p+k>end)
+          Fail(TRUNCATED,what+" past chunk end",at);
+      }
+      function Get2(i) { return (s[i]<<8) + s[i+1]; }
+      function Get4(i) { return s[i]*0x1000000 + (s[i+1]<<16) + (s[i+2]<<8) + s[i+3]; }
+      function GetStr(i, len) {
+        for(var r="",k;len>0;i+=k,len-=k)
+          r+=String.fromCharCode.apply(null,s.subarray(i,i+(k=len<8192?len:8192)));
+        return r;
+      }
+      function Vlq() {
+        for(var v=0,k=0,d,at=p;;){
+          Need(1,"VLQ",at);
+          v=v*128+((d=s[p++])&0x7f);
+          if(d<0x80)
+            return v;
+          if(++k>3)
+            Fail(MALFORMED,"VLQ over 4 bytes",at);
         }
-        return (v<<7)+d;
       }
-      function Msg(song,tick,s,i){
-        var v=s[i];
-        datalen=1;
-        if((v&0x80)==0)
-          v=runst,datalen=0;
-        runst=v;
-        switch(v&0xf0){
-        case 0xc0: case 0xd0:
-          song.ev.push({t:tick,m:[v,s[i+datalen]]});
-          datalen+=1;
-          break;
-        case 0xf0:
-          switch(v) {
-          case 0xf0:
-          case 0xf7:
-            var len=Delta(s,i+1);
-            datastart=1+datalen;
-            var exd=Array.from(s.slice(i+datastart,i+datastart+len));
-            exd.unshift(0xf0);
-            song.ev.push({t:tick,m:exd});
-/*
-            var sysex=[];
-            for(var jj=0;jj<len;++jj)
-              sysex.push(s[i+datastart+jj].toString(16));
-            if(this.debug)
-              console.log(sysex);
-*/
-            datalen+=len+1;
+      if(Get4(0)!=0x4d546864) // "MThd"; NaN when the file is shorter than 4 bytes
+        Fail("SMF_INVALID_HEADER","no MThd header",0);
+      if(n>=8 && (len=Get4(4))<6)
+        Fail("SMF_INVALID_HEADER","header length "+len+" under 6",4);
+      if(n<8 || n<8+len)
+        Fail(TRUNCATED,"header past file end",0);
+      if((v=Get2(8))>1)
+        Fail("SMF_UNSUPPORTED_FORMAT","format "+v,8);
+      if((v=Get2(12))&0x8000 || !v)
+        Fail("SMF_UNSUPPORTED_DIVISION",(v?"SMPTE ":"")+"division 0x"+v.toString(16),12);
+      song.timebase=v*4;
+      ntrk=Get2(10);
+      for(idx=8+len,tr=0;tr<ntrk;idx=end){
+        if(idx+8>n)
+          Fail(TRUNCATED,"no track "+tr+" of "+ntrk,idx);
+        if((end=idx+8+Get4(idx+4))>n)
+          Fail(TRUNCATED,"chunk past file end",idx);
+        if(Get4(idx)!=0x4d54726b) // not "MTrk"
+          continue;
+        for(p=idx+8,tick=0,rs=0;;){
+          if(p>=end){ // no End-of-Track: accepted only at the end of the file or before a track chunk
+            if(end<n && Get4(end)!=0x4d54726b)
+              Fail(MALFORMED,"no End-of-Track",end);
             break;
-          case 0xff:
-            var len = Delta(s, i + 2);
-            datastart = 2+datalen;
-            datalen = len+datalen+2;
-            switch(s[i+1]) {
-            case 0x02: song.copyright+=GetStr(s, i + datastart, datalen - 3); break;
-            case 0x01: case 0x03: case 0x04: case 0x09:
-              song.text=GetStr(s, i + datastart, datalen - datastart);
-              break;
-            case 0x2f:
-              return 1;
-            case 0x51:
-              var val = 60000000 / Get3(s, i + 3);
-              song.ev.push({t:tick, m:[0xff51, val]});
+          }
+          tick+=Vlq();
+          Need(1,"event",e0=p);
+          if((v=s[p])<0x80){
+            if(!rs)
+              Fail(MALFORMED,"no running status",e0);
+            v=rs;
+          }
+          else
+            ++p;
+          if(v<0xf0){
+            Need(k=(v&0xe0)==0xc0?1:2,"channel message",e0);
+            for(m=k>1?[rs=v,s[p],s[p+1]]:[rs=v,s[p]];k--;)
+              if(s[p++]>0x7f)
+                Fail(MALFORMED,"bad data byte",p-1);
+            song.ev.push({t:tick,m:m});
+          }
+          else if(v==0xf0 || v==0xf7){
+            rs=0;
+            Need(len=Vlq(),"SysEx event",e0);
+            m=Array.from(s.subarray(p,p+len));
+            m.unshift(0xf0);
+            song.ev.push({t:tick,m:m});
+            p+=len;
+          }
+          else if(v==0xff){
+            rs=0;
+            Need(1,"meta event",e0);
+            k=s[p++];
+            Need(len=Vlq(),"meta event",e0);
+            if(k==0x2f){
+              if(len)
+                Fail(MALFORMED,"End-of-Track length "+len,e0);
               break;
             }
-            break;
+            if(k==0x51){
+              if(len!=3 || !(v=(s[p]<<16) + (s[p+1]<<8) + s[p+2]))
+                Fail(MALFORMED,"bad tempo",e0);
+              song.ev.push({t:tick, m:[0xff51, 60000000 / v]});
+            }
+            else if(k==0x02)
+              song.copyright+=GetStr(p, len);
+            else if(k==0x01 || k==0x03 || k==0x04 || k==0x09)
+              song.text=GetStr(p, len);
+            p+=len;
           }
-          break;
-        default:
-          song.ev.push({t:tick,m:[v,s[i+datalen],s[i+datalen+1]]});
-          datalen+=2;
+          else
+            Fail(MALFORMED,"bad status 0x"+v.toString(16),e0);
         }
-        return 0;
+        if(tick>maxTick)
+          maxTick=tick;
+        ++tr;
       }
+      song.ev.sort(function(x,y){return x.t-y.t});
       this.stopMIDI();
-      var s=new Uint8Array(data);
-      var datalen = 0, datastart = 0, runst = 0x90;
-      var idx = 0;
-      var hd = s.slice(0,  4);
-      if(hd.toString()!="77,84,104,100")  //MThd
-        return;
-      var len = Get4(s, 4);
-      var fmt = Get2(s, 8);
-      var numtrk = Get2(s, 10);
-      this.maxTick=0;
-      var tb = Get2(s, 12)*4;
-      idx = (len + 8);
-      this.song={copyright:"",text:"",tempo:120,timebase:tb,ev:[]};
-      for(let tr=0;tr<numtrk;++tr){
-        hd=s.slice(idx, idx+4);
-        len=Get4(s, idx+4);
-        if(hd.toString()=="77,84,114,107") {//MTrk
-          var tick = 0;
-          var j = 0;
-          this.notetab.length = 0;
-          for(;;) {
-            tick += Delta(s, idx + 8 + j);
-            j += datalen;
-            var e = Msg(this.song, tick, s, idx + 8 + j);
-            j += datalen;
-            if(e)
-              break;
-          }
-          if(tick>this.maxTick)
-            this.maxTick=tick;
-        }
-        idx += (len+8);
-      }
-      this.song.ev.sort(function(x,y){return x.t-y.t});
-      this.reset();
-      this.locateMIDI(0);
+      if(tr)
+        this.notetab.length=0;
+      this.maxTick=maxTick;
+      this.song=song;
+      this.locateMIDI(0,1); // includes reset()
     },
     setQuality:(q)=>{
       if(q!=undefined)
@@ -775,6 +800,7 @@ function WebAudioTinySynthCore(target) {
       function filldef(p){
         for(n=0;n<p.length;++n){
           for(let k in defp){
+            // eslint-disable-next-line no-prototype-builtins -- legacy timbre filling; validation is reworked in #13
             if(!p[n].hasOwnProperty(k) || typeof(p[n][k])=="undefined")
               p[n][k]=defp[k];
           }
@@ -800,12 +826,12 @@ function WebAudioTinySynthCore(target) {
         if(nt.o[k].detune) {
           try {
             this.chmod[nt.ch].disconnect(nt.o[k].detune);
-          } catch (e) {}
+          } catch (e) { /* the detune input is not connected: nothing to disconnect */ }
         }
         nt.g[k].gain.value = 0;
       }
     },
-    _limitVoices:(ch,n)=>{
+    _limitVoices:(ch,n)=>{ // eslint-disable-line no-unused-vars -- callers pass the new note; the limit is global
       this.notetab.sort(function(n1,n2){
         if(n1.f!=n2.f) return n1.f-n2.f;
         if(n1.e!=n2.e) return n2.e-n1.e;
@@ -884,7 +910,7 @@ function WebAudioTinySynthCore(target) {
             try {
               if (o[i].detune) this.chmod[ch].disconnect(o[i].detune);
             }
-            catch(e){}
+            catch(e){ /* the detune input is not connected: nothing to disconnect */ }
           };
           o[i].stop(t+p[0].d*this.releaseRatio);
         }
