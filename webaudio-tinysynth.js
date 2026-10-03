@@ -656,7 +656,7 @@ function WebAudioTinySynthCore(target) {
          are skipped. A track without End-of-Track is accepted when its chunk ends
          right after a complete event; the track then ends at that event's tick. */
       var s=new Uint8Array(data), n=s.length, song={copyright:"",text:"",tempo:120,timebase:0,ev:[]};
-      var maxTick=0, tr=-1, ntrk, len, idx, end, p, e0, tick, rs, v, k, m;
+      var TRUNCATED="SMF_TRUNCATED", MALFORMED="SMF_MALFORMED", maxTick=0, tr=-1, ntrk, len, idx, end, p, e0, tick, rs, v, k, m;
       function Fail(code, msg, off) {
         var e=new Error(code+": "+msg+" ("+(tr<0?"":"track "+tr+", ")+"byte "+off+")");
         e.code=code;
@@ -667,23 +667,23 @@ function WebAudioTinySynthCore(target) {
       }
       function Need(k, what, at) {
         if(p+k>end)
-          Fail("SMF_TRUNCATED",what+" runs past the end of the chunk",at);
+          Fail(TRUNCATED,what+" past chunk end",at);
       }
       function Get2(i) { return (s[i]<<8) + s[i+1]; }
       function Get4(i) { return s[i]*0x1000000 + (s[i+1]<<16) + (s[i+2]<<8) + s[i+3]; }
       function GetStr(i, len) {
-        for(var r="";len--;)
-          r+=String.fromCharCode(s[i++]);
+        for(var r="",k;len>0;i+=k,len-=k)
+          r+=String.fromCharCode.apply(null,s.subarray(i,i+(k=len<8192?len:8192)));
         return r;
       }
       function Vlq() {
         for(var v=0,k=0,d,at=p;;){
-          Need(1,"variable-length quantity",at);
+          Need(1,"VLQ",at);
           v=v*128+((d=s[p++])&0x7f);
           if(d<0x80)
             return v;
           if(++k>3)
-            Fail("SMF_MALFORMED","variable-length quantity over 4 bytes",at);
+            Fail(MALFORMED,"VLQ over 4 bytes",at);
         }
       }
       if(Get4(0)!=0x4d546864) // "MThd"; NaN when the file is shorter than 4 bytes
@@ -691,18 +691,18 @@ function WebAudioTinySynthCore(target) {
       if(n>=8 && (len=Get4(4))<6)
         Fail("SMF_INVALID_HEADER","header length "+len+" under 6",4);
       if(n<8 || n<8+len)
-        Fail("SMF_TRUNCATED","header runs past the end of the file",0);
+        Fail(TRUNCATED,"header past file end",0);
       if((v=Get2(8))>1)
-        Fail("SMF_UNSUPPORTED_FORMAT","format "+v+" is not supported",8);
+        Fail("SMF_UNSUPPORTED_FORMAT","format "+v,8);
       if((v=Get2(12))&0x8000 || !v)
-        Fail("SMF_UNSUPPORTED_DIVISION",(v?"SMPTE ":"")+"division 0x"+v.toString(16)+" is not supported",12);
+        Fail("SMF_UNSUPPORTED_DIVISION",(v?"SMPTE ":"")+"division 0x"+v.toString(16),12);
       song.timebase=v*4;
       ntrk=Get2(10);
       for(idx=8+len,tr=0;tr<ntrk;idx=end){
         if(idx+8>n)
-          Fail("SMF_TRUNCATED","file ends before track "+tr+" of "+ntrk,idx);
+          Fail(TRUNCATED,"no track "+tr+" of "+ntrk,idx);
         if((end=idx+8+Get4(idx+4))>n)
-          Fail("SMF_TRUNCATED","chunk length "+(end-idx-8)+" exceeds the file",idx);
+          Fail(TRUNCATED,"chunk past file end",idx);
         if(Get4(idx)!=0x4d54726b) // not "MTrk"
           continue;
         for(p=idx+8,tick=0,rs=0;p<end;){
@@ -710,18 +710,16 @@ function WebAudioTinySynthCore(target) {
           Need(1,"event",e0=p);
           if((v=s[p])<0x80){
             if(!rs)
-              Fail("SMF_MALFORMED","data byte without running status",e0);
+              Fail(MALFORMED,"no running status",e0);
             v=rs;
           }
           else
             ++p;
           if(v<0xf0){
             Need(k=(v&0xe0)==0xc0?1:2,"channel message",e0);
-            for(m=[rs=v];k--;)
-              if((v=s[p++])>0x7f)
-                Fail("SMF_MALFORMED","status byte inside a channel message",p-1);
-              else
-                m.push(v);
+            for(m=k>1?[rs=v,s[p],s[p+1]]:[rs=v,s[p]];k--;)
+              if(s[p++]>0x7f)
+                Fail(MALFORMED,"bad data byte",p-1);
             song.ev.push({t:tick,m:m});
           }
           else if(v==0xf0 || v==0xf7){
@@ -739,12 +737,12 @@ function WebAudioTinySynthCore(target) {
             Need(len=Vlq(),"meta event",e0);
             if(k==0x2f){
               if(len)
-                Fail("SMF_MALFORMED","End-of-Track length "+len,e0);
+                Fail(MALFORMED,"End-of-Track length "+len,e0);
               break;
             }
             if(k==0x51){
               if(len!=3 || !(v=(s[p]<<16) + (s[p+1]<<8) + s[p+2]))
-                Fail("SMF_MALFORMED","tempo must be 3 bytes and nonzero",e0);
+                Fail(MALFORMED,"bad tempo",e0);
               song.ev.push({t:tick, m:[0xff51, 60000000 / v]});
             }
             else if(k==0x02)
@@ -754,7 +752,7 @@ function WebAudioTinySynthCore(target) {
             p+=len;
           }
           else
-            Fail("SMF_MALFORMED","invalid status byte 0x"+v.toString(16),e0);
+            Fail(MALFORMED,"bad status 0x"+v.toString(16),e0);
         }
         if(tick>maxTick)
           maxTick=tick;
