@@ -33,6 +33,9 @@ ATX_HEADING_RE = re.compile(r"^ {0,3}#{1,6}(\s|$)")
 PSEUDO_FINDING_RE = re.compile(r"^\s*(?:[-*+]\s+)?(?:\*\*|__)?\[?(?:CRITICAL|HIGH|MEDIUM|LOW)\]?(?:\*\*|__)?:?\s+\S+:\d+")
 LIST_ITEM_RE = re.compile(r"^(?:[-*+]|\d{1,9}[.)])\s")
 MAX_PREAMBLE_LINES = 3
+# Discarded prose must not carry review content: a severity word or a location
+# in it makes the whole output malformed.
+PREAMBLE_CONTENT_RE = re.compile(r"\b(?:critical|high|medium|low)\b|[\w.@/-]+:\d+", re.IGNORECASE)
 MAX_PREAMBLE_CHARS = 500
 FIELD_RE = re.compile(r"^- \*\*(" + "|".join(re.escape(f) for f in FINDING_FIELDS) + r"):\*\*(.*)$")
 
@@ -234,12 +237,13 @@ def parse_review(text):
     stripped = (text or "").strip()
     if not stripped:
         return {"kind": "malformed", "findings": [], "errors": ["the review output is empty"], "warnings": [],
-                "body": ""}
+                "body": "", "preamble": ""}
     if stripped == "lgtm":
-        return {"kind": "lgtm", "findings": [], "errors": [], "warnings": [], "body": "lgtm"}
+        return {"kind": "lgtm", "findings": [], "errors": [], "warnings": [], "body": "lgtm", "preamble": ""}
     lines = stripped.splitlines()
     if lines[0].startswith("Review incomplete:"):
-        return {"kind": "incomplete", "findings": [], "errors": [lines[0][:300]], "warnings": [], "body": ""}
+        return {"kind": "incomplete", "findings": [], "errors": [lines[0][:300]], "warnings": [], "body": "",
+                "preamble": ""}
 
     findings, errors, warnings, preamble = [], [], [], []
     current, field, fence = None, None, None
@@ -329,17 +333,23 @@ def parse_review(text):
             "impact": fields.get("Impact", ""),
             "action": fields.get("Recommended action", ""),
         })
+    discarded = ""
     if preamble:
         size = sum(len(lines[n - 1]) for n in preamble)
         if errors or not records or preamble_fence or len(preamble) > MAX_PREAMBLE_LINES \
                 or size > MAX_PREAMBLE_CHARS:
             errors.append(f"text outside findings at line {preamble[0]}")
+        elif any(PREAMBLE_CONTENT_RE.search(lines[n - 1]) for n in preamble):
+            errors.append(f"text before the first finding names a severity or a location (line {preamble[0]})")
         else:
             warnings.append(f"discarded {len(preamble)} line(s) of text before the first finding")
+            discarded = "\n".join(lines[:first_heading]).strip()
     if errors:
-        return {"kind": "malformed", "findings": records, "errors": errors, "warnings": [], "body": ""}
+        return {"kind": "malformed", "findings": records, "errors": errors, "warnings": [], "body": "",
+                "preamble": ""}
     body = "\n".join(lines[first_heading:])
-    return {"kind": "findings", "findings": records, "errors": [], "warnings": warnings, "body": body}
+    return {"kind": "findings", "findings": records, "errors": [], "warnings": warnings, "body": body,
+            "preamble": discarded}
 
 
 def build_result(*, identity, execution_ok, execution_errors, text, blocking_severities):
@@ -361,6 +371,8 @@ def build_result(*, identity, execution_ok, execution_errors, text, blocking_sev
     parsed = parse_review(text)
     result["findings"] = parsed["findings"]
     result["warnings"] = parsed["warnings"]
+    if parsed["preamble"]:
+        result["discarded_text"] = parsed["preamble"]
     if parsed["kind"] == "lgtm":
         result.update(status="complete", verdict="lgtm")
     elif parsed["kind"] == "findings":
@@ -490,6 +502,9 @@ def render_comment(result, review_text, display_name):
         lines.append("lgtm")
     elif result["status"] == "complete":
         lines.append(body.strip())
+        if result.get("discarded_text"):
+            lines += ["", "<details><summary>Discarded text before the first finding (not part of the review)"
+                      "</summary>", "", result["discarded_text"], "", "</details>"]
     else:
         reasons = "; ".join(result.get("errors") or ["unknown error"])
         lines.append(f"**Review not completed:** {reasons}")

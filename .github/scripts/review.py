@@ -429,7 +429,8 @@ def cmd_result(args):
     out.mkdir(parents=True, exist_ok=True)
     (out / "result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     # Only text from a run that completed is ever published, and findings are
-    # published from the first finding heading (a discarded preamble is dropped).
+    # published from the first finding heading; the comment shows any discarded
+    # preamble separately, from result.json.
     review_text = ""
     if result["status"] == "complete":
         review_text = lib.parse_review(text)["body"]

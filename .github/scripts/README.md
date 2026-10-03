@@ -171,8 +171,12 @@ or `### [` and write nothing before, between or after the findings.
   incomplete.
 - One bounded tolerance: up to three lines (500 characters) of prose before the
   first finding, without a code fence or `lgtm`, are discarded when every
-  finding is valid. The result records a warning, and the comment shows the
-  findings only. Models sometimes add a sentence such as "I've finished
+  finding is valid. If that prose names a severity (CRITICAL, HIGH, MEDIUM or
+  LOW, in any case) or a `path:line` location, the whole output is incomplete
+  instead, because it could describe an issue the gate would miss. The result
+  records a warning and the discarded text, and the comment shows that text in
+  a collapsed "Discarded text before the first finding" block after the
+  findings. Models sometimes add a sentence such as "I've finished
   reading the files", and rejecting an otherwise valid review for it adds
   noise without adding safety.
 

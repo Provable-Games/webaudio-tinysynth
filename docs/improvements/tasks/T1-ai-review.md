@@ -28,7 +28,7 @@ Section 6 marks what these runs confirmed. Logs:
 | `.github/scripts/review_lib.py`, `review.py` | Configuration and settings validation, change detection, prompt building, result parsing, credential guard, comment rendering, upsert and gate |
 | `.github/scripts/run-codex-review.sh` | Runs the pinned Codex CLI with a minimal environment |
 | `.github/scripts/codex-cli/package.json`, `package-lock.json` | Codex CLI pin `@openai/codex` 0.160.0 with integrity hashes. The root `.gitignore` matches `package-lock.json`, so the lockfile was added with `git add -f`; once T1 tooling removes that entry, nothing changes. |
-| `.github/scripts/test_review.py` | 69 `unittest` tests (one opt-in Bun test) |
+| `.github/scripts/test_review.py` | 71 `unittest` tests (one opt-in Bun test) |
 | `.github/scripts/.gitignore` | Ignores `__pycache__/` |
 | `.github/workflows/codex-review.yml`, `claude-review.yml` | Jobs `prepare` → `review` (matrix) → `publish` → `gate` per provider |
 | `.github/workflows/review-helpers.yml` | Runs the tests, shellcheck and a pinned, checksum-verified actionlint on the review workflows |
@@ -59,7 +59,7 @@ No file outside `.github/` and this record changed.
 
 | Command | Result |
 | --- | --- |
-| `python3 -I -B -m unittest discover -s .github/scripts -p 'test_*.py' -v` (Python 3.12.3) | 69 tests OK, 1 skipped without `REVIEW_TEST_BUN` (`_evidence/t1-ai-review/unittest.log`); the Bun test passes with the pinned Bun 1.3.14 |
+| `python3 -I -B -m unittest discover -s .github/scripts -p 'test_*.py' -v` (Python 3.12.3) | 71 tests OK, 1 skipped without `REVIEW_TEST_BUN` (`_evidence/t1-ai-review/unittest.log`); the Bun test passes with the pinned Bun 1.3.14 |
 | `actionlint` 1.7.12 linux_amd64 (sha256 `8aca8db9…` verified against the release `checksums.txt`) on `.github/workflows/*.yml`, with shellcheck on PATH | exit 0 |
 | `shellcheck` 0.11.0 (asset digest `sha256:8c3be12b…` verified against the GitHub release) on `.github/scripts/*.sh` | exit 0 |
 | Mutation checks on a scratch copy: removing fence tracking, the bot identity match, the Claude `--effort` flag, the stale check, the partial-output rule, the fork failure, the Codex header check, the credential guard or the Claude tool-set check | each made the suite fail |
@@ -330,6 +330,15 @@ rejected #25 pending H1. Evidence for this section is under
 | G0 I1 | README "Trust boundary" documents fork check-name spoofing under `pull_request`, and recommends fork-workflow approval, Actions-sourced required gates and code-owner review of `.github/**`. No settings changed. | README |
 | G0 M1 | Already fixed at `848bae6` | §6c |
 | G0 M4 | Tooling scope (`package.json`), not owned by this task | — |
+
+**G0 re-review C2-L1.** Discarded prose could describe a HIGH issue that the
+gate then ignored. A preamble that names a severity (any case) or a
+`path:line` location now makes the output malformed (incomplete, gate fails),
+and any preamble that is discarded is kept in `result.json` (`discarded_text`)
+and published in a collapsed block after the findings. Tests:
+`test_preamble_naming_a_severity_or_location_fails`,
+`test_discarded_preamble_is_published_collapsed`; removing the check fails the
+suite.
 
 **Parser decision.** Failing closed on any preamble made an otherwise valid
 round-three review incomplete. That costs a rerun and adds no safety: prose

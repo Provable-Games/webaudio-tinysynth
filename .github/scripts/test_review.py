@@ -1020,6 +1020,35 @@ class ParserToleranceTests(unittest.TestCase):
             with self.subTest(text=text[:30]):
                 self.assertEqual(lib.parse_review(text)["kind"], "malformed")
 
+    def test_preamble_naming_a_severity_or_location_fails(self):
+        for prose in ("Note: there is also a HIGH issue in the scheduler.", "This is critical, see below.",
+                      "Also check webaudio-tinysynth.js:120.", "One more Medium concern exists."):
+            with self.subTest(prose=prose):
+                parsed = lib.parse_review(prose + "\n\n" + finding("LOW"))
+                self.assertEqual(parsed["kind"], "malformed")
+                result = lib.build_result(identity={}, execution_ok=True, execution_errors=[],
+                                          text=prose + "\n\n" + finding("LOW"), blocking_severities=["HIGH"])
+                self.assertEqual(result["status"], "incomplete")
+                passed, _ = lib.evaluate_gate(
+                    policy="review", upstream=dict.fromkeys(("prepare", "review", "publish"), "success"),
+                    expected=[("codex", "tinysynth")], results={("codex", "tinysynth"): result_record() | result},
+                    event_head="b" * 40, event_base="a" * 40, blocking_severities=["HIGH"])
+                self.assertFalse(passed)
+
+    def test_discarded_preamble_is_published_collapsed(self):
+        result = lib.build_result(identity=result_record(), execution_ok=True, execution_errors=[],
+                                  text=self.ROUND_THREE, blocking_severities=["HIGH"])
+        self.assertEqual(result["status"], "complete")
+        self.assertTrue(result["discarded_text"].startswith("I've finished reading"))
+        body = lib.parse_review(self.ROUND_THREE)["body"]
+        comment = lib.render_comment(result, body, "Claude")
+        self.assertIn("<details><summary>Discarded text before the first finding (not part of the review)"
+                      "</summary>\n\nI've finished reading the files and the diff; here are my findings.\n\n"
+                      "</details>", comment)
+        self.assertLess(comment.index("### [MEDIUM]"), comment.index("<details>"))
+        for text in ("Done.\n\nlgtm", "lgtm\n\nNo issues."):
+            self.assertEqual(lib.parse_review(text)["kind"], "malformed")
+
     def test_field_continuations_follow_list_semantics(self):
         accepted = {
             "lazy continuation": finding(evidence="First line\nsecond line of the same paragraph"),
