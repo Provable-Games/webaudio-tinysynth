@@ -14,6 +14,7 @@ const { spawnSync } = require("node:child_process");
 const H = require("../harness");
 
 const RUNNER = path.join(H.ROOT, "scripts", "run-regressions.js");
+const NODE_RUNNER = path.join(H.ROOT, "scripts", "run-node-tests.js");
 const DEADLINE = path.join(H.ROOT, "scripts", "run-with-deadline.js");
 const fixture = (name) => path.join(__dirname, "fixtures", name);
 
@@ -45,7 +46,26 @@ test.describe("regression runner", () => {
   test("passes when every script passes", () => {
     const r = node([RUNNER, fixture("pass.cjs"), fixture("pass.cjs")]);
     assert.equal(r.status, 0, r.out);
-    assert.match(r.out, /regressions: 2 of 2 passed/);
+    assert.match(r.out, /2 of 2 scripts passed/);
+  });
+
+  test("passes the arguments given with a script", () => {
+    const r = node([RUNNER, fixture("pass.cjs") + " one two"]);
+    assert.equal(r.status, 0, r.out);
+    assert.match(r.out, /PASS: fixture one two/);
+  });
+
+  test("fails a script that exits 0 before its final PASS line", () => {
+    const r = node([RUNNER, fixture("exit-early.cjs"), fixture("pass.cjs")]);
+    assert.equal(r.status, 1, r.out);
+    assert.match(r.out, /FAILED .*exit-early\.cjs: exited 0 without a final "PASS:" line/);
+    assert.match(r.out, /1 of 2 scripts passed/);
+  });
+
+  test("fails a script that does not exist", () => {
+    const r = node([RUNNER, fixture("no-such-script.cjs")]);
+    assert.equal(r.status, 1, r.out);
+    assert.match(r.out, /Cannot find module/);
   });
 
   test("fails on a failing script and still runs the rest", () => {
@@ -67,7 +87,7 @@ test.describe("regression runner", () => {
     const r = node([RUNNER, "--deadline=1", fixture("hang.cjs"), fixture("pass.cjs")]);
     assert.equal(r.status, 1, r.out);
     assert.match(r.out, /FAILED .*hang\.cjs: timed out after 1 s/);
-    assert.match(r.out, /regressions: 1 of 2 passed/);
+    assert.match(r.out, /1 of 2 scripts passed/);
     assert.ok(Date.now() - started < 20000, "the runner did not stop the hung script promptly");
   });
 
@@ -82,6 +102,43 @@ test.describe("regression runner", () => {
     } finally {
       fs.rmSync(path.dirname(pidFile), { recursive: true, force: true });
     }
+  });
+});
+
+test.describe("native test runner", () => {
+  const suite = (name) => path.relative(H.ROOT, path.join(__dirname, "fixtures", "suites", name));
+
+  test("passes when every file runs its tests", () => {
+    const r = node([NODE_RUNNER, "--min-files=1", "--min-tests=2", suite("ok.cjs")]);
+    assert.equal(r.status, 0, r.out);
+    assert.match(r.out, /1 file\(s\), 2 test\(s\) passed/);
+  });
+
+  test("fails when no test file matches", () => {
+    const r = node([NODE_RUNNER, suite("no-such-dir/**/*.test.cjs")]);
+    assert.equal(r.status, 1, r.out);
+    assert.match(r.out, /FAIL: no test files match/);
+  });
+
+  for (const [file, message] of [
+    ["exit-in-test.cjs", /exit-in-test\.cjs passed no tests/],
+    ["exit-at-load.cjs", /exit-at-load\.cjs passed no tests/],
+    ["exit-between.cjs", /exit-between\.cjs: 2 test\(s\) started but never finished/],
+  ]) {
+    test("fails a file that calls process.exit(0) early: " + file, () => {
+      const r = node([NODE_RUNNER, suite(file), suite("ok.cjs")]);
+      assert.equal(r.status, 1, r.out);
+      assert.match(r.out, message);
+    });
+  }
+
+  test("fails below the committed floors", () => {
+    const tests = node([NODE_RUNNER, "--min-tests=3", suite("ok.cjs")]);
+    assert.equal(tests.status, 1, tests.out);
+    assert.match(tests.out, /2 test\(s\) passed, fewer than the committed floor of 3/);
+    const files = node([NODE_RUNNER, "--min-files=2", suite("ok.cjs")]);
+    assert.equal(files.status, 1, files.out);
+    assert.match(files.out, /1 test file\(s\) ran, fewer than the committed floor of 2/);
   });
 });
 

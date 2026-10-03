@@ -21,13 +21,19 @@ const { spawn } = require("child_process");
 
 const TIMEOUT_STATUS = 124;
 
-/* Resolves to {status, signal, timedOut, error, seconds}; status is null unless the command exited. */
+/*
+ * Resolves to {status, signal, timedOut, error, seconds}; status is null unless
+ * the command exited. With options.onStdout, the command's stdout is piped and
+ * each chunk is passed to it (stderr stays inherited).
+ */
 function runWithDeadline(command, args, seconds, options = {}) {
   return new Promise((resolve) => {
     const started = process.hrtime.bigint();
     const elapsed = () => Number(process.hrtime.bigint() - started) / 1e9;
+    const stdio = options.onStdout ? ["inherit", "pipe", "inherit"] : "inherit";
     const child = spawn(command === "node" ? process.execPath : command, args,
-      { stdio: options.stdio || "inherit", cwd: options.cwd, env: options.env, detached: true });
+      { stdio, cwd: options.cwd, env: options.env, detached: true });
+    if (options.onStdout) child.stdout.on("data", options.onStdout);
     let timedOut = false;
     const killGroup = () => {
       try {
@@ -53,10 +59,9 @@ function runWithDeadline(command, args, seconds, options = {}) {
       resolve(Object.assign({ status: null, signal: null, timedOut, error: null, seconds: elapsed() }, result));
     };
     child.once("error", (error) => finish({ error }));
-    child.once("exit", (status, signal) => {
-      killGroup();
-      finish({ status, signal });
-    });
+    // "close" comes after "exit" once the command's output is fully read.
+    child.once("exit", killGroup);
+    child.once("close", (status, signal) => finish({ status, signal }));
   });
 }
 

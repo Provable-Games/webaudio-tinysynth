@@ -328,13 +328,14 @@ Use Node 24.21.0 (`.nvmrc`), which comes with npm 11.19.0, and install the locke
 | `npm run size` | Raw size, gzip size and SHA-256 of the source, the minified file and the map. |
 | `npm run pack:check` | Checks the files `npm pack` would publish, installs the tarball in a scratch project outside the repository and `require()`s it there. |
 | `npm test` | `test:unit`, `test:node` and `test:regression`, in that order. It stops at the first failing suite. |
-| `npm run test:unit` | Vitest unit tests, `tests/unit/**/*.test.mjs`. |
-| `npm run test:node` | `node:test` tests, `tests/node/**/*.test.cjs`, killed after 600 s. |
+| `npm run test:unit` | Vitest unit tests, `tests/unit/**/*.test.mjs` (`scripts/run-unit-tests.js` runs `vitest run`). |
+| `npm run test:node` | `node:test` tests, `tests/node/**/*.test.cjs` (`scripts/run-node-tests.js`), killed after 600 s. |
 | `npm run test:regression` | `tests/differential.js`, `tests/tempo.js` and `tests/loop-end.js`, each killed after 300 s. |
 | `npm run test:browser` | Offline smoke test of both builds in headless Chromium. Install the browser first with `npx playwright-core install --with-deps --only-shell chromium`. A missing browser fails the test. Chromium runs with autoplay allowed, so the test does not show that audio starts after a user gesture. |
 
 - The regressions compare against upstream commit `3d75aee`, read from git history. Clone with full history (a shallow clone fails), or set `TINYSYNTH_REFERENCE` to upstream's `webaudio-tinysynth.js` at that commit.
 - Never edit `webaudio-tinysynth.min.js` or its map by hand. After changing the source, run `npm run build` and commit both files. CI fails if they differ from a fresh build.
+- The test commands fail closed. `test:unit` and `test:node` fail when no test file matches, when a file passes no test, when a `node:test` file exits before its tests finish, or when fewer files ran or fewer tests passed than the floors committed in `package.json` (`--min-files`, `--min-tests`). When you add tests, raise the floors to the new counts printed at the end of the run. `test:regression` and `test:browser` require each script to exit 0 and print a final `PASS:` line.
 - The test commands use POSIX process groups to stop hung tests, so they run on Linux and macOS.
 - CI (`.github/workflows/ci.yml`) runs the `lint`, `build-verify`, `test` and `browser-smoke` jobs on pull requests and on pushes to `main`.
 
