@@ -37,7 +37,7 @@
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
-  t6.seed(Number(window.__T6_SEED__ || 1));
+  t6.seed(window.__T6_SEED__ !== undefined ? Number(window.__T6_SEED__) : 1);
 
   var realSetInterval = window.setInterval, realClearInterval = window.clearInterval;
   t6.intervals = [];

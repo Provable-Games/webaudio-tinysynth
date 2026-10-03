@@ -17,7 +17,7 @@ const FIXTURES = ["ws.mid", "test-midi/all-gm-sounds.mid"];
 
 const PAGE_SCRIPT = `
 window.__t6.embed = function (quality) {
-  var out = { exported: typeof window.WebAudioTinySynth, songs: [] };
+  var out = { exported: typeof window.WebAudioTinySynth, songs: [], pageSeed: window.__t6.currentSeed };
   var synth = new WebAudioTinySynth({ quality: quality });
   out.quality = synth.quality;
   var nodes = document.querySelectorAll("script[type='application/x-midi-base64']");
@@ -62,6 +62,7 @@ function cases(shared) {
             const r = await p.page.evaluate((q) => window.__t6.embed(q), quality); // eslint-disable-line no-undef -- runs in the page
             const network = p.requests.filter((u) => !u.startsWith("data:"));
             t.check(how + ": window.WebAudioTinySynth is a function", r.exported === "function", r.exported);
+            t.check(how + ": the page's Math.random seed is the run's seed", r.pageSeed === options.seed, r.pageSeed + " vs " + options.seed);
             t.check(how + ": quality option applied", r.quality === quality, "quality " + r.quality);
             for (const s of r.songs) {
               t.check(how + ": " + s.name + " maxTick equals the SMF end tick", s.maxTick === expected[s.name], s.maxTick + " vs " + expected[s.name]);
