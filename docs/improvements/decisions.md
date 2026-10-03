@@ -163,3 +163,9 @@ Inputs: G0 independent review of `1eff7ba` (`g0/review` `03003e9`, `tasks/G0-rev
 - A model output that is clean apart from leading prose is handled per the implementer's documented choice. The contract stays fail-closed: `lgtm` plus prose, and prose between or after findings, are never accepted.
 - The native test suite must fail when zero tests run or a file exits early (M4, T1-tooling).
 - Codex ChatGPT-credential rotation is an org-level prerequisite. Authentication failures name `CODEX_AUTH_DOT_JSON` explicitly.
+
+## D-015 Required checks and credential follow-ups (2026-10-03)
+
+- The user added the six checks to the `protect main` ruleset (id 24398919) as required status checks from GitHub Actions (integration 15368): `test`, `lint`, `build-verify`, `browser-smoke`, `Claude review gate` and `Codex review gate`, with the strict policy off.
+- Finding: the ruleset's `conditions.ref_name.include` is empty, and `GET /repos/…/rules/branches/main` returns no rules. So no rule in that ruleset (required checks, signed commits, PR requirement, deletion and non-fast-forward protection) is in effect on `main`. This corrects D-002's kickoff note, which read the rules from the ruleset definition rather than from their effective application. Enforcement needs the target set to `~DEFAULT_BRANCH` (or `refs/heads/main`); that is the user's ruleset change.
+- The user acknowledged the Codex ChatGPT-credential rotation risk and the Dependabot policy (AI review gates fail on Dependabot PRs without Dependabot secrets). No change is planned. Both remain documented in `.github/scripts/README.md`.
