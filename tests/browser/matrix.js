@@ -28,7 +28,8 @@ const MATRIX = {
     gesture: { kind: "assert", dims: ["build"], about: "default autoplay policy at an http origin: suspended before a real click/key, running and advancing after it (other start paths observed)" },
     url: { kind: "assert", dims: ["build"], about: "loadMIDIUrl against the controlled server: success asserted; non-200, network failure, malformed bytes and races observed" },
     lifecycle: { kind: "assert", dims: ["build"], about: "instrumentation self-check asserted; baseline graph, source and timer lifecycle observed" },
-    variation: { kind: "observe", dims: ["build"], about: "run-to-run variation: repeat launches, seeds, sample rates (tolerance evidence)" },
+    hang: { kind: "observe", dims: ["build"], about: "external deadlines on real hangs (#4 truncated file, #8 zero-duration loop)" },
+    variation: { kind: "observe", dims: [], about: "source build: run-to-run variation across launches and seeds, scheduler effect, generated buffer hashes (tolerance evidence)" },
   },
 };
 
