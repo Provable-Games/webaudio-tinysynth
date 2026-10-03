@@ -28,6 +28,7 @@ This is [g200kg/webaudio-tinysynth](https://github.com/g200kg/webaudio-tinysynth
   - A song with no playable events, only tempo or metadata, stays stopped: `playMIDI()` does nothing. Upstream reported `play: 1` forever.
   - `playMIDI()` on a finished song starts a new pass at the song's initial tempo and channel state, as `locateMIDI(0)` does. Upstream replayed the opening at the tempo the song ended on. Notes still sounding from the previous pass are not cut.
   - `locateMIDI(tick)` rebuilds tempo and channel state from the song up to `tick`: programs, controllers, bend and bend range, RPN and SysEx tuning. A seek gives the same result whatever happened before. Upstream kept earlier programs and tempo and replayed only some controllers. Channel changes you made with `setProgram`, `send()` and similar, and controller changes scheduled for later, are replaced. Engine settings (volume, reverb, quality, voices, loop, `loopEnd`, timbres) are kept. Seeking with no song loaded does nothing.
+- An instance can start from a user gesture and release everything it uses: the constructor options `context`, `destination` and `lazy`, `resume()` and `dispose()` are new (see [Functions](#functions)). `setAudioContext()` now stops and disconnects the previous graph, and closes the previous context if the synth created it. Ended voices are disconnected, `stopMIDI()` and `locateMIDI()` also stop drum hits scheduled ahead, `send()` no longer leaves unhandled promise rejections, and on an `OfflineAudioContext`, `playMIDI()` throws an `Error` with `code` `AUDIO_CONTEXT_OFFLINE` (schedule notes with explicit times instead). Upstream kept every context, graph and timer alive.
 
 **What is added:** the `loopEnd` property and `setLoopEnd(ticks)`. When looping, each pass can start on a bar boundary instead of on the song's last event (see `setLoopEnd()` below). Unset, looping works exactly as upstream.
 
@@ -128,9 +129,13 @@ Settings are changed with the functions below (`setMasterVol()`, `setReverbLev()
 
 >  **quality** : Specify timbre quality same as setQuality(). default is `1`.  
 >  **useReverb** : If zero, disable reverb function.  
->  **voices** : max number of voices.
+>  **voices** : max number of voices.  
+>  **context** : an AudioContext or OfflineAudioContext to use instead of creating one. It stays yours: the synth never closes it.  
+>  **destination** : with `context`, the AudioNode to play into. default is `context.destination`.  
+>  **lazy** : if `true`, no AudioContext is created until `resume()`, or until the first call that plays a note or sets MIDI state: `send()`, `noteOn()`, the channel `set...` functions, `loadMIDI()`, `locateMIDI()` or `playMIDI()`. Other calls do not create it, and `getAudioContext()` returns `null` until then. Call `resume()` from the click that starts audio.
 >
->  For example, `new WebAudioTinySynth({quality:0, useReverb:0, voices:32})`
+>  For example, `new WebAudioTinySynth({quality:0, useReverb:0, voices:32})`  
+>  An invalid `context`, `destination` or `lazy` throws a `TypeError` before anything is created.
 
 **getAudioContext()**  
 > Get current in-use AudioContext.
@@ -139,6 +144,14 @@ Settings are changed with the functions below (`setMasterVol()`, `setReverbLev()
 > In default, though audioContext is internally created and used, this function can specify `audioContext` should be used.  
 > All sounds are routed to specified `destinationNode`, or audioContext.destination is used if destinationNode is not specified.  
 > the audioContext in use currently can be accessed with `getAudioContext()` fucntion.
+
+**resume()**  
+> Returns a `Promise` that resolves once the AudioContext is running. Browsers start audio only after a user gesture, so call it from a click, key or pointer handler. With `lazy`, it creates the AudioContext first. It rejects with the browser's error, or with an `Error` whose `code` is `AUDIO_CONTEXT_CLOSED` (the context is closed) or `SYNTH_DISPOSED`. On an OfflineAudioContext it resolves at once.
+>
+> `button.onclick = () => synth.resume().then(() => synth.playMIDI(), (e) => console.error(e));`
+
+**dispose()**  
+> Releases the synth: stops every sound, disconnects its nodes, clears its timers, and closes the AudioContext if the synth created it (a context you passed in stays open). Returns a `Promise` that resolves when that is done; calling it again returns the same `Promise`. Afterwards the synth cannot be used again: functions that play or change MIDI state do nothing, `getAudioContext()` returns `null`, `ready()` resolves and `resume()` rejects.
 
 **getTimbreName(m,n)**
 > get name of specified timbre. m=0:normal channel voice,n=prog#. or m=1:drum track,n=note#
