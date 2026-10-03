@@ -497,7 +497,7 @@ def cmd_publish(args):
                               f"now {current_head}; not publishing")
     results = load_results(args.results_dir)
     failed = False
-    for agent_id, agent_name in parse_matrix(args.matrix):
+    for agent_id, _ in parse_matrix(args.matrix):
         result, text = results.get((args.provider, agent_id), (None, ""))
         if result is None:
             result, text = failure_record(facts, args.provider, agent_id, (
@@ -505,7 +505,7 @@ def cmd_publish(args):
         elif result.get("head_sha") != facts["head_sha"] or result.get("base_sha") != facts["base_sha"]:
             result, text = failure_record(facts, args.provider, agent_id,
                                           "the review result does not match this pull request's base and head"), ""
-        body = lib.render_comment(result, text, display, agent_name)
+        body = lib.render_comment(result, text, display)
         try:
             print(f"{args.provider}/{agent_id}: " + upsert_comment(
                 facts["repository"], facts["number"], lib.marker(args.provider, agent_id), body))

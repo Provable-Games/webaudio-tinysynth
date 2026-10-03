@@ -121,10 +121,23 @@ Each provider keeps one bot comment per reviewer, found by the hidden marker
 `<!-- tinysynth-ai-review:<provider>:<agent> -->` and authored by
 `github-actions[bot]` (type `Bot`). Comments by other users or apps are never
 edited, even if they quote the marker. A second hidden comment records the
-base, head, merge base, configuration revision, model, effort and run. A clean
-review's visible text is only `lgtm`; a bootstrap review also shows a
-BOOTSTRAP notice. A failed or incomplete run replaces an earlier verdict with
-"Review not completed", so an old `lgtm` never stays under a new head.
+base, head, merge base, configuration revision, model, effort and run.
+
+Every comment, clean or not, starts with one visible heading built from the
+result record, for example:
+
+```text
+**Claude review** · model `<CLAUDE_REVIEW_MODEL>` · effort `<CLAUDE_REVIEW_EFFORT>` · head `0123456789ab`
+```
+
+It shows the requested model and effort, and adds `(resolved …)` when the
+provider reported a different model ID, such as for an alias. A clean review's
+body is then exactly `lgtm`; findings and failures follow the same heading. A
+bootstrap review also shows a BOOTSTRAP notice above it. The heading is only
+presentation: the model's own output must still be exactly `lgtm`, and the gate
+reads `result.json`, never comment or review text. A failed or incomplete run
+replaces an earlier verdict with "Review not completed", so an old `lgtm` never
+stays under a new head.
 
 ## Trust boundary
 

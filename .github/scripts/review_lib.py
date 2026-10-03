@@ -344,21 +344,40 @@ def _metadata(result):
     return f"<!-- {MARKER_PREFIX}-meta {data} -->"
 
 
-def render_comment(result, review_text, display_name, agent_name):
-    """One bot-owned comment per provider and agent. A clean review shows only lgtm."""
+def _inline(value):
+    """Render a recorded value inside inline code without breaking the Markdown."""
+    if value is None or value == "":
+        return "unknown"
+    text = " ".join(str(value).replace("`", "'").split())[:128]
+    return f"`{text}`"
+
+
+def heading(result, display_name):
+    """The visible source line: provider, requested model and effort, and head."""
+    line = (f"**{display_name} review** · model {_inline(result.get('model'))} · "
+            f"effort {_inline(result.get('effort'))} · head {_inline((result.get('head_sha') or '')[:12])}")
+    resolved = result.get("resolved_model")
+    if resolved and resolved != result.get("model"):
+        line += f" (resolved {_inline(resolved)})"
+    return line
+
+
+def render_comment(result, review_text, display_name):
+    """One bot-owned comment per provider and agent.
+
+    Every comment shows which provider, model and effort produced it. A clean
+    review's body is exactly lgtm. The gate reads result records, never this text.
+    """
     lines = [marker(result["provider"], result["agent_id"]), _metadata(result)]
     if result.get("bootstrap"):
         lines.append("> **BOOTSTRAP:** the base revision has no review configuration, so this review "
                      "used the configuration from the pull request head.")
         lines.append("")
+    lines += [heading(result, display_name), ""]
+    body = review_text or ""
     if result["status"] == "complete" and result["verdict"] == "lgtm":
         lines.append("lgtm")
-        return "\n".join(lines) + "\n"
-    head = (result.get("head_sha") or "unknown")[:12]
-    lines.append(f"**{display_name} review** · {agent_name} · head `{head}`")
-    lines.append("")
-    body = review_text or ""
-    if result["status"] == "complete":
+    elif result["status"] == "complete":
         lines.append(body.strip())
     else:
         reasons = "; ".join(result.get("errors") or ["unknown error"])

@@ -396,8 +396,10 @@ class BootstrapTests(Workspace):
         self.assertEqual(values, {"config_sha": head, "bootstrap": "true"})
         self.assertIn("::warning title=AI review bootstrap::", stdout)
         record = self.result_record(bootstrap=True)
-        comment = lib.render_comment(record, "", "Codex", "TinySynth reviewer")
+        comment = lib.render_comment(record, "", "Codex")
         self.assertIn("**BOOTSTRAP:**", comment)
+        visible = [line for line in comment.splitlines() if line and not line.startswith("<!--")]
+        self.assertEqual(visible[1:], [lib.heading(record, "Codex"), "lgtm"])
         passed, messages = lib.evaluate_gate(
             policy="review", upstream=dict.fromkeys(("prepare", "review", "publish"), "success"),
             expected=[("codex", "tinysynth")], results={("codex", "tinysynth"): record},
@@ -470,7 +472,7 @@ class ResultTests(Workspace):
             "--step", "settings=success", env=SETTINGS_ENV | SECRETS_ENV | (env or {}), check=True)
         return json.loads((out / "result.json").read_text()), (out / "review.md").read_text(), completed
 
-    def claude_result(self, messages, *, outcome="success", conclusion="success", cwd=None):
+    def claude_result(self, messages, *, outcome="success", conclusion="success", cwd=None, env=None):
         execution = self.dir / f"execution-{len(list(self.dir.glob('execution-*')))}.json"
         if messages is not None:
             execution.write_text(json.dumps(messages))
@@ -478,7 +480,7 @@ class ResultTests(Workspace):
         self.review("result", "--config-root", ROOT, "--provider", "claude", "--event", self.make_event(),
                     "--agent-id", "tinysynth", "--out-dir", out, "--config-sha", "a" * 40, "--bootstrap", "false",
                     "--execution-file", execution, "--action-outcome", outcome, "--conclusion", conclusion,
-                    "--expected-cwd", cwd or "/work/src", env=SETTINGS_ENV | SECRETS_ENV, check=True)
+                    "--expected-cwd", cwd or "/work/src", env=SETTINGS_ENV | SECRETS_ENV | (env or {}), check=True)
         return json.loads((out / "result.json").read_text())
 
     def test_codex_lgtm_findings_and_identity(self):
@@ -550,6 +552,27 @@ class ResultTests(Workspace):
             with self.subTest(name):
                 self.assertEqual(self.claude_result(messages, **kwargs)["status"], "failed")
 
+    def test_changed_variables_change_the_visible_heading(self):
+        headings = set()
+        for model, effort in (("fixture-model-one", "low"), ("fixture-model-two", "high")):
+            codex, _, _ = self.codex_result(header=(model, effort), env={
+                "CODEX_REVIEW_MODEL": model, "CODEX_REVIEW_EFFORT": effort})
+            init = {"type": "system", "subtype": "init", "model": model, "cwd": "/work/src",
+                    "permissionMode": "dontAsk", "tools": ["Glob", "Grep", "Read"]}
+            claude = self.claude_result([init, {"type": "result", "subtype": "success", "is_error": False,
+                                                "result": "lgtm"}],
+                                        env={"CLAUDE_REVIEW_MODEL": model, "CLAUDE_REVIEW_EFFORT": effort})
+            for provider, result in (("codex", codex), ("claude", claude)):
+                with self.subTest(provider=provider, model=model):
+                    display = CONFIG["providers"][provider]["display_name"]
+                    comment = lib.render_comment(result, "lgtm", display)
+                    line = lib.heading(result, display)
+                    self.assertIn(line, comment)
+                    self.assertEqual(line, f"**{display} review** · model `{model}` · effort `{effort}` · "
+                                           f"head `{'b' * 12}`")
+                    headings.add(line)
+        self.assertEqual(len(headings), 4)
+
     def test_require_complete(self):
         for status, code in (("complete", 0), ("incomplete", 1), ("failed", 1)):
             path = self.dir / f"{status}.json"
@@ -585,6 +608,14 @@ class GateTests(Workspace):
                 completed = self.gate(self.write_results(record))
                 self.assertEqual(completed.returncode, 1)
                 self.assertIn(f"blocking {severity} finding", completed.stdout)
+
+    def test_gate_reads_result_records_not_comment_text(self):
+        # "HIGH" in a model name, a heading or the review text cannot change the gate.
+        record = self.result_record() | {"model": "fixture-HIGH-model", "resolved_model": "### [HIGH] a.js:1 — x"}
+        comment = lib.render_comment(record, "", "Codex")
+        self.assertIn("HIGH", lib.heading(record, "Codex"))
+        results = self.write_results(record, texts={"codex": comment + finding("CRITICAL")})
+        self.assertEqual(self.gate(results).returncode, 0)
 
     def test_mixed_providers_one_clean_one_high_fails(self):
         high = lib.parse_review(finding("HIGH"))["findings"]
@@ -725,15 +756,46 @@ class PublishTests(Workspace):
 
 
 class CommentTests(unittest.TestCase):
-    def test_clean_comment_shows_only_lgtm(self):
-        record = result_record()
-        comment = lib.render_comment(record, "", "Codex", "TinySynth reviewer")
-        visible = [line for line in comment.splitlines() if not line.startswith("<!--")]
-        self.assertEqual(visible, ["lgtm"])
+    @staticmethod
+    def visible(comment):
+        return [line for line in comment.splitlines() if line and not line.startswith("<!--")]
+
+    def test_every_comment_names_provider_model_and_effort(self):
+        for provider in lib.PROVIDERS:
+            display = CONFIG["providers"][provider]["display_name"]
+            record = result_record(provider) | {"model": f"fixture-{provider}-model", "effort": "low"}
+            expected = (f"**{display} review** · model `fixture-{provider}-model` · effort `low` · "
+                        f"head `{'b' * 12}`")
+            with self.subTest(provider=provider):
+                self.assertEqual(lib.heading(record, display), expected)
+                clean = lib.render_comment(record, "", display)
+                self.assertEqual(self.visible(clean), [expected, "lgtm"])
+                self.assertTrue(clean.endswith(f"\n{expected}\n\nlgtm\n"))
+                found = record | {"verdict": "findings",
+                                  "findings": lib.parse_review(finding("LOW"))["findings"]}
+                lines = self.visible(lib.render_comment(found, finding("LOW"), display))
+                self.assertEqual(lines[:2], [expected, finding("LOW").splitlines()[0]])
+                failed = record | {"status": "failed", "verdict": None, "errors": ["the CLI exited with status 1"]}
+                lines = self.visible(lib.render_comment(failed, "", display))
+                self.assertEqual(lines[:2], [expected, "**Review not completed:** the CLI exited with status 1"])
+                for comment in (clean, lib.render_comment(found, finding("LOW"), display)):
+                    self.assertEqual(comment.count(f"**{display} review**"), 1)
+
+    def test_resolved_model_is_shown_only_when_it_differs(self):
+        record = result_record("claude") | {"model": "fixture-alias", "resolved_model": "fixture-full-id"}
+        self.assertTrue(lib.heading(record, "Claude").endswith(" (resolved `fixture-full-id`)"))
+        same = record | {"resolved_model": "fixture-alias"}
+        self.assertNotIn("resolved", lib.heading(same, "Claude"))
+
+    def test_missing_settings_render_as_unknown(self):
+        record = result_record() | {"model": None, "effort": None, "status": "failed", "verdict": None}
+        self.assertIn("model unknown · effort unknown", lib.heading(record, "Codex"))
+        hostile = result_record() | {"model": "a`b\nc"}
+        self.assertIn("model `a'b c`", lib.heading(hostile, "Codex"))
 
     def test_metadata_cannot_close_the_html_comment(self):
         record = result_record() | {"model": "a--b-->"}
-        meta = lib.render_comment(record, "", "Codex", "x").splitlines()[1]
+        meta = lib.render_comment(record, "", "Codex").splitlines()[1]
         self.assertEqual(meta.count("--"), 2)
         self.assertEqual(json.loads(meta[len("<!-- tinysynth-ai-review-meta "):-4])["model"], "a--b-->")
 
