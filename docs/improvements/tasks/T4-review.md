@@ -42,7 +42,7 @@ Severity: MEDIUM blocks integration unless the supervisor accepts it; LOW should
   for(;p && (v=s.ev[this.playIndex-1]) && v.m[0]!=0xff51 && (i=this.playTime-(this.playTick-v.t)*this.tick2Time)>c.currentTime;--this.playIndex)
     this.playTime=i, this.playTick=v.t;
   ```
-  with `p=this.playing, s=this.song` read before `_halt()`. It does not cross a tempo event (rare inside 0.2 s). +196 B raw / +68 B gzip. With it, all 416 unit tests, all node tests and the three regressions pass, the mock probe hears CC7 and CC10 correctly after a resume, and the browser runs are in §3.3. Side effects: notes cut inside the lookahead are replayed on resume (upstream lost them), and `curTick` after a stop moves back by at most 0.2 s of ticks. A resume-as-seek alternative (`locateMIDI(playTick)` in `playMIDI`) is smaller (+61 / +13 B) but breaks T3's tested contract that a stopped song keeps manual overrides (6 transport unit tests fail), so it is not recommended.
+  with `p=this.playing, s=this.song` read before `_halt()`. It does not cross a tempo event (rare inside 0.2 s). +196 B raw / +68 B gzip. With it, all 416 unit tests, the three regressions and all node tests pass (except, in the scratch copy only, the one node test that needs git history), the mock probe hears CC7 and CC10 correctly after a resume, and the browser runs are in §3.3. Side effects: notes cut inside the lookahead are replayed on resume (upstream lost them), and `curTick` after a stop moves back by at most 0.2 s of ticks. A resume-as-seek alternative (`locateMIDI(playTick)` in `playMIDI`) is smaller (+61 / +13 B) but breaks T3's tested contract that a stopped song keeps manual overrides (6 transport unit tests fail), so it is not recommended.
 - **For (b):** keep the instance values in step with what the graph will play. Either accept (b) as a documented residual of D-023 for caller-timed changes (the rewind fixes the transport-dispatched ones, which re-send their values on resume), or make `stopMIDI()` cancel and restore the state together (requires storing the applied volume/expression separately; pan and modulation have no stored state). Supervisor decision; (a) should not ship as is.
 
 ### F2 (LOW) `send()`'s resume coalescing is per instance, not per context
@@ -104,7 +104,7 @@ PR #37 Codex LOW. Each component's own `onended` (`:976`) still disconnects that
 
 ### F11 (INFO) Test independence
 
-- The browser specs are black box (only `chvol` and `song` are read), derived from the contract, and they are the real evidence; the reviewer's independent spec agreed with them on every shared point.
+- T4's browser specs are black box (they read only `chvol` and `song`), derived from the contract, and they are the real evidence; the reviewer's independent spec agreed with them on every shared point.
 - D-023's controller cancel is only observed in the browser (`tests/browser/specs/dispose.js:278`, `t.observe`), not asserted: the reviewer's audible S4 (below) should be promoted to an assertion in T6 phase B.
 - 11 of the 50 unit test bodies read internals (`_src` 16 times, `_gone` 4, `_pend` 2). They kill every mutant but also fail on behavior-neutral refactors (R7 and R8 in §6 fail 10 unit tests while the browser specs pass), which will matter for T7.
 - "`dispose()` resolves after the close" has no discriminating browser check in T4's spec (it reads the state 500 ms later); the reviewer's S1b does, in Firefox and WebKit (§4).
@@ -159,7 +159,7 @@ Identical to T4.md §8 (`results/full/results.json`, `logs/matrix-full-summary.t
 | S7 offline, 100 notes | `voices:128` renders 100 (asserted); default renders 64 (observed, F7) | 3/3 ×2 | 3/3 ×2 | 3/3 ×2 |
 | S8 consumer-swapped `chvol` | audible after the swap; silence after `stopMIDI()` with a hit scheduled ahead; nothing left after `dispose()` | 5/5 ×2 | 5/5 ×2 | 5/5 ×2 |
 
-Totals with the final spec (`results/review-final2`): 47 of 49 checks per engine and build; the 2 failures are F1. Against the base build (`--source`/`--min` overrides; S1–S3 and S6–S8 need `dispose()` and are skipped) the S4 controls and all of S5 pass in 6 of 6 cases (`logs/review-base2.log`, 18/18 checks per engine): the base keeps queued CCs after a stop (as upstream) and resumes at the right level and pan.
+Totals with the final spec (`results/review-final2`): 47 of 49 checks per engine and build; the 2 failures are F1. The spec is black box except S5, which reads the transport's `playTime`, `playTick` and `tick2Time` to locate the resumed note, and S8, which swaps `chvol` nodes as the consumer does. Against the base build (`--source`/`--min` overrides; S1–S3 and S6–S8 need `dispose()` and are skipped) the S4 controls and all of S5 pass in 6 of 6 cases (`logs/review-base2.log`, 18/18 checks per engine): the base keeps queued CCs after a stop (as upstream) and resumes at the right level and pan.
 
 ### 3.3 Variants and the F1 prototype in the browser
 
@@ -172,12 +172,13 @@ Spec runs on T6's runner with `--source`/`--min` overrides, all three engines, b
 | L1 (lazy `loadMIDI` without a context) | start, dispose, review | all pass but S5 | same | same | |
 | F1 prototype (candidate + transport rewind) | dispose, start, offline, review | dispose, start, offline pass; review 98/98 (S5 passes: resumed level equals the straight play, right channel 0) | same | same | F1 fixed |
 | C7 (C5 + F1 + F2 + F3 fixes) | embed, gesture, lifecycle, dispose, start, offline, review | embed, gesture, lifecycle, dispose, start, offline pass; review 98/98 | same | same | F1 fixed; F2, F3, F4 fixed (mock probes) |
+| C8 (C7 + R7 + R8) | lifecycle, dispose, start, offline, review | lifecycle 18/18, dispose 82/82, start 102/102, offline 16/16, review 98/98 | same | same | all pass, final spec (`var-C8`) |
 
 S5's measurement window was corrected twice during the runs: a rewound transport replays the CCs first, so the resumed note starts about 1 s later, and the final spec measures the note at the same phase after its onset in both the straight and the resumed play (`logs/review-spec-final.sha256`). The F1-prototype and C7 results come from the final spec (`var-fixproto-review2`, `var-C7-review2`); their earlier fixed-window runs read silence (window before the note) or 1.14× (window including the attack) and are kept in `logs/var-fixproto.log` and `logs/var-C7.log`. On builds without the fix S5 fails under every window version.
 
 ## 4. Mutation results (reviewer's own mutants)
 
-Each mutant is a scratch copy of the candidate with one change, rebuilt with the pinned build, then run through the lifecycle unit and node tests, the upstream differential, and the browser specs `dispose`, `start`, `offline` and the reviewer's `review` on Chromium, both builds (`mutation/run-mutations.py`; logs per mutant; S5 failures, present on the unmutated candidate, are excluded).
+Each mutant is a scratch copy of the candidate with one change, rebuilt with the pinned build, then run through the lifecycle unit and node tests, the upstream differential, and the browser specs `dispose`, `start`, `offline` and the reviewer's `review` on Chromium, both builds (`mutation/run-mutations.py`; logs per mutant; S5 failures, present on the unmutated candidate, are excluded). The close-order mutant, which Chromium cannot see, was also run on Firefox and WebKit (`logs/mut-close-ffwk.log`).
 
 | Mutant | Area | Change | Unit failed (of 136) | Node | Differential | Browser checks failed, Chromium (specs) |
 | --- | --- | --- | ---: | --- | --- | --- |
@@ -283,7 +284,7 @@ The largest items are the teardown and the option validation; messages are 8 % o
 | C5a = R1a + R2 + R6 + X1 (descriptive messages kept) | 39,954 | −356 | 10,903 | −172 | |
 | C6 = C5 + R7 + R8 | 39,746 | −564 | 10,833 | −242 | depends on §3.3 |
 | **C7 = C5 + F1 + F2 + F3 fixes** | 40,126 | **−184** | 10,952 | **−123** | recommended end state |
-| C8 = C7 + R7 + R8 | 39,969 | −341 | 10,906 | −169 | see §3.3 |
+| C8 = C7 + R7 + R8 | 39,969 | −341 | 10,906 | −169 | browser: all pass (§3.3) |
 
 Shared wrappers versus per-method guards: the wrapper loop is 23 B smaller raw, but the 13 repeated `if(!this._live())return;` statements compress better than the 13-name string plus the rest-parameter wrapper, so per-method guards win by 43 B gzip, the consumer's metric, and keep the API's arity and names.
 
@@ -292,7 +293,7 @@ Validation of C5 and C7 (scratch copies, `size/test-C5`, `size/test-C7`): `node 
 ### 6.3 Recommendation
 
 1. **Adopt C7 in a T4 follow-up commit:** C5's reductions (R1b code-only lifecycle messages, R2 `ready()` without polling, R6 compact option checks, X1 per-method guards) plus the F1, F2 and F3 fixes. Result: 40,126 B raw / 10,952 B gzip, which is **−184 B raw / −123 B gzip** against the candidate, or +3,166 / +1,004 B (+10.1 % gzip) over `b49e8ceb` instead of +3,350 / +1,127. It fixes F1 (resume path), F2, F3 and F4. Update the 4 exact-message unit assertions.
-2. **Also drop `_gone` and the start-up oscillator tracking (R7 + R8; C8 = 39,969 / 10,906 B, −341 / −169 B against the candidate):** no browser check in three engines and both builds depends on them (C6, mutant `no-gone`); the 10 unit tests they fail read internals and should observe the call trace instead. They were added for a Chromium case (T4.md §5) that arose when pruned voices were disconnected immediately, which the ended-time disconnection already avoids. Supervisor's choice.
+2. **Also drop `_gone` and the start-up oscillator tracking (R7 + R8; C8 = 39,969 / 10,906 B, −341 / −169 B against the candidate):** no browser check in three engines and both builds depends on them (C6 and C8 pass every spec run, mutant `no-gone`); the 10 unit tests they fail read internals and should observe the call trace instead. They were added for a Chromium case (T4.md §5) that arose when pruned voices were disconnected immediately, which the ended-time disconnection already avoids. Supervisor's choice.
 3. Variants on the choice of messages and `ready()`: R1a instead of R1b keeps descriptive messages (+23 B gzip against C5); dropping R2 keeps `ready()`'s ~100 ms delay (+63 B gzip).
 4. Not recommended: R5 (no gain), X2 and X3 (dominated by X1). L1 (+75 / +18 B) only if the supervisor wants F6 changed.
 5. What remains is the D-018 surface itself (teardown 188 B, option validation 181 B, `resume()` 113 B, percussion tracking 107 B gzip). No further cut was found that keeps the contract.
