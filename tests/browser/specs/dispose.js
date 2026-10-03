@@ -18,6 +18,9 @@
  *   - a synth-created context is closed; a caller-owned one stays running;
  *   - setAudioContext() tears the previous graph down the same way, closing
  *     the previous context only if the synth created it;
+ *   - a caller's stopMIDI() (D-023) leaves silence from 60 ms after the stop,
+ *     with drum hits and a controller change queued ahead, and starts no
+ *     source;
  *   - a URL load still pending at dispose() installs nothing when its
  *     response arrives; construct, play, replace and dispose cycles with
  *     every ownership mode leave no timer, no live connection and no extra
@@ -119,6 +122,44 @@ const PENDING_START = (url) => {
   return window.__t4.synth.dispose();
 };
 const PENDING_END = (url) => ({ done: window.__t6.xhr.done(url), status: window.__t4.synth.getPlayStatus(), song: window.__t4.synth.song === null, rejections: window.__t6.rejections });
+
+/* D-023: a caller's stopMIDI() while ws.mid plays with drum hits and a volume change queued ahead. */
+const STOP = async ({ midi }) => {
+  const L = window.__t6.lifecycle, T = window.__t4;
+  const ctx = new AudioContext();
+  const an = ctx.createAnalyser();
+  an.fftSize = 2048;
+  an.connect(ctx.destination);
+  const synth = new WebAudioTinySynth({ quality: 1, useReverb: 0, context: ctx, destination: an });
+  await Promise.race([synth.resume(), T.wait(5000)]);
+  synth.loadMIDI(T.bytes(midi));
+  synth.playMIDI();
+  await T.wait(700);
+  const buf = new Float32Array(an.fftSize);
+  const peak = () => { an.getFloatTimeDomainData(buf); let m = 0; for (let i = 0; i < buf.length; ++i) m = Math.max(m, Math.abs(buf[i])); return m; };
+  const until = async (t) => { for (let i = 0; i < 200 && ctx.currentTime < t; ++i) await T.wait(10); };
+  let before = 0;
+  for (let i = 0; i < 5; ++i) { before = Math.max(before, peak()); await T.wait(20); }
+  const now = ctx.currentTime;
+  synth.noteOn(9, 49, 127, now + 0.15);
+  synth.noteOn(9, 38, 127, now + 0.3);
+  synth.send([0xbf, 7, 20], now + 0.3); // channel 16, unused by ws.mid
+  const volume = synth.chvol[15].gain.value;
+  const started = L.snapshot().contexts.c0.sources.started;
+  synth.stopMIDI();
+  const stopAt = ctx.currentTime;
+  await until(stopAt + 0.06); // past the compressor's 6 ms look-ahead and a 46 ms analyser window
+  let after = 0;
+  const windowStart = ctx.currentTime;
+  while (ctx.currentTime < stopAt + 0.6) { after = Math.max(after, peak()); await T.wait(20); }
+  const result = {
+    before, after, window: [windowStart - stopAt, ctx.currentTime - stopAt],
+    started: [started, L.snapshot().contexts.c0.sources.started],
+    volume: [volume, synth.chvol[15].gain.value], play: synth.getPlayStatus().play, rejections: window.__t6.rejections,
+  };
+  await synth.dispose();
+  return result;
+};
 
 const CYCLES = async ({ midi }) => {
   const L = window.__t6.lifecycle, T = window.__t4;
@@ -222,6 +263,19 @@ function cases(shared) {
           const label = "a URL load pending at dispose(): ";
           t.check(label + "its response arrived", !!r.done && r.done.status === 200, JSON.stringify(r.done));
           t.check(label + "and installed nothing", r.status.maxTick === 0 && r.song, JSON.stringify(r.status));
+          noErrors(label, p, r);
+        }
+
+        {
+          const p = await open();
+          const r = await p.page.evaluate(STOP, { midi });
+          const label = "stopMIDI() while playing, with hits and a volume change queued ahead (D-023): ";
+          t.check(label + "the song was audible before the stop", r.before > 1e-3, "peak " + r.before.toExponential(2));
+          t.check(label + "silence from 60 ms after the stop for half a second (no release tail, no queued hit)", r.after < 1e-6,
+            "peak " + r.after.toExponential(2) + " over " + r.window.map((x) => x.toFixed(3)).join("-") + " s after the stop");
+          t.check(label + "no source starts after the stop", r.started[1] === r.started[0], r.started.join(" -> "));
+          t.check(label + "stopped", r.play === 0, "play " + r.play);
+          t.observe(label + "channel 16 volume before the stop and after the cancelled change was due", r.volume);
           noErrors(label, p, r);
         }
 

@@ -28,7 +28,7 @@ const MATRIX = {
     gesture: { kind: "assert", dims: ["build"], about: "default autoplay policy at an http origin: suspended before a real click/key, running and advancing after it (other start paths observed)" },
     url: { kind: "assert", dims: ["build"], about: "loadMIDIUrl against the controlled server: success asserted; non-200, network failure, malformed bytes and races observed" },
     lifecycle: { kind: "assert", dims: ["build"], about: "instrumentation self-check asserted; baseline graph, source and timer lifecycle observed" },
-    dispose: { kind: "assert", dims: ["build"], about: "T4 (#11): dispose() and setAudioContext() cleanup on real nodes: timers, sources, connections, ownership, pending loads, cycles" },
+    dispose: { kind: "assert", dims: ["build"], about: "T4 (#11): dispose() and setAudioContext() cleanup on real nodes: timers, sources, connections, ownership, pending loads, cycles; stopMIDI() silence (D-023)" },
     start: { kind: "assert", dims: ["build"], about: "T4 (#12): default autoplay policy, real input: lazy and injected contexts start from resume(), the README path, observable rejections" },
     offline: { kind: "assert", dims: ["build"], about: "T4 (#12): OfflineAudioContext contract: repeatable renders with the timer running, playMIDI() throws, injected destination routing" },
     hang: { kind: "observe", dims: ["build"], about: "external deadlines on real hangs (#4 truncated file, #8 zero-duration loop)" },
