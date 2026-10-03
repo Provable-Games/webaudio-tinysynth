@@ -52,7 +52,10 @@ States: `pending`, `running`, `review`, `accepted`, `blocked`.
 
 ## Risks and blockers
 
-- Hosted ARM Playwright support is unverified. If a browser is unavailable on linux-arm64, record an x64 exception (D-008).
+- Hosted ARM Playwright is verified: the arm64 Chromium headless shell ran in CI, so no x64 exception is needed.
+- G0 remote evidence so far:
+  - PR #29 (`t1/tooling` c76bb81): CI run 37091100129 passed all jobs on `ubuntu-24.04-arm` (lint 10 s, build-verify 9 s, test 154 s, browser-smoke 49 s). The browser job ran the arm64 Chrome Headless Shell 153.0.8010.12 build.
+  - PR #28 (`t1/ai-review` 1f17527): Review Helpers, Claude Review (lgtm) and Codex Review (two MEDIUM findings) all completed successfully in bootstrap mode. Fixes for those findings and D-012 are in progress.
 - The ruleset has no required status checks. Making the new gates required is a ruleset change that needs user authorization (D-002).
 - The org variable `CODEX_CLI_VERSION=latest` is ignored in favor of an in-repo pin (D-009).
 
