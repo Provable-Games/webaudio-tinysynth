@@ -361,3 +361,70 @@ gzip stays above 5 % for every variant that keeps descriptive messages, except V
 | `node scripts/size-variants.js [--check] [--perf] [--diff]` | 0 | | §6. The clone was restored to `f357e0f` afterwards (`git status` clean) |
 | R3 in the scratch clone: `vitest run tests/unit/parser.test.mjs`, `node --test tests/node/parser*.test.cjs`, `node scripts/run-regressions.js` | 0 / 0 / 0 | | 86, 41 and 3 of 3 passed |
 | `gh pr checks 32` and the issue-comments API (read only) | 0 | | 13 of 13 pass. The AI reviews raise one LOW each (F6) |
+
+## 8. Delta review: `f357e0f..4efcd64`
+
+| Item | Value |
+| --- | --- |
+| Candidate | `t2/parser` at `4efcd64` (PR #32 head) |
+| Commits | `0d99d84` R3 with F2 and F3; `4098f51` F5 rule; `8878f94` F7; `aa649a1` NOTICE bullet and the D-016 fixed header; `5672d86` record; `4efcd64` rebuild |
+| Evidence | `_evidence/t2-review/delta/`: `commands.tsv`, `logs/`, `fuzz/`, `browser-fuzz.json`, `parity/`, `compat-probes.json`, `valid-delta.json`, `getstr-boundaries.json`, `mutation/` |
+| Method | Read only. The scratch clone `mutation/repo` was checked out at `4efcd64` and restored clean after mutation. My fuzz oracle gained the F5 rule behind `EOT_RULE=mtrk` (`scripts/fuzz-lib.js`) |
+
+**Verdict: accept.** Every finding is resolved, except a new LOW test gap (D1 below).
+
+### Checks
+
+**R3 (`0d99d84`).**
+- The source change is identical, line for line, to `size/R3_V8+P1+P2_.diff`.
+- The D-013 contract holds: the same codes, `track`, `offset` and message format `"<code>: <message> ((track t, )byte o)"`. This was confirmed on 939,930 fuzz cases (below).
+- P1 decodes text and copyright metas byte-exactly, on both builds, at lengths 0, 1, 8,191 to 8,193, 16,383 to 16,385 and 70,001, using patterned bytes 0 to 255 (`getstr-boundaries.json`).
+
+**F5 rule (`4098f51`).** A track that ends without End-of-Track is accepted only when `end == n`, or when the 4 bytes at `end` spell `MTrk`. Otherwise the load fails with `SMF_MALFORMED` "no End-of-Track" at `end`. When fewer than 4 bytes remain, `Get4` returns NaN, which also fails.
+- **Sound.**
+  - The check runs only on the no-End-of-Track path, because End-of-Track `break`s before it.
+  - Every read stays bounded.
+  - The offset is always below `n`, and `track` is the MTrk index.
+- **Understated lengths.** All 5,839 event-boundary length edits of the 8 fixtures now fail with `SMF_MALFORMED`, against 5,267 silent partial loads before (`compat-probes.json`). Overstated lengths still give `SMF_TRUNCATED`.
+- **Valid files are unaffected.**
+  - All 20,000 parity-safe generated files have the same signature as at `f357e0f`.
+  - Reference parity holds on 6,008 of 6,008 files (8 fixtures and 6,000 generated), for load and 400 ms of playback, on both builds.
+- **Files with documented differences** (`validx`, 20,000):
+  - 19,279 are unchanged;
+  - 721 now fail, all with "no End-of-Track": a missing End-of-Track followed by an alien chunk or trailing bytes. These files are not valid SMF, and T2.md §3 records them;
+  - still loading: alien chunks after a complete track (3,939 occurrences), missing End-of-Track before an `MTrk` (4,455, including the unit and node tests' second-track case, 10 events, `maxTick` 1680), and missing End-of-Track at end of file (2,380).
+- **Cost:** +61 B raw (T2.md §7).
+
+**Header and NOTICE (`aa649a1`).**
+- The source header keeps the upstream author, URL and "Apache License 2.0" line, and states "Modified by Provable Games (fork URL); see NOTICE for the changes".
+- min.js carries the same header (`scripts/build.js` keeps the license comment). Every distributed modified file therefore carries a prominent notice that it was changed, which is what Apache-2.0 §4(b) requires. §4(b) does not require listing the changes.
+- The NOTICE bullet accurately describes the T2 behavior.
+- Upstream `3d75aee` has no NOTICE, so §4(d) adds nothing. This matches D-016, which is on `improve/integration`.
+- The header change saves 97 B raw.
+
+**F7 (`8878f94`).**
+- `playbackState` now includes `program` and `drummap`. Mutant N11 (a load that touches a timbre) is killed.
+- The `documented differences` tests use fresh synths per test.
+- A song replaced by a case is re-established only after that case has itself failed, or is reported (`reestablished`). No failure is masked.
+
+**Size.** `npm run verify` reproduces min.js `45cc9778…`, 36,975 B raw and 9,875 B gzip. That is +603 B (+1.66 %) raw and +4.81 % gzip against the T1 baseline, and −298 B raw against `f357e0f`.
+
+### Fuzz and mutation verdicts, rerun on `4efcd64`
+
+- **Node.** 939,930 cases (the same seeds and modes as §4, both builds, 470 children under a 120 s SIGKILL deadline, 82 s wall): 0 hangs, 0 child failures, 0 non-coded throws, 0 invariant violations (state, song identity, timbres, WebAudio calls, notes), 0 oracle mismatches with the F5 rule, 0 source/min differences. Per build, mutate gives `SMF_MALFORMED` 51,945 (was 48,560) and `SMF_TRUNCATED` 75,641 (was 77,979); the code fires earlier for the same inputs.
+- **Chromium 153.0.8010.12.** 12,000 loads: 0 mismatches against the oracle and the Node messages, 0 build differences, 0 invariant violations, 0 page errors.
+- **Mutation** (`delta/mutation/results.json`). I ran 34 mutants: 23 earlier ones re-expressed on the new text, and 11 new ones. Of the new ones, N1 to N5 target the F5 rule, N6 to N10 target P1 and P2, and N11 targets the timbre assertion. 32 are killed.
+  - M6 (`notetab` clear) survives, equivalent as before.
+  - **N6** (`GetStr` steps `i+=k-1`, which corrupts texts over 8,192 B) survives. See D1.
+- **Standard commands** (`delta/commands.tsv`, in the clone at `4efcd64`):
+  - `npm run lint`, `verify`, `pack:check` and `test:browser` exit 0;
+  - `npm test` exits 0: unit 116 of 116, node 75 of 75 (new floor 75), regressions 3 of 3;
+  - `node --check` exits 0.
+- **PR #32 at `4efcd64`:** 13 of 13 checks pass, and the Claude and Codex reviews both say lgtm.
+
+### D1 LOW (test): no test covers chunked `GetStr` with varied content across an 8,192-byte boundary
+
+- **Where.** `tests/unit/parser.test.mjs` uses `"x".repeat(100000)`, so overlapping or skipped chunk reads still yield the same string. The fuzz texts are at most 300 B.
+- **Evidence.** Mutant N6 passes every test. `scripts/getstr-boundaries.js`, a patterned text at the boundary lengths, detects it (exit 1).
+- **Impact.** None today, because P1 is correct. A future edit to the loop could corrupt long texts unnoticed.
+- **Fix.** Make the long text in the meta test patterned, for example `String.fromCharCode(i % 256)` over 70,001 bytes, and add the same for copyright. No size change.
