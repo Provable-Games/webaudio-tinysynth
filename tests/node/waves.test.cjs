@@ -44,11 +44,12 @@ function engineCall(w) {
   return ["setSampleWave", w.name, s.map((x) => x / 128)];
 }
 
-/* D-027's held table, written from the formula: {frames, base}. */
+/* D-027's held table, written from the formula, with the guard frame (the first sample again; tasks/T11.md): {frames, base}. */
 function held(samples, sr) {
   const n = samples.length, k = Math.max(1, Math.round(sr / (440 * n)));
-  const frames = new Float32Array(n * k);
-  for (let j = 0; j < frames.length; ++j) frames[j] = samples[Math.floor(j / k)];
+  const frames = new Float32Array(n * k + 1);
+  for (let j = 0; j < n * k; ++j) frames[j] = samples[Math.floor(j / k)];
+  frames[n * k] = samples[0];
   return { frames, base: sr / (n * k) };
 }
 
@@ -180,8 +181,9 @@ test("TinyChip's 32,767-step LFSR registers directly (D-028) and replays at k = 
       synth.setAudioContext(c);
       synth.setSampleWave(name, samples);
       const b = synth.noiseBuf[name];
-      assert.equal(b.length, 32767);
-      assert.equal(sha(Buffer.from(b.getChannelData(0).buffer)), noi.sha256.float32);
+      assert.equal(sha(Buffer.from(synth._wv.get(name)[0].buffer)), noi.sha256.float32); // the stored copy
+      assert.equal(b.length, 32768); // k = 1, plus the guard frame
+      assert.equal(sha(Buffer.from(b.getChannelData(0).buffer)), sha(Buffer.from(held(samples, sr).frames.buffer)));
     }
   }
 });

@@ -1044,17 +1044,19 @@ function WebAudioTinySynthCore(target) {
     },
     _note:(t,ch,n,v,p)=>{
       let out,sc,pn;
-      const o=[],g=[],vp=[],fp=[],r=[],b=[];
+      const o=[],g=[],vp=[],fp=[],r=[],b=[],l=[];
       const f=440*Math.pow(2,(n-69 + this.masterTuningC + this.tuningC[ch] + (this.masterTuningF + this.tuningF[ch]/8192 + this.scaleTuning[ch][n%12]))/12);
       /* Every operator's wave is resolved first (#26): when one is missing from this context (a
          timbre written past setTimbre), the note is dropped before a voice is stolen or a node made.
-         A buffer plays at fp/b[i]: a registered wave's home pitch sampleRate/length (D-027), else
-         440 (n0, n1). Only n* and w* names are looked up, and no Object.prototype key starts so. */
+         A buffer plays at fp/b[i]: a registered wave's home pitch sampleRate/(N*k) (D-027), looping
+         its N*k frames (l[i] seconds, before the guard frame _mk adds), else 440 (n0, n1). Only n*
+         and w* names are looked up, and no Object.prototype key starts so. */
       for(let i=0;i<p.length;++i){
-        const w=p[i].w,x=w[0]=="n" && this.noiseBuf[w];
+        const w=p[i].w,x=w[0]=="n" && this.noiseBuf[w],m=x && this._wv.has(w) && x.length-1;
         if(w[0]=="n" ? !x : w[0]=="w" && !this.wave[w])
           return;
-        b[i]=x && this._wv.has(w) ? x.sampleRate/x.length : 440;
+        l[i]=m && m/x.sampleRate;
+        b[i]=m ? x.sampleRate/m : 440;
       }
       this._limitVoices(ch,n);
       for(let i=0;i<p.length;++i){
@@ -1073,6 +1075,8 @@ function WebAudioTinySynthCore(target) {
           o[i]=this.actx.createBufferSource();
           o[i].buffer=this.noiseBuf[pn.w];
           o[i].loop=true;
+          if(l[i])
+            o[i].loopEnd=l[i];
           o[i].playbackRate.value=fp[i]/b[i];
           if(pn.p!=1)
             this._setParamTarget(o[i].playbackRate,fp[i]/b[i]*pn.p,t,pn.q);
@@ -1413,14 +1417,16 @@ function WebAudioTinySynthCore(target) {
       /* Builds registered wave w in the installed context: a PeriodicWave from [real, imag], or
          the table [samples] with each of its N samples held for k = max(1, round(sampleRate/(440*N)))
          frames, so its home pitch sampleRate/(N*k) is near 440 Hz and notes play near rate 1 with
-         sharp steps (D-027). */
+         sharp steps (D-027). One guard frame, the first sample again, follows the N*k frames, and
+         _note loops only those: Chromium otherwise misplays the loop's first frame for some
+         lengths (tasks/T11.md); the other engines play the same either way. */
       const c=this.actx,s=d[0],N=s.length,k=Math.max(1,Math.round(c.sampleRate/(440*N)));
       if(d[1])
         this.wave[w]=c.createPeriodicWave(s,d[1]);
       else{
-        const b=c.createBuffer(1,N*k,c.sampleRate),x=b.getChannelData(0);
-        for(let i=0;i<N;++i)
-          x.fill(s[i],i*k,i*k+k);
+        const b=c.createBuffer(1,N*k+1,c.sampleRate),x=b.getChannelData(0);
+        for(let i=0;i<=N;++i) // i = N writes the guard frame (fill stops at the end)
+          x.fill(s[i%N],i*k,i*k+k);
         this.noiseBuf[w]=b;
       }
     },

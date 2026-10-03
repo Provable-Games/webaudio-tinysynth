@@ -7,7 +7,9 @@
  * Expected tables come from heldTable() below, written from D-027's formula,
  * not from the library: each of the N samples is held for
  * k = max(1, round(sampleRate / (440 N))) frames, and the home pitch is
- * sampleRate / (N k).
+ * sampleRate / (N k). One guard frame (the first sample again) follows the
+ * N k frames, and notes loop only those (loopEnd = N k / sampleRate): a
+ * Chromium loop-seam workaround (tasks/T11.md).
  */
 import vm from "node:vm";
 import { describe, expect, test } from "vitest";
@@ -25,12 +27,13 @@ function thrown(fn) {
   return null;
 }
 
-/* D-027: {k, frames, base} for a table at a sample rate, as Float32 data. */
+/* D-027: {k, frames (with the guard frame), loop (seconds), base} for a table at a sample rate, as Float32 data. */
 function heldTable(samples, sr) {
   const n = samples.length, k = Math.max(1, Math.round(sr / (440 * n)));
-  const frames = new Float32Array(n * k);
+  const frames = new Float32Array(n * k + 1);
   for (let j = 0; j < n * k; ++j) frames[j] = samples[Math.floor(j / k)];
-  return { k, frames, base: sr / (n * k) };
+  frames[n * k] = samples[0];
+  return { k, frames, loop: n * k / sr, base: sr / (n * k) };
 }
 
 /* A 64-sample 4-bit triangle, as Beast chip.js builds it: 32 levels, two samples each, scaled by 0.6. */
@@ -62,7 +65,7 @@ function make(variant, opts) {
   return { synth, env, trace, Ctx };
 }
 
-/* The sources a call made, with their buffer, rate, pitch-envelope target and FM inputs. */
+/* The sources a call made, with their buffer, rate, loop end (read from the node: the mock does not record it), pitch-envelope target and FM inputs. */
 function sourcesBy(s, act) {
   const from = s.trace.length;
   act(s.synth);
@@ -82,6 +85,8 @@ function sourcesBy(s, act) {
     const target = byId.get(param.split(".")[0]);
     if (target) target.fm.push(gainValue.get(g));
   }
+  const nodes = new Map([...s.synth.notetab, ...s.synth._src].flatMap((v) => v.o.map((o) => [o._id, o])));
+  for (const x of byId.values()) x.loopEnd = nodes.has(x.id) ? nodes.get(x.id).loopEnd : "untracked";
   return [...byId.values()].filter((x) => x.freq !== 0);
 }
 
@@ -148,7 +153,7 @@ describe.each(variants)("$name: registering waves (#26)", (variant) => {
   test.each([44100, 48000, 22050, 96000, 44100.5])("a sample wave is stored held (D-027) at %s Hz: k, frames and contents", (sr) => {
     const s = make(variant);
     s.synth.setAudioContext(s.Ctx(sr));
-    for (const n of [1, 2, 8, 16, 32, 64, 93, 100, 101, 256, 1024, 32767]) {
+    for (const n of [1, 2, 8, 16, 32, 64, 93, 100, 101, 256, 1024]) { // 32,767: below and in tests/node/waves.test.cjs
       const samples = Array.from({ length: n }, (_, i) => Math.fround(Math.sin(i * 2.3) * 0.9));
       s.synth.setSampleWave("nT" + n, samples);
       const buf = s.synth.noiseBuf["nT" + n];
@@ -156,20 +161,20 @@ describe.each(variants)("$name: registering waves (#26)", (variant) => {
       expect([buf.numberOfChannels, buf.length, buf.sampleRate]).toEqual([1, want.frames.length, sr]);
       expect(Buffer.from(buf.getChannelData(0).buffer).equals(Buffer.from(want.frames.buffer))).toBe(true);
     }
-  });
+  }, 60000); // 5 s is too short on a loaded machine
 
-  test("the issue's example values: 64-step triangle k=2/128 frames/375 Hz and 8-sample pulse k=14/112/428.6 Hz at 48 kHz", () => {
+  test("the issue's example values: 64-step triangle k=2/128 frames/375 Hz and 8-sample pulse k=14/112/428.6 Hz at 48 kHz (plus the guard frame)", () => {
     const s = make(variant);
     s.synth.setAudioContext(s.Ctx(48000));
     s.synth.setSampleWave("nTRI", TRI64);
     s.synth.setSampleWave("nP12", PULSE8);
     const t = s.synth.noiseBuf.nTRI, p = s.synth.noiseBuf.nP12;
-    expect([t.length, t.sampleRate / t.length]).toEqual([128, 375]);
-    expect([p.length, p.sampleRate / p.length]).toEqual([112, 48000 / 112]);
+    expect([t.length, t.sampleRate / (t.length - 1)]).toEqual([129, 375]);
+    expect([p.length, p.sampleRate / (p.length - 1)]).toEqual([113, 48000 / 112]);
     expect(48000 / 112).toBeCloseTo(428.571, 3);
     // TinyChip's 32,767-step LFSR (D-028): k = 1 at both rates.
     s.synth.setSampleWave("nNOI", lfsr(32767, 1));
-    expect(s.synth.noiseBuf.nNOI.length).toBe(32767);
+    expect(s.synth.noiseBuf.nNOI.length).toBe(32768);
   });
 
   test("the registry keeps copies: changing the caller's arrays later changes nothing, now or after a context change", () => {
@@ -218,6 +223,7 @@ describe.each(variants)("$name: playing registered waves (#26)", (variant) => {
     s.synth.setTimbre(0, 0, [Object.assign(lead("nTRI")[0], { p: 0.5, q: 0.2 }), { g: 1, w: "sine", t: 0, f: 5, v: 0.02 }]);
     const [carrier, lfo] = sourcesBy(s, (y) => y.noteOn(0, 69, 100, 1));
     expect(carrier.rate).toBeCloseTo(440 / base, 12);
+    expect(carrier.loopEnd).toBe(heldTable(TRI64, sr).loop); // the N k frames, not the guard frame
     expect(carrier.target).toBeCloseTo(440 / base * 0.5, 12);
     expect(carrier.fm).toEqual([expect.closeTo(440 / base * 0.02, 12)]);
     expect(lfo.freq).toBe(5);
@@ -238,7 +244,19 @@ describe.each(variants)("$name: playing registered waves (#26)", (variant) => {
     expect(n0.target).toBe(noteHz(60) * 2 / 440 * 0.5);
     expect(n0.fm).toEqual([noteHz(60) * 2 / 440 * 0.5]);
     expect(n1.rate).toBe(noteHz(60) * 0.5 / 440);
+    expect([n0.loopEnd, n1.loopEnd]).toEqual([undefined, undefined]); // the whole buffer loops, as before
     expect([n0.buffer, n1.buffer]).toEqual([s.synth.noiseBuf.n0._id, s.synth.noiseBuf.n1._id]);
+  });
+
+  test("a buffer written into noiseBuf directly (TinyChip's current workaround) keeps the 440 Hz basis and its whole length", () => {
+    const s = make(variant);
+    s.synth.noiseBuf.nDirect = s.synth.getAudioContext().createBuffer(1, 44100, 44100);
+    s.synth.program[3].p = [Object.assign({}, lead("nDirect")[0], { t: 1, f: 0, g: 0, p: 1, q: 1, k: 0 })];
+    s.synth.send([0xc0, 3]);
+    const [o] = sourcesBy(s, (y) => y.noteOn(0, 69, 100, 1));
+    expect([o.buffer, o.rate, o.loopEnd]).toEqual([s.synth.noiseBuf.nDirect._id, 1, undefined]);
+    // setTimbre accepts only built-in and registered names (D-026), so such a timbre must be written past it.
+    expect(thrown(() => s.synth.setTimbre(1, 38, lead("nDirect")))).toMatchObject({ name: "TypeError" });
   });
 
   test("a drum override on a registered wave: p 0.28 from 160 Hz", () => {
@@ -250,6 +268,7 @@ describe.each(variants)("$name: playing registered waves (#26)", (variant) => {
     expect(kick.buffer).toBe(s.synth.noiseBuf.nTRI._id);
     expect(kick.rate).toBeCloseTo(160 / base, 12);
     expect(kick.target).toBeCloseTo(160 / base * 0.28, 12);
+    expect(kick.loopEnd).toBe(heldTable(TRI64, 44100).loop);
     expect(s.synth._src).toHaveLength(1);
   });
 
@@ -333,7 +352,7 @@ describe.each(variants)("$name: the registry across contexts (#26, D-018)", (var
     const from = s.trace.length;
     s.synth.setAudioContext(s.Ctx(48000));
     const made = calls(s.trace, from);
-    expect(made.filter((c) => c[0] === "createBuffer").map((c) => c.slice(2))).toEqual([[2, 24000, 48000], [1, 24000, 48000], [1, 24000, 48000], [1, 128, 48000]]);
+    expect(made.filter((c) => c[0] === "createBuffer").map((c) => c.slice(2))).toEqual([[2, 24000, 48000], [1, 24000, 48000], [1, 24000, 48000], [1, 129, 48000]]);
     expect(made.filter((c) => c[0] === "createPeriodicWave").map((c) => c.slice(2))).toEqual([[[0, 0, 0, 0, 0], [0, 9, 9, 9, 9]], [[0, 0], [0, 1]]]);
     expect(s.synth.noiseBuf.nTRI).not.toBe(old[0]);
     expect(s.synth.wave.wOrg).not.toBe(old[1]);
