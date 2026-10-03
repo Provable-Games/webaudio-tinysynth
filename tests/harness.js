@@ -34,12 +34,16 @@ function sha256(buf) {
 function upstreamSource() {
   let src;
   if (process.env.TINYSYNTH_REFERENCE) {
-    src = fs.readFileSync(process.env.TINYSYNTH_REFERENCE);
+    try {
+      src = fs.readFileSync(process.env.TINYSYNTH_REFERENCE);
+    } catch (e) {
+      fail("cannot read TINYSYNTH_REFERENCE=" + process.env.TINYSYNTH_REFERENCE + " (" + e.message + ")");
+    }
   } else {
     try {
       src = execFileSync("git", ["show", UPSTREAM_COMMIT + ":webaudio-tinysynth.js"],
         { cwd: ROOT, maxBuffer: 1 << 24, stdio: ["ignore", "pipe", "pipe"] });
-    } catch (e) {
+    } catch {
       fail("cannot read the upstream reference with git (shallow clone?). " +
         "Fetch full history, or set TINYSYNTH_REFERENCE to upstream's webaudio-tinysynth.js @ " +
         UPSTREAM_COMMIT.slice(0, 7) + ".");
