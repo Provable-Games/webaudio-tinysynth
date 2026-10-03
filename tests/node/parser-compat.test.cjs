@@ -124,14 +124,9 @@ test.describe("valid files parse exactly as the baseline parser", () => {
 });
 
 test.describe("documented differences from the baseline parser (ledger L-01 to L-03)", () => {
-  // Each build keeps playing ws.mid through its rejected loads.
-  let forksPlaying;
-  test.before(() => {
-    forksPlaying = builds.map(playing);
-  });
-  /* load() of `bytes` into each playing build, with whether the playback state stayed the same. */
+  /* load() of `bytes` into a fresh synth of each build playing ws.mid, with whether the playback state stayed the same. */
   function rejected(bytes) {
-    return forksPlaying.map((s) => {
+    return builds.map(playing).map((s) => {
       const before = JSON.stringify(H.playbackState(s.synth));
       return Object.assign(load(s, bytes), { unchanged: JSON.stringify(H.playbackState(s.synth)) === before });
     });

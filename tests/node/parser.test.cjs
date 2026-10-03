@@ -36,15 +36,28 @@ function child(build) {
     { code: e.code, message: e.message, name: e.name, hasTrack: "track" in e, track: e.track, offset: e.offset } :
     { thrown: String(e) });
 
-  const s = H.createSynth(variant.source, build);
-  s.synth.loadMIDI(H.toArrayBuffer(Buffer.from(input.previous, "base64")));
-  s.synth.setLoop(0);
-  s.synth.playMIDI();
-  H.runUntil(s.env, () => false, 2000);
-  report({ previous: { status: { ...s.synth.getPlayStatus() }, notes: s.notes.length } });
+  // One synth serves every case: construction takes about 0.4 s, and each case compares its own before and
+  // after state. A case that replaces or stops the song is reported, and the next case gets a fresh synth.
+  const playing = () => {
+    const p = H.createSynth(variant.source, build);
+    p.synth.setTimbre(0, 5, [{ w: "square", t: 1, f: 0, v: 0.4, d: 0.2, s: 0.3, r: 0.1 }]); // custom timbres, which must survive
+    p.synth.setTimbre(1, 36, [{ w: "n0", t: 1, f: 0, v: 0.9, d: 0.05, s: 0, r: 0.05 }]);
+    p.synth.loadMIDI(H.toArrayBuffer(Buffer.from(input.previous, "base64")));
+    p.synth.setLoop(0);
+    p.synth.playMIDI();
+    H.runUntil(p.env, () => false, 2000);
+    return p;
+  };
+  let s = playing(), song0 = s.synth.song;
+  report({ previous: { status: { ...s.synth.getPlayStatus() }, notes: s.notes.length, customTimbre: s.synth.program[5].p[0].w } });
 
   for (const c of input.failures) {
     report({ start: c.name });
+    if (s.synth.song !== song0 || s.synth.getPlayStatus().play !== 1) {
+      report({ reestablished: c.name });
+      s = playing();
+      song0 = s.synth.song;
+    }
     const before = JSON.stringify(H.playbackState(s.synth));
     const song = s.synth.song, traceLength = s.trace.length, notes = s.notes.length;
     let error = null;
@@ -239,6 +252,8 @@ function parent() {
       test("the previous song was playing when the bad loads ran", () => {
         const previous = run.get("previous");
         assert.equal(previous.status.play, 1);
+        assert.equal(previous.customTimbre, "square");
+        assert.deepEqual(run.lines.filter((l) => l.reestablished), [], "a failing case replaced or stopped the song");
         assert.ok(previous.notes > 0 && previous.status.curTick > 0, JSON.stringify(previous));
         assert.ok(run.get("done"), "the child did not finish");
       });

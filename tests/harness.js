@@ -333,8 +333,9 @@ function smf(format, division, chunks, opts = {}) {
 
 /*
  * Everything a failed loadMIDI must leave unchanged, as plain JSON: the song,
- * the sequencer position and timing, the voice count, and the channel and
- * tuning state. Undefined and non-finite numbers are kept as strings.
+ * the sequencer position and timing, the voice count, the channel and tuning
+ * state, and the timbre tables (program, drummap). Undefined and non-finite
+ * numbers are kept as strings.
  */
 function playbackState(synth) {
   const keep = (k, v) => (v === undefined ? "undefined" : typeof v === "number" && !Number.isFinite(v) ? String(v) : v);
@@ -345,6 +346,7 @@ function playbackState(synth) {
     pg: synth.pg, vol: synth.vol, ex: synth.ex, bend: synth.bend, brange: synth.brange, rpnidx: synth.rpnidx,
     sustain: synth.sustain, rhythm: synth.rhythm, tuningC: synth.tuningC, tuningF: synth.tuningF,
     scaleTuning: synth.scaleTuning, masterTuningC: synth.masterTuningC, masterTuningF: synth.masterTuningF,
+    program: synth.program, drummap: synth.drummap,
   }, keep));
 }
 

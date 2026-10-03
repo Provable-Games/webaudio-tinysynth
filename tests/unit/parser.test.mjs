@@ -59,16 +59,25 @@ const headerFailures = [
   { name: "zero PPQ", bytes: withHeader([0, 0, 0, 1, 0, 0]), code: DIV, offset: 12, message: /division 0x0 / },
 ];
 
+/* A synth playing a song, with a manual program change and custom timbres on top of the song's state. */
+function playing(variant) {
+  const s = synthFor(variant);
+  s.synth.setTimbre(0, 5, [{ w: "square", t: 1, f: 0, v: 0.4, d: 0.2, s: 0.3, r: 0.1 }]);
+  s.synth.setTimbre(1, 36, [{ w: "n0", t: 1, f: 0, v: 0.9, d: 0.05, s: 0, r: 0.05 }]);
+  s.synth.loadMIDI(H.toArrayBuffer(H.smf(0, PPQ, [H.trackBytes([H.midi.tempo(0, 455000), ...fourNotes(), noteOn(1700, 0, 70, 90)])])));
+  s.synth.setLoop(0);
+  s.synth.playMIDI();
+  H.runUntil(s.env, () => false, 500);
+  s.synth.setProgram(1, 33);
+  s.song = s.synth.song;
+  return s;
+}
+
 describe.each(variants)("$name: loadMIDI rejects bad headers without side effects", (variant) => {
+  // One synth serves every case (construction is slow); a case that replaced its song or stopped it gets a fresh one for the next.
   let s;
   beforeAll(() => {
-    // A song is playing, with a manual program change on top of the song's state.
-    s = synthFor(variant);
-    s.synth.loadMIDI(H.toArrayBuffer(H.smf(0, PPQ, [H.trackBytes([H.midi.tempo(0, 455000), ...fourNotes(), noteOn(1700, 0, 70, 90)])])));
-    s.synth.setLoop(0);
-    s.synth.playMIDI();
-    H.runUntil(s.env, () => false, 500);
-    s.synth.setProgram(1, 33);
+    s = playing(variant);
   });
 
   test("the song is playing before the bad loads", () => {
@@ -77,6 +86,7 @@ describe.each(variants)("$name: loadMIDI rejects bad headers without side effect
   });
 
   test.each(headerFailures)("$name: $code at byte $offset", (c) => {
+    if (s.synth.song !== s.song || s.synth.getPlayStatus().play !== 1) s = playing(variant);
     const before = H.playbackState(s.synth), song = s.synth.song, traceLength = s.trace.length, notes = s.notes.length;
     const error = loadError(s.synth, c.bytes);
     expect(error).toMatchObject({ code: c.code, offset: c.offset, hasTrack: false, name: "Error" });
@@ -88,7 +98,12 @@ describe.each(variants)("$name: loadMIDI rejects bad headers without side effect
     expect(s.notes.length).toBe(notes);
   });
 
-  test("the song plays on to its end after the failed loads", () => {
+  test("the song plays on to its end after failed loads, with its timbres", () => {
+    const s = playing(variant), program = JSON.stringify(s.synth.program), drummap = JSON.stringify(s.synth.drummap);
+    for (const c of headerFailures) expect(loadError(s.synth, c.bytes)).toMatchObject({ code: c.code });
+    expect(JSON.stringify(s.synth.program)).toBe(program);
+    expect(JSON.stringify(s.synth.drummap)).toBe(drummap);
+    expect(s.synth.program[5].p[0].w).toBe("square");
     const notes = s.notes.length;
     expect(H.runUntil(s.env, () => s.synth.getPlayStatus().play === 0, 60000)).toBe(true);
     expect(s.notes.length).toBeGreaterThan(notes);
@@ -97,8 +112,7 @@ describe.each(variants)("$name: loadMIDI rejects bad headers without side effect
   });
 
   test("a valid load after a failed one installs the new song as before: stop, reset, locate to 0", () => {
-    s.synth.playMIDI();
-    H.runUntil(s.env, () => false, 300);
+    const s = playing(variant);
     expect(loadError(s.synth, withHeader([0, 0, 0, 1, 0xe7, 0x28]))).toMatchObject({ code: DIV });
     expect(s.synth.getPlayStatus().play).toBe(1);
     expect(loadError(s.synth, H.smf(0, 96, [H.trackBytes([noteOn(96, 2, 64, 100), noteOff(192, 2, 64)])]))).toBe(null);
