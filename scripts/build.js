@@ -21,6 +21,15 @@ const OUTPUT = "webaudio-tinysynth.min.js";
 const MAP = OUTPUT + ".map";
 
 /*
+ * Keep the source's header comment: it names the author, the upstream
+ * project and the Apache License 2.0, and points to NOTICE. The minified
+ * file is embedded onchain on its own, without LICENSE or NOTICE beside it.
+ */
+function licenseHeader(node, comment) {
+  return comment.type === "comment2" && /Apache License/.test(comment.value);
+}
+
+/*
  * Terser minify() options. They are spelled out, including values equal to
  * Terser's defaults, so a Terser upgrade cannot silently change a default
  * we rely on.
@@ -28,17 +37,22 @@ const MAP = OUTPUT + ".map";
 const TERSER_OPTIONS = {
   ecma: 5,              // output syntax level; ES2015+ input syntax is kept as written
   module: false,        // classic script, not an ES module
-  toplevel: false,
+  toplevel: false,      // the wrapper's this/window binding stays as written
   ie8: false,
   safari10: false,
-  keep_classnames: false,
+  keep_classnames: true, // WebAudioTinySynth.name stays "WebAudioTinySynth"
   keep_fnames: false,
   rename: false,        // as the Terser CLI without --rename
   parse: {},
   compress: {},         // all default compress options (the CLI's --compress)
-  mangle: false,        // no identifier mangling (the CLI's default)
+  mangle: {             // local variable and parameter names only:
+    properties: false,  // never property names, so every method, option and
+    toplevel: false,    // property keeps its name
+    eval: false,
+    reserved: [],
+  },
   format: {
-    comments: "some",   // only /*! */, @license, @preserve and @cc_on comments
+    comments: licenseHeader,
     ascii_only: true,   // escape any non-ASCII in strings and regexps
     inline_script: true, // escape "</script" and "<!--" inside strings
     beautify: false,
@@ -47,7 +61,7 @@ const TERSER_OPTIONS = {
     preamble: null,
   },
   sourceMap: {
-    filename: null,     // no "file" field in the map
+    filename: OUTPUT,   // the map's "file" field names the minified file
     url: null,          // no sourceMappingURL comment in the minified file
     root: null,
     includeSources: false,
@@ -70,7 +84,8 @@ function pinnedTerser() {
 /* Minify SOURCE into outDir. Returns the output paths and the Terser version. */
 async function build(outDir) {
   const terser = pinnedTerser();
-  const code = fs.readFileSync(path.join(ROOT, SOURCE), "utf8");
+  // LF line endings, so a CRLF checkout builds the same bytes (the kept header spans lines).
+  const code = fs.readFileSync(path.join(ROOT, SOURCE), "utf8").replace(/\r\n?/g, "\n");
   // The key is the name recorded in the map's "sources": the file next to the map.
   const result = await terser.minify({ [SOURCE]: code }, TERSER_OPTIONS);
   fs.mkdirSync(outDir, { recursive: true });
