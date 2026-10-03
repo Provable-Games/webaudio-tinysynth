@@ -146,7 +146,7 @@ Needed before T2 (#4/#6), and followed by T5 (#13/#14).
 - **Legacy differences** are ledger L-01, L-02 and L-03:
   - Non-`MThd` input used to return silently after stopping playback; it now throws without side effects.
   - Running status is per track and cancelled by meta and SysEx events, per the SMF specification. The legacy file-wide initial `0x90` running status is removed, and T2 characterizes any valid-file impact.
-  - A missing End-of-Track is accepted only when the declared chunk ends exactly on an event boundary. That track then ends at its last event's tick. This is documented recovery.
+  - A missing End-of-Track is accepted only when the declared chunk ends exactly on an event boundary and the chunk is followed by end of file or by another `MTrk` chunk. That track then ends at its last event's tick. This is documented recovery. Otherwise the result is `SMF_MALFORMED`; after the T2 review (F5), this catches understated lengths that land on event boundaries.
   - Unknown chunk types are skipped, as the SMF specification requires.
 - **The asynchronous path wraps errors.** `loadMIDIUrl` exceptions surface through #14's promise (T5). Until T5 lands, an exception inside the XHR `onload` is an uncaught error in the console, an accepted interim state on the unreleased integration branch.
 - **API misuse** (T5, #13): direct calls with invalid argument types or ranges throw `TypeError` or `RangeError` with descriptive messages, before any mutation. Malformed raw messages passed to `send()` are no-ops (#13). Useful numeric coercions are characterized and kept.
