@@ -151,3 +151,15 @@ Needed before T2 (#4/#6), and followed by T5 (#13/#14).
 - **The asynchronous path wraps errors.** `loadMIDIUrl` exceptions surface through #14's promise (T5). Until T5 lands, an exception inside the XHR `onload` is an uncaught error in the console, an accepted interim state on the unreleased integration branch.
 - **API misuse** (T5, #13): direct calls with invalid argument types or ranges throw `TypeError` or `RangeError` with descriptive messages, before any mutation. Malformed raw messages passed to `send()` are no-ops (#13). Useful numeric coercions are characterized and kept.
 - Reconsider this if a consumer needs a non-throwing load API. An additive `tryLoadMIDI` would be the route.
+
+## D-014 AI review hardening after the G0 review and real runs (2026-10-03)
+
+Inputs: G0 independent review of `1eff7ba` (`g0/review` `03003e9`, `tasks/G0-review.md`) and PR #28's round-three real reviews at `848bae6` (Codex HIGH, plus a Claude review that failed closed on incomplete output).
+
+- Credential-bearing steps must not load configuration from the PR checkout. Bun and the Claude action run from a trusted empty directory. Claude reads the checkout as data through `--add-dir`. The inherited environment is preset to trusted values. Result and gate steps verify trusted files after the credential step. A model mismatch fails. (H1, L3)
+- Bootstrap (using the head's review configuration when the base has none) is allowed only for base `main`, the one-time path by which the configuration reaches `main`. Any other base without the configuration fails. (M3)
+- Dependabot PRs are treated like fork PRs: the gate fails with an explicit "AI review unavailable" message. Dependabot secrets would be an org decision, reported to the user and not performed. (L6)
+- The leak guard covers common encodings of the Codex credential's tokens. Split copies remain a documented residual risk. The fork message no longer advises mirroring fork content. (M2)
+- A model output that is clean apart from leading prose is handled per the implementer's documented choice. The contract stays fail-closed: `lgtm` plus prose, and prose between or after findings, are never accepted.
+- The native test suite must fail when zero tests run or a file exits early (M4, T1-tooling).
+- Codex ChatGPT-credential rotation is an org-level prerequisite. Authentication failures name `CODEX_AUTH_DOT_JSON` explicitly.

@@ -46,7 +46,7 @@ States: `pending`, `running`, `review`, `accepted`, `blocked`.
 
 | Gate | Requirement | State |
 | --- | --- | --- |
-| G0 initial CI | Lint, Vitest, native Node tests, retained regressions, build verification, offline Playwright smoke, AI review workflows with central model/effort; a real Actions run | pending |
+| G0 initial CI | Lint, Vitest, native Node tests, retained regressions, build verification, offline Playwright smoke, AI review workflows with central model/effort; a real Actions run | review. The independent review (`03003e9`) accepts #15, #16-initial, #22 and #23. It accepts #5 and #24 with M4, and rejects #25 at 1eff7ba (H1). Fixes are in progress (D-014). Afterwards: re-review, a real run, and a trusted-path (non-bootstrap) run. |
 | G1 reliability | T1 foundation plus T2–T6 accepted; source and minified validation pass | pending |
 | G2 delivery | All registered criteria verified; T10 independent review; consumer artifact/hash handoff | pending |
 
