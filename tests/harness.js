@@ -215,7 +215,14 @@ function createEnvironment(trace) {
     }
   }
 
-  return { sandbox, clock, step };
+  // Let `ms` pass with no interval firing, as in a throttled background tab: every
+  // overdue interval then fires once, at the new time, on the next step().
+  function skip(ms) {
+    clock.ms += ms;
+    for (const t of timers.values()) t.due = Math.max(t.due, clock.ms);
+  }
+
+  return { sandbox, clock, step, skip };
 }
 
 /*
