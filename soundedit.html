@@ -222,7 +222,7 @@ function InitMidi(){
       setTimeout(UpdateMidiPorts,10);
     },
     function(e){
-      MidiStatus("MIDI access failed ("+(e&&e.name?e.name:"error")+(e&&e.message?": "+e.message:"")+"). Use the on-screen keyboard.",true);
+      MidiStatus("MIDI access failed ("+(e&&e.name?e.name:"error")+(e&&e.message?": "+String(e.message).replace(/\.$/,""):"")+"). Use the on-screen keyboard.",true);
     }
   );
 }
