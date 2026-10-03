@@ -27,8 +27,8 @@ States: `pending`, `running`, `review`, `accepted`, `blocked`.
 | Task | Issues | Branch / worktree | Base | State | Accepted commit | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
 | T0 | #16 (baseline), #7/#21/#26/#27 contracts | `t0/baseline` | b70ba90 | accepted | c2252bc | Policy decisions D-004 to D-007 and D-010; evidence in tasks/T0.md |
-| T1 | #5 #15 #16 #22 #23 #24 #25 | tooling: `t1/tooling`; AI review: `t1/ai-review` | after T0 | pending | | Initial CI gate G0 |
-| T9A | #19 #20 (read-only audit) | `t9/audit` | after T0 | pending | | Optional, parallel with T1 |
+| T1 | #5 #15 #16 #22 #23 #24 #25 | tooling: `t1/tooling`; AI review: `t1/ai-review` | 1e6184c | running | | Two parallel agents; tooling owns package/lockfile. Initial CI gate G0 |
+| T9A | #19 #20 (read-only audit) | `t9/audit` | 1e6184c | running | | Read-only; writes tasks/T9A.md only |
 | T2 | #4 #6 | `t2/parser` | after G0 | pending | | |
 | T3 | #8 #9 #10 #21 | `t3/transport` | after T2 | pending | | D-005 |
 | T4 | #11 #12 | `t4/lifecycle` | after T3 | pending | | |
@@ -59,5 +59,5 @@ States: `pending`, `running`, `review`, `accepted`, `blocked`.
 ## Next actions
 
 1. (done) T0 accepted and merged.
-2. Dispatch T1 tooling and T1 AI review in parallel worktrees; optionally dispatch the T9A audit.
+2. (running) T1 tooling, T1 AI review and the T9A audit.
 3. Push `improve/integration` and open the umbrella draft PR once T1 workflows exist.
