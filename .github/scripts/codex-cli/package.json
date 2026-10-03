@@ -1,0 +1,10 @@
+{
+  "name": "tinysynth-review-codex-cli",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Pins the Codex CLI used by .github/workflows/codex-review.yml. This exact version is the only Codex CLI pin.",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@openai/codex": "0.160.0"
+  }
+}
