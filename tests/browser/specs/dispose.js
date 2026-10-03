@@ -19,8 +19,11 @@
  *   - setAudioContext() tears the previous graph down the same way, closing
  *     the previous context only if the synth created it;
  *   - a caller's stopMIDI() (D-023) leaves silence from 60 ms after the stop,
- *     with drum hits and a controller change queued ahead, and starts no
- *     source;
+ *     with drum hits and controller changes queued ahead, starts no source,
+ *     and the queued volume, pan and modulation changes never apply;
+ *   - stop, then play (review F1): controller changes cancelled by the stop
+ *     before they were due are sent again, so the resumed note has the level
+ *     and pan of a straight play;
  *   - a URL load still pending at dispose() installs nothing when its
  *     response arrives; construct, play, replace and dispose cycles with
  *     every ownership mode leave no timer, no live connection and no extra
@@ -37,6 +40,7 @@
 const fs = require("fs");
 const path = require("path");
 const pages = require("../lib/pages");
+const smf = require("../lib/smf");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -143,8 +147,10 @@ const STOP = async ({ midi }) => {
   const now = ctx.currentTime;
   synth.noteOn(9, 49, 127, now + 0.15);
   synth.noteOn(9, 38, 127, now + 0.3);
-  synth.send([0xbf, 7, 20], now + 0.3); // channel 16, unused by ws.mid
-  const volume = synth.chvol[15].gain.value;
+  // channel 16, unused by ws.mid: volume, pan and modulation changes queued ahead
+  synth.send([0xbf, 7, 20], now + 0.3); synth.send([0xbf, 10, 0], now + 0.3); synth.send([0xbf, 1, 127], now + 0.3);
+  const params = () => [synth.chvol[15].gain.value, synth.chpan[15] ? synth.chpan[15].pan.value : 0, synth.chmod[15].gain.value];
+  const queued = params();
   const started = L.snapshot().contexts.c0.sources.started;
   synth.stopMIDI();
   const stopAt = ctx.currentTime;
@@ -155,10 +161,45 @@ const STOP = async ({ midi }) => {
   const result = {
     before, after, window: [windowStart - stopAt, ctx.currentTime - stopAt],
     started: [started, L.snapshot().contexts.c0.sources.started],
-    volume: [volume, synth.chvol[15].gain.value], play: synth.getPlayStatus().play, rejections: window.__t6.rejections,
+    params: [queued, params()], play: synth.getPlayStatus().play, rejections: window.__t6.rejections,
   };
   await synth.dispose();
   return result;
+};
+
+/*
+ * Stop, then play (review F1): channel 0 gets CC7 20 and CC10 0 (hard left) 0.1 s after the
+ * song's first event, then a 1 s note. Played straight, or stopped once the scheduler has
+ * sent the controller changes ahead and before they are due, then played again. Returns the
+ * note's peak per output channel.
+ */
+const PAUSE = async ({ song, pause }) => {
+  const T = window.__t4;
+  const ctx = new AudioContext();
+  const mix = ctx.createGain(), split = ctx.createChannelSplitter(2), aL = ctx.createAnalyser(), aR = ctx.createAnalyser();
+  aL.fftSize = aR.fftSize = 1024;
+  mix.connect(split); split.connect(aL, 0); split.connect(aR, 1); aL.connect(ctx.destination); aR.connect(ctx.destination);
+  const synth = new WebAudioTinySynth({ quality: 0, useReverb: 0, context: ctx, destination: mix });
+  await Promise.race([synth.resume(), T.wait(5000)]);
+  synth.setTimbre(0, 0, [{ w: "sine", v: 0.5, a: 0, h: 0.01, d: 0.01, s: 1, r: 0.05 }]);
+  synth.loadMIDI(T.bytes(song));
+  await T.wait(100);
+  const t0 = ctx.currentTime;
+  synth.playMIDI();
+  let stopAfter = null;
+  if (pause) {
+    for (let i = 0; i < 300 && synth.getPlayStatus().curTick < 480; ++i) await T.wait(1);
+    stopAfter = ctx.currentTime - t0;
+    synth.stopMIDI();
+    synth.playMIDI();
+  }
+  const from = ctx.currentTime, buf = new Float32Array(1024), peak = (a) => { a.getFloatTimeDomainData(buf); let m = 0; for (let i = 0; i < buf.length; ++i) m = Math.max(m, Math.abs(buf[i])); return m; };
+  let l = 0, r = 0;
+  for (let i = 0; i < 300 && ctx.currentTime < from + 0.2; ++i) await T.wait(10);
+  while (ctx.currentTime < from + 1.4) { l = Math.max(l, peak(aL)); r = Math.max(r, peak(aR)); await T.wait(15); }
+  await synth.dispose();
+  await ctx.close();
+  return { l, r, stopAfter, rejections: window.__t6.rejections };
 };
 
 const CYCLES = async ({ midi }) => {
@@ -275,8 +316,25 @@ function cases(shared) {
             "peak " + r.after.toExponential(2) + " over " + r.window.map((x) => x.toFixed(3)).join("-") + " s after the stop");
           t.check(label + "no source starts after the stop", r.started[1] === r.started[0], r.started.join(" -> "));
           t.check(label + "stopped", r.play === 0, "play " + r.play);
-          t.observe(label + "channel 16 volume before the stop and after the cancelled change was due", r.volume);
+          t.check(label + "the queued volume, pan and modulation changes never apply", JSON.stringify(r.params[1]) === JSON.stringify(r.params[0]),
+            "channel 16 [volume, pan, modulation] before the stop " + JSON.stringify(r.params[0]) + ", after the changes were due " + JSON.stringify(r.params[1]));
           noErrors(label, p, r);
+        }
+
+        {
+          const p = await open();
+          // CC7 100 on channel 2 at tick 0 (the first event), then channel 0: CC7 20 and CC10 0 at tick 96, a note from 480 to 1440.
+          const song = smf.write({ format: 0, division: 480, tracks: [[{ dt: 0, bytes: [0xb1, 7, 100] }, { dt: 96, bytes: [0xb0, 7, 20] }, { dt: 0, bytes: [0xb0, 10, 0] },
+            { dt: 384, bytes: [0x90, 69, 100] }, { dt: 960, bytes: [0x80, 69, 0] }]] }).toString("base64");
+          const straight = await p.page.evaluate(PAUSE, { song, pause: false });
+          const paused = await p.page.evaluate(PAUSE, { song, pause: true });
+          const label = "stop, then play, with CC7 and CC10 sent ahead and not yet due (review F1): ";
+          t.check(label + "the scenario holds: stopped before the changes were due (0.2 s after the start)", paused.stopAfter < 0.2, "stopped " + paused.stopAfter.toFixed(3) + " s after the start");
+          t.check(label + "played straight, the note is audible and hard left", straight.l > 1e-3 && straight.r < 1e-4, "left " + straight.l.toExponential(2) + ", right " + straight.r.toExponential(2));
+          t.check(label + "after stop and play, the note has the straight play's level (within 10 %)", Math.abs(paused.l / straight.l - 1) < 0.1,
+            "left " + paused.l.toExponential(2) + " vs " + straight.l.toExponential(2) + " (" + (paused.l / straight.l).toFixed(3) + "x)");
+          t.check(label + "and the straight play's pan (hard left)", paused.r < 1e-4, "right " + paused.r.toExponential(2));
+          noErrors(label, p, paused);
         }
 
         {
