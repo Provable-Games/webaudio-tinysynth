@@ -521,11 +521,15 @@ class ResultTests(Workspace):
                 self.assertNotIn(leak, text + completed.stdout + json.dumps(result))
 
     def test_claude_final_result_extraction(self):
-        init = {"type": "system", "subtype": "init", "model": "fixture-claude-model", "cwd": "/work/src"}
+        # Init fields as Claude Code 2.1.288 reported them for the generated arguments.
+        init = {"type": "system", "subtype": "init", "model": "fixture-claude-model", "cwd": "/work/src",
+                "permissionMode": "dontAsk", "tools": ["Glob", "Grep", "Read"]}
         ok = {"type": "result", "subtype": "success", "is_error": False, "result": "lgtm"}
         result = self.claude_result([init, ok])
-        self.assertEqual((result["status"], result["verdict"], result["resolved_model"]),
-                         ("complete", "lgtm", "fixture-claude-model"))
+        self.assertEqual((result["status"], result["verdict"], result["resolved_model"], result["permission_mode"]),
+                         ("complete", "lgtm", "fixture-claude-model", "dontAsk"))
+        kept = init | {"tools": ["Glob", "Grep", "Read", "EndConversation"]}
+        self.assertEqual(self.claude_result([kept, ok])["status"], "complete")
         assistant = {"type": "assistant", "message": {"content": [{"type": "text", "text": "lgtm"}]}}
         # The shape Claude Code 2.1.288 emits when it is not logged in.
         not_logged_in = {"type": "result", "subtype": "success", "is_error": True, "result": "lgtm"}
@@ -538,6 +542,9 @@ class ResultTests(Workspace):
             "action failed": ([init, ok], {"outcome": "failure"}),
             "conclusion failure": ([init, ok], {"conclusion": "failure"}),
             "wrong working directory": ([init, ok], {"cwd": "/work"}),
+            "shell tool available": ([init | {"tools": ["Read", "Bash"]}, ok], {}),
+            "MCP tool available": ([init | {"tools": ["Read", "mcp__github__add_comment"]}, ok], {}),
+            "tool set not reported": ([{k: v for k, v in init.items() if k != "tools"}, ok], {}),
         }
         for name, (messages, kwargs) in failures.items():
             with self.subTest(name):

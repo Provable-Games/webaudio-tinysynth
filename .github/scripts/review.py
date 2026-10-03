@@ -19,6 +19,10 @@ import review_lib as lib
 SECRET_NAMES = {"codex": "CODEX_AUTH_DOT_JSON", "claude": "CLAUDE_CODE_OAUTH_TOKEN"}
 MAX_LISTED_PATHS = 300
 MAX_BODY_CHARS = 20000
+# Tools that execute, write, delegate or reach the network. A denylist, because
+# Claude Code can keep tools such as EndConversation outside a --tools list.
+CLAUDE_UNSAFE_TOOLS = {"Bash", "PowerShell", "REPL", "Edit", "MultiEdit", "Write", "NotebookEdit",
+                       "WebFetch", "WebSearch", "Agent", "Task"}
 
 
 # ---------------------------------------------------------------------------
@@ -320,21 +324,30 @@ def claude_execution(args, errors):
     else:
         errors.append("the Claude action produced no execution file")
     if not isinstance(messages, list):
-        return None, None
+        return None, None, None
     init = next((m for m in messages if isinstance(m, dict) and m.get("type") == "system"
                  and m.get("subtype") == "init"), None)
     resolved = init.get("model") if isinstance(init, dict) else None
-    if args.expected_cwd and isinstance(init, dict) and init.get("cwd") != args.expected_cwd:
-        errors.append(f"Claude ran in {init.get('cwd')!r}, not the pull request checkout {args.expected_cwd!r}")
+    permission_mode = init.get("permissionMode") if isinstance(init, dict) else None
+    if isinstance(init, dict):
+        if args.expected_cwd and init.get("cwd") != args.expected_cwd:
+            errors.append(f"Claude ran in {init.get('cwd')!r}, not the pull request checkout {args.expected_cwd!r}")
+        tools = init.get("tools")
+        if not isinstance(tools, list):
+            errors.append("Claude did not report its tool set, so read-only execution is unverified")
+        else:
+            unsafe = sorted(t for t in tools if t in CLAUDE_UNSAFE_TOOLS or str(t).startswith("mcp__"))
+            if unsafe:
+                errors.append(f"Claude had tools beyond read-only access: {', '.join(unsafe)}")
     final = next((m for m in reversed(messages) if isinstance(m, dict) and m.get("type") == "result"), None)
     if final is None:
         errors.append("Claude produced no final result message")
-        return None, resolved
+        return None, resolved, permission_mode
     if final.get("subtype") != "success" or final.get("is_error") is True:
         errors.append(f"Claude's final result is not a success (subtype {final.get('subtype')!r}, "
                       f"is_error {final.get('is_error')!r})")
     text = final.get("result") if isinstance(final.get("result"), str) else None
-    return text, resolved
+    return text, resolved, permission_mode
 
 
 def cmd_result(args):
@@ -356,11 +369,11 @@ def cmd_result(args):
     for name, outcome in failed or unsuccessful:
         errors.append(f"setup step '{name}' {outcome}")
 
-    log = ""
+    log, permission_mode = "", None
     if args.provider == "codex":
         text, resolved, log = codex_execution(args, settings, errors)
     else:
-        text, resolved = claude_execution(args, errors)
+        text, resolved, permission_mode = claude_execution(args, errors)
         if resolved and settings and resolved != settings["model"]:
             annotate("warning", f"Claude reported model {resolved!r} for configured {settings['model']!r} "
                      "(an alias resolves to a full model ID).")
@@ -380,7 +393,7 @@ def cmd_result(args):
         "base_sha": facts["base_sha"], "head_sha": facts["head_sha"], "merge_base": args.merge_base or None,
         "config_sha": args.config_sha, "bootstrap": args.bootstrap == "true",
         "model": settings["model"] if settings else None, "effort": settings["effort"] if settings else None,
-        "resolved_model": resolved, "run_url": args.run_url,
+        "resolved_model": resolved, "permission_mode": permission_mode, "run_url": args.run_url,
     }
     result = lib.build_result(identity=identity, execution_ok=not errors, execution_errors=errors, text=text,
                               blocking_severities=config["blocking_severities"])

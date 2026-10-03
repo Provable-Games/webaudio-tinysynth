@@ -337,7 +337,7 @@ def marker(provider, agent_id):
 
 def _metadata(result):
     keys = ("provider", "agent_id", "repository", "pr_number", "base_sha", "head_sha", "merge_base",
-            "config_sha", "bootstrap", "model", "effort", "resolved_model", "status", "verdict",
+            "config_sha", "bootstrap", "model", "effort", "resolved_model", "permission_mode", "status", "verdict",
             "blocking", "run_url")
     # An HTML comment cannot contain "--"; JSON-escape the second hyphen.
     data = json.dumps({k: result.get(k) for k in keys}, sort_keys=True).replace("--", "-\\u002d")

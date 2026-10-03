@@ -147,7 +147,10 @@ BOOTSTRAP notice. A failed or incomplete run replaces an earlier verdict with
   --permission-mode dontAsk --tools Read,Glob,Grep`, so project settings, hooks
   and `.mcp.json` servers from the pull request do not load. Its working
   directory is `src/`, and the precomputed diff is added with `--add-dir`.
-  Symlinks that leave the checkout are replaced first.
+  Symlinks that leave the checkout are replaced first. The result step fails
+  the review if Claude's init message reports a working directory other than
+  `src/`, or any tool that runs commands, writes, delegates or reaches the
+  network (including MCP tools).
 - The pull request title and body are read from the event file and placed
   between random delimiters as untrusted data. They are never interpolated into
   shell code.

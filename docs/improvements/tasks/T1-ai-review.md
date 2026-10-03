@@ -6,7 +6,7 @@
 | Governing issue | #25, updatedAt 2026-10-03T00:44:05Z, sha256(body)[:16] `3e13f34c17fb3f73`, no comments (rechecked live at completion) |
 | Base | `1e6184c37c0d2cdb8b493d59718c9c7281787a9e` on `improve/integration` |
 | Branch / worktree | `t1/ai-review` in `/workspace/webaudio-tinysynth-worktrees/t1-ai-review` |
-| Implementation commit | `ef00de2d04984be70b697959ff45888facaca9e7` (GPG-signed) |
+| Commits (GPG-signed) | `ef00de2` implementation, `f429489` this record, then a follow-up adding the Claude tool-set check (see `git log`) |
 | Large evidence | `/workspace/webaudio-tinysynth-worktrees/_evidence/t1-ai-review/` |
 | Setup documentation | `.github/scripts/README.md` |
 
@@ -57,7 +57,7 @@ No file outside `.github/` and this record changed.
 | `python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v` (Python 3.12.3) | 45 tests OK (`_evidence/t1-ai-review/unittest.log`) |
 | `actionlint` 1.7.12 linux_amd64 (sha256 `8aca8db9…` verified against the release `checksums.txt`) on `.github/workflows/*review*.yml`, with shellcheck on PATH | exit 0 |
 | `shellcheck` 0.11.0 (asset digest `sha256:8c3be12b…` verified against the GitHub release) on `.github/scripts/*.sh` | exit 0 |
-| Mutation checks on a scratch copy: removing fence tracking, the bot identity match, the Claude `--effort` flag, the stale check, the partial-output rule, the fork failure, the Codex header check or the credential guard | each made the suite fail |
+| Mutation checks on a scratch copy: removing fence tracking, the bot identity match, the Claude `--effort` flag, the stale check, the partial-output rule, the fork failure, the Codex header check, the credential guard or the Claude tool-set check | each made the suite fail |
 | Local end-to-end with the real pinned CLIs, no credentials (`_evidence/t1-ai-review/local-e2e/`) | Codex 0.160.0 through `run-codex-review.sh`: header `model: fixture-model-xyz` / `reasoning effort: low` parsed; 401 exit recorded as failed. Claude Code 2.1.288 with the generated `claude_args`: init shows the configured model, `cwd` = checkout, `permissionMode: dontAsk`, tools `[Glob, Grep, Read]`; the `is_error: true` result is classified failed |
 | Dry run of setup and prompt for this pull request (base `1e6184c` → head `ef00de2`, `_evidence/t1-ai-review/dry-run/`) | Bootstrap selected with a warning; 14 paths; prompts about 7 KB; diff 154 KB in the context directory |
 
@@ -123,6 +123,15 @@ https://code.claude.com/docs/en/model-config):
   `subtype: success`, `is_error` not true and non-blank `result` counts, together
   with step outcome and `conclusion` success. Locally, when not logged in, the
   CLI emits `subtype: success, is_error: true`; this case is a test fixture.
+- The trust probe used the CLI directly, but the action goes through the Agent
+  SDK, which rewrites `claude_args`. The result step therefore checks the init
+  message from the real run: `cwd` must be `src/`, and `tools` must not contain
+  `Bash`, `PowerShell`, `REPL`, `Edit`, `MultiEdit`, `Write`, `NotebookEdit`,
+  `WebFetch`, `WebSearch`, `Agent`, `Task` or any `mcp__` tool. It uses a
+  denylist because `EndConversation` can survive a `--tools` list.
+  `permissionMode` is recorded in the result and comment metadata. The real
+  2.1.288 init for the generated arguments (`tools: [Glob, Grep, Read]`,
+  `permissionMode: dontAsk`) passes this check.
 
 **Runner.** `ubuntu-24.04-arm` for every job (D-008). The ARM image readme
 (`actions/partner-runner-images` `images/Ubuntu2404-Readme.md` at `4ea2a41`)
@@ -163,11 +172,13 @@ fetched script `3a68d340…`). The base action pins `oven-sh/setup-bun` and
 1. `ubuntu-24.04-arm` starts all jobs; `npm ci` installs `codex-linux-arm64`, and the version check passes.
 2. After the sysctl step, the sandbox preflight passes on ARM: `git` runs, the write is refused, and **network access is refused**. If read-only mode allows network, the job fails by design and the sandbox configuration must change.
 3. Codex authenticates with `CODEX_AUTH_DOT_JSON`; the log header shows the organization's `CODEX_REVIEW_MODEL` and `CODEX_REVIEW_EFFORT`; the API accepts them; `-o` captures the final message.
-4. Claude installs on ARM; the init message reports the configured model and `cwd` = `src/`, so `CLAUDE_WORKING_DIR` reaches the composite action; `--restricted` with `--add-dir` lets Claude read the context directory; the run completes within 45 minutes.
+4. Claude installs on ARM; `--restricted` still accepts `CLAUDE_CODE_OAUTH_TOKEN` from the environment (the help text says `--bare` limits auth routes, and the local run cannot distinguish a restriction from "not logged in"); the init message reports the configured model, `cwd` = `src/` (so `CLAUDE_WORKING_DIR` reaches the composite action) and a read-only tool set through the SDK path; `--add-dir` lets Claude read the context directory; the run completes within 45 minutes.
 5. Artifacts pass between jobs; `pull-requests: write` is enough to list, create, update and delete issue comments; the comment author is `github-actions[bot]` with type `Bot`.
 6. Bootstrap labeling appears on this pull request; a second push updates the same comments; a push during a run cancels it and the older run does not publish.
 7. The gates report the expected names. A deliberate invalid variable on a test repository (or a repository-level override) fails with the variable named.
 8. Whether the OpenAI API rejects an unsupported `model_reasoning_effort` (expected) rather than ignoring it.
+9. The `OUTCOMES` word-split passes each setup step outcome to the result step.
+10. If setup fails, the skipped review job's `fromJSON` matrix may show a strategy-evaluation error rather than a clean skip. The gate still fails through `prepare != success`, so this is cosmetic.
 
 ## 7. Recommendations (not performed)
 
