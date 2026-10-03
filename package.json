@@ -9,6 +9,14 @@
     "web-audio",
     "synth"
   ],
+  "files": [
+    "webaudio-tinysynth.js",
+    "webaudio-tinysynth.min.js",
+    "webaudio-tinysynth.min.js.map",
+    "LICENSE",
+    "NOTICE",
+    "README.md"
+  ],
   "directories": {
     "test": "tests"
   },
@@ -16,6 +24,7 @@
     "build": "node scripts/build.js",
     "verify": "node scripts/verify-dist.js",
     "size": "node scripts/size.js",
+    "pack:check": "node scripts/check-pack.js",
     "test": "node tests/differential.js && node tests/tempo.js && node tests/loop-end.js"
   },
   "repository": {
