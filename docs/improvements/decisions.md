@@ -276,3 +276,23 @@ Decisions:
 - Keep the `_gone` tracking (C8 rejected): it is the Chromium workaround for oscillators that never end after an early disconnect.
 - Guard repeated `init()` (F9).
 - Document F5 and F6 (in lazy mode, `reset()` and `loadMIDI()` create the context), F7 (offline renders steal voices by count, so raise `setVoices()`) and F8 (a context replaced mid-play does not rebase the clock; pre-existing).
+
+## D-026 T11 (#26) moves to right after T4 (2026-10-03)
+
+The consumer reported that TinyChip's Tier 2 (Casey's chip pack: 20 presets and 19 chip drums built on sampled single-cycle waves) is now on its critical path. On 2026-10-03 the user approved running T11 immediately after T4 integrates, ahead of T5, T6-B, G1, T7 and T8. This amends D-022 for T11 only.
+
+- T11 brings its own wave-name validation in `setTimbre`: built-in or registered names, with transactional rejection. T5 (#13) later generalizes `setTimbre` validation around it. T5 therefore runs after T11, because both touch `setTimbre`.
+- T3.1 (leading rest, `startTime`) may run in parallel with T11, since their files are disjoint.
+- T12 (#27) and T8 (#7) keep their plan positions unless the user re-prioritizes them.
+- The later T7 refactor must carry the registry code.
+
+## D-027 Sample-wave storage: one cycle held to a home pitch near 440 Hz (2026-10-03)
+
+This refines D-021, with the user's choice made after the supervisor showed the fidelity trade-off. Under D-021 as written, a table of N samples is stored as N frames and played at rate `f·N/sampleRate`, for example about 0.07 for an 8-sample pulse at A4. Browsers interpolate between frames (Chromium linearly, Firefox with a band-limited resampler). At such low rates each step edge is smeared across a whole step, so pulse and saw tables lose their stepped character. TinyChip avoids this by playing 440 Hz-based buffers near rate 1.
+
+Decision:
+- `setSampleWave(name, samples)` stores one cycle with each sample held for `k = max(1, round(sampleRate / (440 · N)))` frames, giving `N·k` frames at the context sample rate. The home pitch is `base = sampleRate / (N · k)`. `_note` uses `base` for `playbackRate = fp / base`, for the pitch-envelope target and for FM depth scaling, exactly as D-021 says. `n0` and `n1` keep `base = 440`.
+- Consequences: playback stays near rate 1 for typical notes, so only step edges are interpolated and steps stay sharp. Every step is exactly `k` frames, with none of the uneven step widths of the original 1 s / 440-cycle proposal. Pitch is exact. Memory is about `sampleRate / 440` frames per wave (≈ 109 at 48 kHz). `k` and `base` are deterministic functions of `N` and the sample rate, and the generated tables are hashed per sample rate.
+- Tests (amending D-021): a 64-step 4-bit triangle at A4 measures 440 Hz within 1 cent. Step widths at the home pitch are exactly `k` frames, and at other notes `sampleRate / (f · N)` ± 1 frame. 8-, 16-, 32-, 93- and 256-sample tables play at the right pitch. Edge sharpness is measured against an independent sample-and-hold reference, with T6 tolerances. All other D-021 and D-006 tests still apply.
+- The Beast `chip.js` reference uses `k = 1`. For tables shorter than `sampleRate/440` samples, this engine's output will have sharper steps than `chip.js`, which brings it closer to stepped chip hardware. The consumer is informed.
+- Consumer notes: TinyChip's `nMET`/`nNOI` noise tables are currently one sample per frame at the engine's 440 basis, which makes their texture sample-rate dependent. Under #26 they become sample-rate independent, so the consumer should retune those drum operators. `nNOI` (32,767 samples) exceeds the limits and falls back to `n0`, which needs #7 for determinism. TinyChip also writes `synth.program[129+]` and `noiseBuf` directly. Those are internals with no supported equivalent, and the consumer's carriage of presets through program slots 0–127 is unaffected.

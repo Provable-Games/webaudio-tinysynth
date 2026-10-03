@@ -32,12 +32,12 @@ States: `pending`, `running`, `review`, `accepted`, `blocked`.
 | T2 | #4 #6 | `t2/parser` | 25d2a3d | accepted | cdb2228 (merge e128330) | The independent review accepted after fuzzing about 940k cases (`tasks/T2-review.md`). PR #32 was green at 4efcd64 with Codex and Claude `lgtm`. min.js is `45cc9778…`, 36,975 / 9,875 B (+1.66 % raw / +4.81 % gzip vs 782e9b92). D-013 and D-016. |
 | T3 | #8 #9 #10 #21 | `t3/transport` | 09922b9 | accepted | 99177f4 | The independent review accepted after two rounds (`tasks/T3-review.md`, 0cf4495). PR #34 green, Codex and Claude `lgtm`. min.js `b49e8ceb…`, 36,960 / 9,948 B. D-005, D-019. F11 is a T6-B test; F12 is a documented residual. |
 | T4 | #11 #12 | `t4/lifecycle` | e5866e1 | running | | D-018, plus the D-023 caller stop (stops drums and queued automation). Browser specs after T6 phase A, which has landed. |
-| T3.1 | #21 (consumer D-023) | `t3/leading-rest` | after T4 | pending | | Leading rest on the first `loopEnd` pass, plus `getPlayStatus().startTime`. Runs in parallel with T5. |
-| T5 | #13 #14 | `t5/api` | after T4 | pending | | |
+| T3.1 | #21 (consumer D-023) | `t3/leading-rest` | after T4 | pending | | Leading rest on the first `loopEnd` pass, plus `getPlayStatus().startTime`. Runs in parallel with T11 (D-026). |
+| T5 | #13 #14 | `t5/api` | after T11 (D-026) | pending | | |
 | T6 | #16 #7 (validation) | `t6/validation` | 25d2a3d | phases A and A.1 integrated (merges 346b782 and af3ea7a; PRs #33 and #36 green); phase B after T5. The phase-B list includes the summary double-count LOW and the T3 F11 test | | PR #33 green, including the arm64 matrix in 3 engines. The integrated tree passes `test:browser:matrix` locally (42 cases). Two deferred Codex MEDIUM test-strength fixes are in A.1. Full acceptance at G1. |
 | T7 | #17 | `t7/architecture` | after G1 | pending | | |
 | T8 | #7 #18 | `t8/performance` | after T7 | pending | | D-004 |
-| T11 | #26 | `t11/waveforms` | after T8 | pending | | D-006 |
+| T11 | #26 | `t11/waveforms` | right after T4 (D-026) | pending | | D-006, D-021, D-027 (held storage) |
 | T12 | #27 | `t12/filters` | after T11 | pending | | D-007 |
 | T9 | #19 #20, docs for #26/#27 | `t9/docs` | after T7; accepts after T12 | pending | | |
 | T1B | later CI extensions | `t1/ci-ext` | after T6/T7/T12 | pending | | |
