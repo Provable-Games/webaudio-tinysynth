@@ -41,9 +41,9 @@ function script(js) {
 }
 
 /*
- * A self-contained page: the prelude (seeded Math.random and rejection
- * capture), optional instrumentation, the inlined library, then `after`
- * scripts. Nothing is fetched.
+ * A self-contained page: the prelude (seeded Math.random, interval and
+ * rejection records) and optional instrumentation, then the inlined library,
+ * in <head>; `body`, then the `after` scripts, in <body>. Nothing is fetched.
  */
 function inlinePage({ library, seed = 1, instrument = false, after = [], body = "", title = "tinysynth browser matrix" }) {
   return "<!doctype html><html><head><meta charset=\"utf-8\"><title>" + title + "</title>\n" +
@@ -51,8 +51,7 @@ function inlinePage({ library, seed = 1, instrument = false, after = [], body = 
     script(pageScript("prelude.js")) +
     (instrument ? script(pageScript("instrument.js")) : "") +
     script(library) +
-    after.map(script).join("") +
-    "</head><body>" + body + "</body></html>";
+    "</head><body>" + body + "\n" + after.map(script).join("") + "</body></html>";
 }
 
 module.exports = { ROOT, BUILDS, libraryPath, readLibrary, pageScript, inlineSafe, inlinePage };
