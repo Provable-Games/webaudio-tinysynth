@@ -185,17 +185,23 @@ function cases(shared) {
             buffers[s.name] = res.source[0].buffers;
             if (["pitch-sine", "gm-drums", "reverb"].includes(s.name)) kept[s.name] = res.source[0];
           }
-          t.check("all " + renders + " renders finite (no NaN or Infinity)", !finiteProblems.length, finiteProblems.slice(0, 3).join(" | "));
-          t.check("no realtime context ran during the renders (constructor context was the offline stub)", !realtimeInternal.length, realtimeInternal.slice(0, 3).join(" | "));
-          t.observe("renders with samples beyond full scale (not asserted)", { renders: overFullScale, slots: gmOver });
-          t.check("no unrecognized unhandled rejections", !unknownRejections.length, unknownRejections.slice(0, 3).join(" | "));
-          t.observe("known baseline unhandled rejections (#12, removed by T4)", rejectionCounts);
+          // Every render, including the repeat and alternate-seed renders below,
+          // is checked for NaN/Infinity, realtime contexts and rejections.
+          const audit = (r, label) => {
+            renders += r.renders || 1;
+            const c = classifyRejections(r.rejections);
+            for (const [k, n] of Object.entries(c.counts)) rejectionCounts[k] = (rejectionCounts[k] || 0) + n;
+            unknownRejections.push(...c.unknown.map((u) => label + ": " + u.name + ": " + u.message));
+            if (r.whole.nan || r.whole.inf) finiteProblems.push(label + " " + JSON.stringify(r.whole));
+            if (r.internalContext !== "offline") realtimeInternal.push(label + " " + r.internalContext);
+            return r;
+          };
 
           // Repeatability in a fresh page (same engine, seed and rate) and seed sensitivity.
           const again = await openRenderPage(t, "source", seed);
           for (const name of Object.keys(kept)) {
             const s = SCENARIOS.find((x) => x.name === name);
-            const r = await renderScenario(again, s, { seed, sr, quality });
+            const r = audit(await renderScenario(again, s, { seed, sr, quality }), name + "/repeat");
             const d = maxDiff(r, kept[name]);
             if (r.hash === kept[name].hash) sameEngine.bitIdentical.push(name + " repeat");
             else sameEngine.differing[name + " repeat"] = d;
@@ -204,10 +210,15 @@ function cases(shared) {
           }
           for (const name of ["gm-drums", "reverb"]) {
             const s = SCENARIOS.find((x) => x.name === name);
-            const r = await renderScenario(again, s, { seed: (seed + 1) >>> 0, sr, quality });
+            const r = audit(await renderScenario(again, s, { seed: (seed + 1) >>> 0, sr, quality }), name + "/seed+1");
             const d = maxDiff(r, kept[name]);
-            t.check(name + ": seed " + ((seed + 1) >>> 0) + " changes the noise-based output (the seeding is effective)", d >= tol.seedEffect, "max |diff| " + d.toExponential(3));
+            t.check(name + ": seed " + ((seed + 1) >>> 0) + " changes the noise-based output (the seeding is effective)", Number.isFinite(d) && d >= tol.seedEffect, "max |diff| " + d.toExponential(3));
           }
+          t.check("all " + renders + " renders finite (no NaN or Infinity), including repeat and alternate-seed renders", !finiteProblems.length, finiteProblems.slice(0, 3).join(" | "));
+          t.check("no realtime context ran during the renders (constructor context was the offline stub)", !realtimeInternal.length, realtimeInternal.slice(0, 3).join(" | "));
+          t.observe("renders with samples beyond full scale (not asserted)", { renders: overFullScale, slots: gmOver });
+          t.check("no unrecognized unhandled rejections", !unknownRejections.length, unknownRejections.slice(0, 3).join(" | "));
+          t.observe("known baseline unhandled rejections (#12, removed by T4)", rejectionCounts);
           t.observe("same-engine comparisons (bit-identical, or max |diff|)", sameEngine);
           t.observe("measurements", measurements);
           t.observe("render hashes (source build)", hashes);
