@@ -32,21 +32,23 @@ const { tolerances } = require("../tolerances");
 /* eslint-disable no-undef -- the callbacks below run in the page */
 const RENDER = async ({ seed }) => {
   window.__t6.seed(seed);
-  const ctx = new OfflineAudioContext(2, 44100 * 12, 44100);
+  const ctx = new OfflineAudioContext(2, 44100 * 40, 44100);
   const synth = new WebAudioTinySynth({ quality: 1, context: ctx });
   [0, 24, 48, 80].forEach((p, ch) => synth.setProgram(ch, p));
-  for (let k = 0; k < 30; ++k) {
-    const t = 0.1 + k * 0.35, ch = k % 4, n = 48 + (k * 5) % 30;
+  for (let k = 0; k < 60; ++k) {
+    const t = 0.1 + k * 0.6, ch = k % 4, n = 48 + (k * 5) % 30;
     synth.noteOn(ch, n, 100, t);
     synth.noteOff(ch, n, t + 0.2);
   }
   const intervals = window.__t6.intervals.filter((r) => r.active && r.ms === 60).length;
+  const t0 = performance.now();
   const buf = await ctx.startRendering();
+  const ms = performance.now() - t0;
   (window.__renders = window.__renders || []).push([buf.getChannelData(0), buf.getChannelData(1)]);
   await synth.dispose();
   let peak = 0;
   for (const d of window.__renders[window.__renders.length - 1]) for (let i = 0; i < d.length; ++i) peak = Math.max(peak, Math.abs(d[i]));
-  return { index: window.__renders.length - 1, intervals, peak };
+  return { index: window.__renders.length - 1, intervals, peak, ms };
 };
 const DIFF = ([a, b]) => {
   const A = window.__renders[a], B = window.__renders[b];
@@ -114,8 +116,9 @@ function cases(shared) {
         // Three renders with the library's interval running.
         const r = [];
         for (let i = 0; i < 3; ++i) r.push(await ev(RENDER, { seed: options.seed }));
-        t.check("renders are audible and the library's interval ran during each", r.every((x) => x.peak > tol.audiblePeak && x.intervals === 1),
-          r.map((x) => x.peak.toFixed(3) + "/" + x.intervals).join(", "));
+        // A render must last several of the interval's 180 ms pruning periods for this to test anything.
+        t.check("renders are audible, last over 0.5 s, and the library's interval ran during each", r.every((x) => x.peak > tol.audiblePeak && x.intervals === 1 && x.ms > 500),
+          r.map((x) => x.peak.toFixed(3) + "/" + x.intervals + "/" + Math.round(x.ms) + " ms").join(", "));
         const diffs = [await ev(DIFF, [0, 1]), await ev(DIFF, [0, 2])];
         t.check("renders repeat within the same-engine tolerance (" + tol.sameEngineSample + ") with the interval running", diffs.every((x) => x <= tol.sameEngineSample),
           "max |diff| " + diffs.map((x) => x.toExponential(2)).join(", "));
