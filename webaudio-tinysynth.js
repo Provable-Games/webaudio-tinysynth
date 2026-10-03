@@ -632,7 +632,7 @@ function WebAudioTinySynthCore(target) {
       if(c){
         this.notetab.concat(this._src,Array.from(this._gone),{o:[this.lfo],g:[]}).forEach(v=>{
           v.o.forEach((s,i)=>{
-            const off=()=>{ n(s); n(v.g[i]); };
+            const off=()=>{ n(s); n(v.g[i]); n(v.q && v.q[i]); }; // and the operator's filter (#27)
             s.onended=now ? null : off;
             try{ s.stop(); }catch(e){ /* stop() again: some engines throw */ }
             if(now)
@@ -975,7 +975,36 @@ function WebAudioTinySynthCore(target) {
         }
       }
     },
+    _checkFilter:(o)=>{
+      /* setTimbre's filter check (#27, D-007 and D-028) for operator o: throws a TypeError or
+         RangeError, and changes nothing. Without fl, none of ff, fq and fk is given. With fl
+         ("lowpass", "highpass" or "bandpass"), o outputs audio (g absent or 0), ff is a number
+         > 0, fq is absent or a number > 0 (ff and fq finite as 32-bit floats, the AudioParam
+         type), and fk is absent, 0 or 1. An undefined field counts as absent. */
+      const u=k=>o[k]===undefined,c=(k,ok)=>{
+        if(typeof o[k]!="number")
+          throw new TypeError(k+": "+String(o[k]));
+        if(!ok)
+          throw new RangeError(k+": "+o[k]);
+      };
+      if(u("fl")){
+        for(const k of ["ff","fq","fk"])
+          if(!u(k))
+            throw new TypeError(k+" without fl");
+        return;
+      }
+      if(!["lowpass","highpass","bandpass"].includes(o.fl))
+        throw new TypeError("fl: "+String(o.fl));
+      if(!u("g") && o.g!=0)
+        throw new TypeError("fl on a modulator");
+      for(const k of ["ff","fq"])
+        if(k=="ff" || !u(k))
+          c(k,o[k]>0 && isFinite(Math.fround(o[k])));
+      if(!u("fk"))
+        c("fk",o.fk==0 || o.fk==1);
+    },
     setTimbre:(m,n,p)=>{
+      for(let i=0;i<p.length;) this._checkFilter(p[i++]); // filter fields (#27), before any change
       const defp={g:0,w:"sine",t:1,f:0,v:0.5,a:0,h:0.01,d:0.01,s:0,r:0.05,p:1,q:1,k:0};
       function filldef(p){
         for(n=0;n<p.length;++n){
@@ -1025,8 +1054,8 @@ function WebAudioTinySynthCore(target) {
         /* Release the voice's routes once it has ended (#11). Disconnecting earlier can keep
            Chromium from ever ending (and releasing) a stopped oscillator. Until all its
            sources have ended the voice stays in _gone, so a teardown still reaches it. */
-        const o=nt.o[k],g=nt.g[k];
-        o.onended=()=>{ o.disconnect(); g.disconnect(); --nt.l || this._gone.delete(nt); };
+        const o=nt.o[k],g=nt.g[k],b=nt.q[k]; // b: the operator's filter, if any (#27)
+        o.onended=()=>{ o.disconnect(); g.disconnect(); b && b.disconnect(); --nt.l || this._gone.delete(nt); };
       }
       nt.l=nt.o.length;
       this._gone.add(nt);
@@ -1044,6 +1073,19 @@ function WebAudioTinySynthCore(target) {
           this.notetab.splice(i,1);
         }
       }
+    },
+    _filter:(pn,f,out)=>{
+      /* An audio-output operator's fixed filter (#27, D-007 and D-028), connected to out and
+         returned. Type fl. Cutoff or centre: ff Hz, or with fk 1 ff times the note-on frequency
+         f (master, channel and scale tuning included; operator ratio and offset, bend, pitch
+         envelope and modulation excluded), clamped to 0.45 x the sample rate (tasks/T12.md).
+         fq (default Math.SQRT1_2) is a linear Q, given in dB to low- and high-pass. */
+      const b=this.actx.createBiquadFilter(),q=pn.fq||Math.SQRT1_2;
+      b.type=pn.fl;
+      b.frequency.value=Math.min(pn.fk ? f*pn.ff : pn.ff,this.actx.sampleRate*.45);
+      b.Q.value=pn.fl=="bandpass" ? q : 20*Math.log10(q);
+      b.connect(out);
+      return b;
     },
     _note:(t,ch,n,v,p)=>{
       let out,sc,pn;
@@ -1063,6 +1105,7 @@ function WebAudioTinySynthCore(target) {
         b[i]=x && x._b || 440;
       }
       this._limitVoices(ch,n);
+      const q=[]; // the output operators' filters, by operator (#27)
       for(let i=0;i<p.length;++i){
         pn=p[i];
         const dt=t+pn.a+pn.h;
@@ -1106,7 +1149,7 @@ function WebAudioTinySynthCore(target) {
         }
         g[i]=this.actx.createGain();
         r[i]=pn.r;
-        o[i].connect(g[i]); g[i].connect(out);
+        o[i].connect(g[i]); g[i].connect(pn.g==0 && pn.fl ? (q[i]=this._filter(pn,f,out)) : out);
         vp[i]=sc*pn.v;
         if(pn.k)
           vp[i]*=Math.pow(2,(n-60)/12*pn.k);
@@ -1122,7 +1165,7 @@ function WebAudioTinySynthCore(target) {
         if(this.rhythm[ch]){
 
           o[i].onended = ()=>{
-            o[i].disconnect(); g[i].disconnect(); // release the hit's routes (#11)
+            o[i].disconnect(); g[i].disconnect(); q[i] && q[i].disconnect(); // release the hit's routes (#11, #27)
             try {
               if (o[i].detune) this.chmod[ch].disconnect(o[i].detune);
             }
@@ -1132,9 +1175,9 @@ function WebAudioTinySynthCore(target) {
         }
       }
       if(!this.rhythm[ch])
-        this.notetab.push({t:t,e:99999,ch:ch,n:n,o:o,g:g,t2:t+pn.a,v:vp,r:r,f:0});
+        this.notetab.push({t:t,e:99999,ch:ch,n:n,o:o,g:g,q:q,t2:t+pn.a,v:vp,r:r,f:0});
       else // tracked until it ends, so stops, seeks and dispose() reach it (#11, D-019)
-        this._src.push({t:t,e:t+p[0].d*this.releaseRatio,ch:ch,o:o,g:g});
+        this._src.push({t:t,e:t+p[0].d*this.releaseRatio,ch:ch,o:o,g:g,q:q});
     },
     _setParamTarget:(p,v,t,d)=>{
       if(d!=0)
