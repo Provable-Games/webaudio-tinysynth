@@ -245,3 +245,17 @@ Source: the #26 comment by the issue owner (id 5965255502, 2026-10-03T03:50:58Z;
 ## D-022 Keep the plan order and process (2026-10-03)
 
 The consumer (onchain-tinysynth) is blocked on #7, #26, #27 and a tagged release. The supervisor estimated about 30–40 h of agent wall-clock time to umbrella PR #31 on the plan order, against about 12–16 h for a consumer fast-track (#7, #26, #27 right after T4). It also described the leaner scope and process options. The user chose to "stay the course for now": the plan order (T4 → T5 → T6-B → G1 → T7 → T8 → T11 → T12 → T9/T1B → T10 → G2) and the current review process are unchanged. Revisit this if the user asks to fast-track or slim the scope.
+
+## D-023 Public replacements for the consumer's engine-internal workarounds (2026-10-03)
+
+Source: the onchain-tinysynth coordinator's reply (session `webaudio-tinysynth-15`) and its `player/player.js` at `2ca6007`. The consumer player currently:
+- After `stopMIDI()`, replaces every `chvol[ch]` with a new gain node and cancels queued `chmod` and `chpan` automation. This hard-stops drum voices, notes scheduled ahead, and queued controller changes, which `stopMIDI` leaves sounding.
+- Around `playMIDI()`, rewrites `playTick` and `playTime` to restore the song's leading rest, because the first event plays immediately, and reads `playTime` to sync its art.
+
+The T7 refactor will move these internals. The fork therefore provides public behavior within #11/#21 scope, and the consumer can drop the workarounds:
+
+1. **Stop (T4, #11).** A caller's `stopMIDI()` silences everything the transport scheduled: melodic voices (as before), percussion voices including hits already scheduled in the lookahead window, and queued channel automation (`cancelScheduledValues` from the current time on volume, pan and modulation). The internal stop inside `loadMIDI` keeps the upstream trace. T4 must also cope with a caller having replaced `chvol` nodes; this is a compatibility note only, not a supported API.
+2. **Leading rest (T3.1, #21).** When `loopEnd > 0`, a pass that `playMIDI()` starts from tick 0 honors the song's leading rest: tick 0 sounds at the pass start, and the first event at its own tick's time. Later passes already do this through the `loopEnd` wrap, so this makes the first pass consistent with them. With `loopEnd` unset, the legacy behavior (the first event plays immediately) is unchanged, as are seeks (next-event positioning, D-005).
+3. **Pass start time (T3.1, additive).** `getPlayStatus()` gains `startTime`: the AudioContext time at which tick 0 of the current pass sounds. It updates at each wrap and is `null` when stopped or when nothing is loaded. This is a public replacement for reading `playTime`.
+
+T3.1 is dispatched after T4 integrates, in parallel with T5. Integration SHAs sent to the consumer must call out any change to these behaviors or to the internals they touch until the consumer has switched.
