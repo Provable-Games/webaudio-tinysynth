@@ -1,0 +1,82 @@
+{
+  "baseCommit": "b70ba90d63c5ea657cb67ca98de90d7f778c29bd",
+  "originMainAtCheck": "b70ba90d63c5ea657cb67ca98de90d7f778c29bd",
+  "recordedAtUtc": "2026-10-03T01:51:08Z",
+  "toolchain": {
+    "node": "v24.19.0 (asdf shim; /workspace/.tool-versions pins nodejs 24.19.0)",
+    "npm": "11.17.0",
+    "terser": "5.51.2 (/workspace/webaudio-tinysynth/node_modules/.bin/terser, used by absolute path; no node_modules in the worktree)",
+    "gzip": "gzip 1.12, sizes from `gzip -9 -n -c FILE | wc -c`",
+    "git": "2.43.0",
+    "os": "Ubuntu 24.04.2 LTS, Linux 7.0.0-34-generic x86_64",
+    "playwright-core": "1.62.1 (scratch install: /workspace/webaudio-tinysynth-worktrees/_evidence/T0/tools)",
+    "chromium": "151.0.7922.34 (playwright revision 1234; headless shell for A/B/D, full build for C)"
+  },
+  "artifacts": {
+    "webaudio-tinysynth.js": { "sha256": "abb2d0fb828ada86b692547560102035cf486fc1fac60ca190b5851235c1ee23", "bytes": 54000, "gzip9Bytes": 11765, "gitBlob": "9958750d8944078a715d38004fb04b3d0decafa2", "lines": 1234, "endsWithNewline": true },
+    "webaudio-tinysynth.min.js": { "sha256": "5aa3edbc13371694a83ec0f285a5d39d4e4a31b18a259c0bbdcbd5969f710c2c", "bytes": 37060, "gzip9Bytes": 9444, "gitBlob": "8302a84185a12619ebdf2543eea296fbeee20f3f", "lines": 1, "endsWithNewline": false, "sourceMappingURL": false, "first16": "!function(window", "last8Hex": "7d2874686973293b", "last8": "}(this);", "bytesMod3": 1, "bytesMod9": 7 },
+    "webaudio-tinysynth.min.js.map": { "sha256": "fd7f64190db2152660f4c414b2f4afa4d5392c0483de2b9be3d670bf07995e2d", "bytes": 59637, "gzip9Bytes": 11423, "gitBlob": "f8df3d8bd3d2578ee700f1b194a9ded8c620527a", "keys": ["version", "names", "sources", "mappings", "ignoreList"], "sources": ["webaudio-tinysynth.js"], "file": null, "sourceRoot": null, "sourcesContent": false, "ignoreList": [] }
+  },
+  "rebuild": {
+    "command": "terser webaudio-tinysynth.js --output webaudio-tinysynth.min.js --compress --source-map",
+    "variantA": "cwd = scratch copy of the source; identical argument strings",
+    "variantB": "cwd = worktree; --output <absolute scratch path>/webaudio-tinysynth.min.js",
+    "minJsIdentical": true,
+    "mapIdentical": true,
+    "mapNaming": "terser writes <output>.map next to the output; without --source-map url=... it adds no sourceMappingURL comment and no `file` field; `sources` is the input path as given",
+    "mangleMeasurementOnly": { "flags": "--compress --mangle", "bytes": 35964, "gzip9Bytes": 9199, "deltaBytes": -1096, "deltaGzip9Bytes": -245, "sha256": "a9c47e5c27e0e10ac649cb9a49ac16291e8276d9b2d8dcd08c09a0740c291bd9", "stillDefinesWebAudioTinySynth": true }
+  },
+  "embedding": {
+    "caseInsensitiveCounts": { "</script": [0, 0], "<script": [0, 0], "<!--": [0, 0], "-->": [0, 0], "]]>": [0, 0] },
+    "countsOrder": ["webaudio-tinysynth.js", "webaudio-tinysynth.min.js"],
+    "nonAsciiBytes": [0, 0],
+    "controlBytesOtherThanLfTab": [0, 0],
+    "crBytes": [0, 0, 0],
+    "bom": false,
+    "networkCapableApis": "XMLHttpRequest once (loadMIDIUrl, reached only through loadMIDIUrl()/loadMIDIfromSrc()); no fetch/import()/importScripts/Worker/WebSocket/audioWorklet/document access",
+    "timers": "setInterval x2 (60 ms scheduler started in init(), never cleared; 100 ms ready() poll, cleared when ready); no setTimeout",
+    "randomness": "Math.random x6 (reverb impulse and n0/n1 noise buffers in setAudioContext)",
+    "dataUriProbe": "probe-results/embed-data-uri.jsonl: both builds inline in a data:text/html;base64 page (origin null), all routes aborted: zero requests, no errors, AudioContext running, curTick 0 -> 1200 after 1 s, in all four launch modes"
+  },
+  "upstreamReference": {
+    "commit": "3d75aee4b3f43cbd932265e7d60201fd5b770397",
+    "catFileE": 0,
+    "sha256OfGitShow": "dd2b1d95d64499dfc3c292858e8c2d6525dc0bcdc345a900b7db207dffaae38c",
+    "harnessUPSTREAM_SHA256": "dd2b1d95d64499dfc3c292858e8c2d6525dc0bcdc345a900b7db207dffaae38c",
+    "match": true,
+    "ancestorOfB70ba90": true,
+    "onFirstParentChain": true,
+    "commitsBetween": 14,
+    "fetchDepth0CheckoutReachesIt": true,
+    "depth1Clone": "git show fails; harness exits 1 with 'cannot read the upstream reference with git (shallow clone?)'",
+    "TINYSYNTH_REFERENCE": { "goodCopy": "exit 0 (tempo.js PASS)", "tamperedCopy": "exit 1, 'upstream reference sha256 is d336950e..., expected dd2b1d95...'", "missingFile": "exit 1 with an uncaught ENOENT stack trace (no descriptive message)" }
+  },
+  "suites": {
+    "npmTest": { "exit": 0, "seconds": 44.33 },
+    "differential": { "exit": 0, "seconds": 14.02, "files": 8, "notesPerVariant": 895, "patchChangedFiles": ["ws.mid: first differing _note #4, WebAudio call #444"] },
+    "tempo": { "exit": 0, "seconds": 3.53 },
+    "loopEnd": { "exit": 0, "seconds": 26.64 },
+    "nodeCheck": { "source": 0, "min": 0 }
+  },
+  "browserSmoke": {
+    "command": "PLAYWRIGHT_CORE=<tools>/node_modules/playwright-core LD_LIBRARY_PATH=<tools>/libroot/usr/lib/x86_64-linux-gnu node tests/browser-smoke.js [fixture]",
+    "firstAttempt": "exit 1: chrome-headless-shell could not load libnspr4.so (13 shared libraries missing on this host; no sudo). Libraries were extracted from Ubuntu noble debs into the scratch tools dir (apt-get download with scratch lists; debs.sha256 recorded there).",
+    "ws.mid": { "exit": 0, "bothBuilds": "9/9 checks ok" },
+    "test-midi/all-gm-sounds.mid": { "exit": 0, "bothBuilds": "9/9 checks ok" },
+    "autoplayBypass": "--autoplay-policy=no-user-gesture-required; page via setContent (about:blank). Does not prove user-gesture startup.",
+    "gestureCharacterization": "Without the bypass flag (headless shell, full build new-headless, and explicit --autoplay-policy=document-user-activation-required) the AudioContext was still 'running' immediately after construction; this harness cannot observe the autoplay restriction at all."
+  },
+  "npmAudit": {
+    "lockfile": "none committed (.gitignore lists package-lock.json); audited a scratch copy of the main checkout's untracked lock (sha256 0a583ba9...) and a fresh --package-lock-only resolution; both resolve 269 packages and give identical results",
+    "counts": { "info": 0, "low": 0, "moderate": 5, "high": 9, "critical": 8, "total": 22 },
+    "directPackagesResponsible": { "node-minify@3.6.0": "critical; every one of the 22 advisories is reached through it (fixAvailable: node-minify@3.3.0, semver-major per npm)" },
+    "topLevelTerser": "terser@5.51.2 is not flagged; the flagged terser (<4.8.1, GHSA-4wf5-vphf-c2xc) is node_modules/node-minify/node_modules/terser",
+    "exitCode": 1
+  },
+  "npmPack": {
+    "atB70ba90": { "filename": "webaudio-tinysynth-1.1.4.tgz", "size": 44464, "unpackedSize": 182197, "entryCount": 8, "shasum": "d33e48884d9aa2a1d8473122ad1e297837a81caa",
+      "files": ["LICENSE", "NOTICE", "README.md", "package.json", "test-midi/README.md", "webaudio-tinysynth.js", "webaudio-tinysynth.min.js", "webaudio-tinysynth.min.js.map"] },
+    "note": "Packed from `git archive b70ba90` in scratch. test-midi/README.md is included; any new docs/ directory is included too (observed: packing the worktree with an uncommitted docs/ file added it)."
+  },
+  "issueRevisions": { "checkedAtUtc": "2026-10-03T01:51Z", "method": "gh issue view N --json number,updatedAt,comments,body,state,title; sha256(utf8(body))[:16]", "changedSinceSnapshot": [] }
+}
