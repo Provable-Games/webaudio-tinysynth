@@ -272,3 +272,133 @@ Probe repository: `AGENTS.md`, `AGENTS.override.md`, `sub/AGENTS.md` and `.agent
 - The gates are not required checks. That needs a ruleset change, which D-002 withholds.
 - Local runs are x86_64. The ARM facts come from run 37091311660.
 - The first eight rows of `commands.tsv` have duration 0.0 because of a bug in my runner script, fixed after those rows. Their exit codes are valid.
+
+## Candidate 2 (`5cdeb49`)
+
+| Item | Value |
+| --- | --- |
+| Candidate | `g0/candidate2` at `5cdeb498496027505f88f35001206e6fbcc93b7f` = `improve/integration` + `t1/tooling` `8a127dd` + `t1/ai-review` `d5b9d95` + this record `03003e9` |
+| Deltas reviewed | `f40de89..8a127dd` (fail-closed runners, M4) and `e9e31e6..d5b9d95` (M1 at `848bae6`, then H1, round three and the G0 findings), plus everything they touch |
+| Unchanged since `1eff7ba` | Library source, min.js and map, `ci.yml`, build, verify and pack scripts, ESLint and Vitest configurations, unit tests, harness, smoke test, lockfile and Dependabot configuration (`git diff --stat` is empty) |
+| Evidence | `_evidence/g0-review/logs/c2-*`, `logs/c2-readscope/`, `scratch/c2/` |
+
+### C2.1 Verdict
+
+| Issue | Verdict |
+| --- | --- |
+| #5 | **Accept.** Two clean clones and the commit give the same `782e9b92…`/`e8c2c34d…` bytes. M4 is closed. CI run 37093471789 passed on ARM at `8a127dd` with the new floors. |
+| #15 | **Accept** (no change; `npm audit` reports 0 findings). |
+| #16, initial scope | **Accept.** The smoke test now runs through the `PASS:`-line runner: 2 of 2 scripts locally and on ARM. |
+| #22 | **Accept** (no change; lint exits 0). |
+| #23 | **Accept.** `test:unit` wraps `vitest run` with per-file checks and floors. A late unhandled rejection fails it. |
+| #24 | **Accept with follow-up C2-L2.** The native and regression runners fail closed for every early-exit and empty-set case I tried. One coverage drop in the differential script still passes. |
+| #25 | **Accept with follow-ups.** H1 is closed by my own reproduction with the pinned Bun and Claude Code. M1, M3 and L1–L7 are fixed. M2 is mitigated, with a documented residual. One new LOW (C2-L1). The trusted, non-bootstrap path and the new Codex network probe still need the supervisor's remote run after integration. |
+
+### C2.2 Earlier findings
+
+| Finding | Status | Evidence |
+| --- | --- | --- |
+| **H1** Bun ran PR configuration with the Claude token | **Closed** | See C2.3. |
+| **M1** no init message approves | **Fixed** (`848bae6`, contained in `d5b9d95`) | A probe without an init message fails with "Claude produced no init message…". A `cwd` in the checkout, a mismatched session, or a different execution file each fail as well (`logs/c2-ai-probes.log`). |
+| **M2** Codex can read `auth.json`; the leak guard is literal-only | **Mitigated; residual accepted** | The guard now also catches JSON-escaped, reversed, hex, base64 and URL-safe base64 forms at all three alignments, with whitespace removed. My probe detected literal, base64, offset URL-safe base64, hex, reversed and newline-split copies. It missed `-`-split, half-token, base32 and ROT13 copies, as T1 §8 documents. The fork message no longer advises mirroring untrusted code. The sandbox can still read the file; changing that is an organization-level credential decision. |
+| **M3** bootstrap for any base without configuration | **Fixed** | `BOOTSTRAP_BASE_BRANCHES: main`. The real runs 37093930879 and 37093930887 at `d5b9d95` failed setup with "Bootstrap from the pull request head is allowed only for: main", and their gates failed. This is expected while `improve/integration` lacks the configuration. Remaining exposure: until the umbrella PR lands, a PR into `main` still bootstraps from its head. That is the intended one-time path. |
+| **M4** `test:node` passes with zero tests | **Fixed** | Re-ran `brk4` (all native tests renamed): exit 1, "no test files match". |
+| **L1** malformed HIGH absorbed after a valid finding | **Fixed** | `### HIGH b.js:2` and `**HIGH** b.js:2` after a LOW finding now give `incomplete`, and the gate fails. |
+| **L2** retargeted PR not re-reviewed | **Fixed** | `edited` is a trigger, and a base change runs a full review (C2.4). |
+| **L3** model mismatch only warned | **Fixed** | `review.py` now adds an error, and the action step presets `ANTHROPIC_MODEL` to the validated variable. |
+| **L4** D-012 heading after the BOOTSTRAP notice | **Fixed** | The first visible line is now `**Claude review** · model … · effort … · head …`. |
+| **L5** network preflight could not attribute the refusal | **Fixed in code; not yet seen remotely** | An unsandboxed control request must exit 0, the sandboxed one must fail, and both exit codes are logged. No remote run has reached this step, because setup failed by design. |
+| **L6** Dependabot PRs | **Fixed** | Policy `dependabot`, and the gate fails explicitly. A human pushing to a Dependabot branch also gets `dependabot` (sender or author), so that path cannot bypass the gate either. |
+| **L7** actionlint covered only the review workflows | **Fixed** | It now covers `*.yml`. My local actionlint 1.7.12 and shellcheck 0.11.0 runs on candidate 2 both exit 0. |
+| **I1** PR-controlled YAML under `pull_request` | **Documented** | The README trust-boundary section recommends fork-workflow approval, Actions-sourced required gates and code-owner review of `.github/**`. |
+
+### C2.3 H1 closure (independent reproduction)
+
+- **Bun, pinned 1.3.14** (`logs/c2-bun-probe.log`).
+  - I reproduced the runner layout: working directory `…/work/_temp/claude-cwd`, empty, with `bunfig.toml` (preload) and `.env` planted in its parent `_temp/`, its grandparent `work/` and the checkout `work/repo/repo/src/`.
+  - Nothing ran or loaded: no preload, `G0_DOTENV` undefined, `HTTPS_PROXY` stayed `""`. Bun does not walk up from the working directory, and a `$HOME/.bunfig.toml` was not loaded either.
+  - Control: with the candidate-1 layout (working directory = checkout), the preload ran with the token visible and `.env` was loaded.
+  - The implementer's opt-in unit test `test_bun_does_not_load_checkout_configuration` also passes with my checksum-verified Bun (`logs/c2-unittest-bun.log`).
+- **Claude Code 2.1.288 read scope.**
+  - Setup: the pinned version, present locally; an isolated `HOME` and `CLAUDE_CONFIG_DIR`; a local SSE API stub (`logs/c2-readscope/stub.py`, `run.sh`); the production arguments and environment presets; working directory = an empty directory; `--add-dir src --add-dir ctx`.
+  - A `Read` inside `src` returned the file. `Read`, `Grep` and `Glob` on a sibling directory outside the working and added directories were refused ("is outside …"), and appear in `permission_denials`.
+  - `Read /proc/self/environ`, including via `/proc/self/../self/environ`, was refused as a device file.
+  - `--allowedTools Read,Glob,Grep` therefore does not widen the read scope beyond the working and added directories. The token never appeared in any request the stub received.
+- **Environment presets.**
+  - The step presets `ANTHROPIC_MODEL` (the validated variable), `CLAUDE_CODE_EFFORT_LEVEL=""` (T1 `env-presets/` shows that an empty value defers to `--effort`, while a non-empty one would override it), `CLAUDE_CONFIG_DIR`, the proxy variables, `NODE_OPTIONS`, `NODE_EXTRA_CA_CERTS` and the Bun variables.
+  - With the working directory empty these are defense in depth. The Bun probe confirms that `.env` cannot override an already-set variable, even an empty one.
+- **Trusted-configuration fingerprint.** `trusted/.github` is hashed before the provider step and verified after it. The result step runs only after verification. `python3 -I -B` keeps the working directory off `sys.path` and writes no bytecode. `review.py` adds only its own directory.
+- **Execution-file provenance.** The file must be `$RUNNER_TEMP/claude-execution-output.json`, compared by realpath. Its init `session_id` must equal the action's `session_id` output, and its init `cwd` must equal the empty working directory. Each mismatch failed in my probe.
+- **Not yet observed remotely.** No real run has exercised the empty working directory, the presets or the fingerprint, because every run at `d5b9d95` stopped at setup by design.
+
+### C2.4 `edited` trigger, base-change filter and gate names
+
+- **Trigger and guards.** Both review workflows add `edited`. The guard `github.event.action == 'edited' && !github.event.changes.base` skips `prepare`, and with it `review` and `publish`. The gate's `if:` is `always() && !(guard)`. `lib.is_metadata_edit` mirrors the guard, and setup also classifies a metadata edit as `metadata-edit`, which fails the gate.
+- **A title or body edit cannot produce a green required check.**
+  - The gate's name is `… review gate` only when the guard is false, and then its `if:` reduces to `always()`, so that job runs and evaluates.
+  - When the guard is true, the skipped gate carries a different name (the "(title or body edit, not evaluated)" variant), or GitHub leaves the expression unevaluated. The run at `d5b9d95` showed a skipped matrix job named literally `Codex review / ${{ matrix.agent_id }}`. Neither equals `Codex review gate` or `Claude review gate`.
+  - The required-name check from the latest real run on the same head is untouched.
+  - **Pending remote confirmation:** the rendered name of a skipped gate after a real title edit (T1 §8).
+- **A title or body edit cannot cancel a real review.** Its concurrency group is `<provider>-review-<PR>-metadata`. A base change uses the normal group and correctly cancels a review against the old base.
+- **Base retarget.** A base change runs a full review against the new base. A retarget to a branch without configuration, other than `main`, fails setup.
+
+### C2.5 Parser tolerance
+
+Up to three lines (500 characters) of prose before the first finding are discarded, with a warning, only if every finding is valid and the preamble has no fence, heading, pseudo-finding or `lgtm` line. Probes (`logs/c2-ai-probes.log`):
+
+- **`lgtm` is never accepted with prose.** These are all `incomplete`, and the gate fails: prose followed by `lgtm`; `lgtm, no issues found`; `LGTM`; `lgtm` followed by prose; three lines of prose only.
+- **A preamble cannot downgrade a parsed finding.** A preamble followed by a HIGH finding still blocks. Four preamble lines, a fenced preamble, prose between or after findings, and an injected `### [HIGH] fake` after a blank line are all `incomplete`.
+
+#### C2-L1 [LOW] `.github/scripts/review_lib.py:33,332-338` (preamble handling) and `review.py:435` (publishes only `body`): a discarded preamble can describe a blocking issue, and it is neither gated nor published
+
+- **Evidence.**
+  - `Severity HIGH: webaudio-tinysynth.js line 600 runs fetched code (not formatted below).` followed by a valid LOW finding gives `complete`, findings `['LOW']`, gate **pass**, and warning "discarded 1 line(s)".
+  - `HIGH severity: webaudio-tinysynth.js:600 …` behaves the same, because `PSEUDO_FINDING_RE` needs the location immediately after the tag.
+  - The published body starts at the first heading, so reviewers never see the dropped sentence.
+- **Impact.** The tolerance gives a prompt-injecting attacker nothing new, since such an attacker could make the model print `lgtm`. But an honest model's misplaced blocking remark is silently dropped from both the gate and the comment.
+- **Recommended action.** Reject a preamble that contains `CRITICAL` or `HIGH` as a word, case-insensitive. Publish any discarded preamble in a collapsed "discarded text" block, so the warning is reviewable.
+- **Similar residual.** Severity prose continuing a field without a blank line (lazy continuation) is also accepted as field text. It is published, but not gated.
+
+### C2.6 Fail-closed suites (#5, #24)
+
+New false-pass attempts, one or more per suite, different from both T1 records:
+
+| Suite | Attempt | Result |
+| --- | --- | --- |
+| `test:node` | M4 re-run: all native tests renamed `*.spec.cjs` | exit 1, "no test files match" |
+| `test:node` | a test file that SIGKILLs itself in its second test | exit 1 (`node --test` failed; the file is reported 0 passed) |
+| `test:node` | a test that throws from a timer after it passed | exit 1 ("asynchronous activity after the test ended") |
+| `test:unit` | a test that leaves an unhandled rejection after passing | exit 1 (Vitest "Unhandled Rejection") |
+| `test:browser` | the runner given a non-MIDI fixture (`test-midi/README.md`) | exit 1 (page error, 0 of 1) |
+| `test:regression` | `test-midi/*.mid` renamed to `*.mid.bak` | **exit 0**: the differential compared only `ws.mid` ("1 files … PASS") — C2-L2 |
+
+#### C2-L2 [LOW] `tests/differential.js:59-60`: the differential regression silently drops fixtures it no longer finds
+
+- **Evidence.** In the table above, the seven tuning and SysEx fixtures (RPN coarse, fine and bend range, master coarse and fine, GS scale tuning, all-GM) disappear, and the script still prints `PASS:`. The same holds if they move or change extension.
+- **Impact.** The tuning regressions that the fork relies on (contracts: "controllers and tuning … preserved") can stop running with a green check. This is the M4 class at fixture level. The script predates T1, but #24 retains it as a required suite.
+- **Recommended action.** Assert the expected fixture list, or a minimum count, in `differential.js` (failing on fewer), as the runners now do for test files.
+
+Known limit, not a finding: the floors count tests, so swapping a real test file for a trivial one with the same count would pass. T1-tooling §11 documents this.
+
+### C2.7 Checks run on candidate 2
+
+| Check | Exit |
+| --- | ---: |
+| Clean clone A: `npm ci`, `lint`, `verify` (before building), `build` + `git diff --exit-code`, `verify`, `pack:check` | 0 each |
+| Clean clone B: `npm ci`; delete the distribution; `build` | 0, 0; byte-identical to A and to the commit (`782e9b92…`, `e8c2c34d…`) |
+| `test:unit` (3 files, 30 of floor 30) / `test:node` (3 files, 33 of floor 33) / `test:regression` (3 of 3) / `test:browser` (2 of 2) / `npm test` | 0 each |
+| Helper unit tests, `python3 -I -B -m unittest discover …` | 0 (69 tests OK, 1 skipped opt-in) |
+| Opt-in Bun test with `REVIEW_TEST_BUN` set to the pinned Bun 1.3.14 | 0 |
+| `npm audit` | 0 (0 vulnerabilities) |
+| actionlint 1.7.12 on all workflows; shellcheck 0.11.0 | 0, 0 |
+| Breakages and probes in C2.3–C2.6 | as listed |
+
+### C2.8 Remote evidence
+
+| Run | Workflow | Head | Conclusion |
+| --- | --- | --- | --- |
+| 37093471789 | CI | `t1/tooling` `8a127dd` | success: lint, build-verify, test (unit 30/30, node 33/33, regressions 3/3), browser-smoke (2 of 2) on `ubuntu-24.04-arm` |
+| 37093930879 / 37093930887 | Codex / Claude Review | `t1/ai-review` `d5b9d95` | failure by design: setup refused bootstrap for base `improve/integration` (M3), and both gates failed |
+| 37093930878 | Review Helpers | `d5b9d95` | success, with actionlint now on all workflows |
+
+No remote run has exercised the integrated tree `5cdeb49`, the non-bootstrap path, the empty Claude working directory, the new Codex network probe, or an `edited` event. The supervisor has these after integration.

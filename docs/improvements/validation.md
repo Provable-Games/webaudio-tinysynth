@@ -84,3 +84,46 @@ What the real review runs at `e9e31e6` showed:
 - **Release items are not done.** README release hashes and tags (#5) are release-time actions.
 - **Local runs are x86_64.** The ARM results come from run 37091311660 only.
 - **`commands.tsv` durations.** Its first eight rows show a duration of 0.0 because of a bug in my runner script. Their exit codes are valid.
+
+### Candidate 2 (`5cdeb49`)
+
+Re-review of `g0/candidate2` `5cdeb498496027505f88f35001206e6fbcc93b7f`. Findings and verdicts are in [tasks/G0-review.md, "Candidate 2"](tasks/G0-review.md#candidate-2-5cdeb49). Logs: `_evidence/g0-review/logs/c2-*`.
+
+**Toolchain.** As above, plus Claude Code 2.1.288, the pinned version, already present in `~/.local/share/claude/versions`. It ran with an isolated `HOME` and `CLAUDE_CONFIG_DIR` against a local API stub, with a fake credential and no network.
+
+| Command | Result |
+| --- | --- |
+| Two clean clones at `5cdeb49`: `npm ci`, `lint`, `verify`, `build` (twice, with the distribution deleted in clone B), `git diff --exit-code`, `pack:check`, `npm audit` | all exit 0; 0 vulnerabilities |
+| `test:unit`, `test:node`, `test:regression`, `test:browser`, `npm test` | exit 0: unit 3 files / 30 tests (floor 30), node 3 files / 33 tests (floor 33), regressions 3 of 3, smoke 2 of 2 |
+| Helper unit tests (`python3 -I -B`); opt-in Bun test with the pinned Bun 1.3.14 | 69 OK (1 opt-in skipped); the Bun test OK |
+| actionlint on all workflows; shellcheck | 0, 0 |
+| Bun probe in the runner layout; Claude read-scope probes (Read, Grep, Glob, `/proc/self/environ`) | nothing loaded from the checkout or the parents of the working directory; every read outside the working and added directories refused |
+| False-pass attempts | all failed closed except a renamed-fixture case in `tests/differential.js` (C2-L2, exit 0 with 1 file compared) |
+
+**Artifact identity.** Unchanged from candidate 1:
+
+| File | Bytes | gzip -9 -n | sha256 |
+| --- | --- | --- | --- |
+| `webaudio-tinysynth.min.js` | 36,372 | 9,422 | `782e9b92a8f26f383fc0f8830a6a1e5d4e7dce2d0ab23bf29ab48e06814301b2` |
+| `webaudio-tinysynth.min.js.map` | — | — | `e8c2c34d…` |
+
+Against T0 (37,060 / 9,444, `5aa3edbc…`), min.js is −688 bytes raw and −22 bytes gzip. The library source, the build configuration and the distribution are byte-unchanged since `1eff7ba`.
+
+**Remote runs.**
+
+| Run | Workflow | Head | Conclusion |
+| --- | --- | --- | --- |
+| 37093471789 | CI | `8a127dd` | success on `ubuntu-24.04-arm` |
+| 37093930879, 37093930887 | Codex, Claude Review | `d5b9d95` | failure by design: bootstrap refused for base `improve/integration`, as M3 requires |
+| 37093930878 | Review Helpers | `d5b9d95` | success |
+
+**Limitations (candidate 2).**
+- **No remote run of the integrated tree.** None of these has run remotely:
+  - the trusted (non-bootstrap) review path;
+  - the empty Claude working directory with the environment presets and the fingerprint check;
+  - the new Codex network control probe on ARM;
+  - an `edited` event, including the rendered name of a skipped gate.
+
+  The supervisor will verify these after integration.
+- **Claude probes were local.** They used the pinned CLI directly with the production arguments, not the base action's SDK path.
+- **Unchanged limitations.** The gates are still not required checks (D-002), and the local host is x86_64.
