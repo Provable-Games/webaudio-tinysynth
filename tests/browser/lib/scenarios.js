@@ -64,103 +64,119 @@ function ampOver(x, sr, t0, t1) {
 
 const SCENARIOS = [];
 
-/* ---- pitch ---- */
+/*
+ * ---- pitch, tuning, bend, modulation ----
+ * Each note is an item rendered alone (a fresh synth and OfflineAudioContext),
+ * so no other note's release tail can be measured in its window: with voice
+ * pruning stopped, an earlier note on the same pitch would otherwise satisfy
+ * a pitch check for a silent note. Every measured window must also carry the
+ * note's own energy (amplitude >= noteAmpMin); the only other sound in an
+ * item render is the constructor's velocity-1 warm-up note, orders of
+ * magnitude below that.
+ */
+const NOTE_ON = 0.25;
+const noteSpec = (steps, duration, timbres = [[0, 0, sine()]]) => ({ duration, masterVol: LEVEL, timbres, steps, pcm: "L" });
+function windowCheck(x, sr, w, expectedHz) {
+  return Object.assign(pitchCheck(w.name, notePitch(x, sr, w.t0, w.t1, expectedHz), expectedHz), { amp: ampOver(x, sr, w.t0, w.t1) });
+}
+function verifyPitches(list, tol, check, describe) {
+  for (const p of list) {
+    if (!check(p.name + ": the note sounds in its own render (amplitude >= " + tol.noteAmpMin + ")", p.amp >= tol.noteAmpMin, p.amp.toExponential(3))) continue;
+    check(describe(p), Math.abs(p.cents) <= tol.pitchCents, p.measuredHz.toFixed(4) + " Hz, " + p.cents.toFixed(4) + " cents, tol " + tol.pitchCents);
+  }
+}
 {
   const notes = [45, 57, 60, 69, 81, 93];
-  const steps = [];
-  notes.forEach((n, i) => { const t = 0.5 + i * 0.7; steps.push(on(0, n, t), off(0, n, t + 0.55)); });
   SCENARIOS.push({
-    name: "pitch-sine", about: "sine notes A2..A6 against 12-TET",
-    spec: { duration: 0.5 + notes.length * 0.7 + 0.2, masterVol: LEVEL, timbres: [[0, 0, sine()]], steps, pcm: "L" },
-    analyze: ([x], sr) => ({ notes: notes.map((n, i) => { const t = 0.5 + i * 0.7; return pitchCheck("note " + n, notePitch(x, sr, t + 0.1, t + 0.5, A.midiHz(n)), A.midiHz(n)); }) }),
-    verify: (m, tol, check) => { for (const p of m.notes) check(p.name + " " + p.expectedHz.toFixed(3) + " Hz", Math.abs(p.cents) <= tol.pitchCents, p.measuredHz.toFixed(4) + " Hz, " + p.cents.toFixed(4) + " cents, tol " + tol.pitchCents); },
+    name: "pitch-sine", about: "sine notes A2..A6 against 12-TET, each rendered alone",
+    items: notes.map((n) => ({ label: "note " + n, spec: noteSpec([on(0, n, NOTE_ON), off(0, n, NOTE_ON + 0.55)], 0.9), slot: [NOTE_ON + 0.1, NOTE_ON + 0.5] })),
+    analyzeItems: (chs, sr) => ({ notes: notes.map((n, i) => windowCheck(chs[i][0], sr, { name: "note " + n, t0: NOTE_ON + 0.1, t1: NOTE_ON + 0.5 }, A.midiHz(n))) }),
+    verify: (m, tol, check) => verifyPitches(m.notes, tol, check, (p) => p.name + " " + p.expectedHz.toFixed(3) + " Hz"),
   });
 }
 {
   const waves = ["square", "sawtooth", "triangle", "w9999"];
-  const steps = [];
-  const timbres = waves.map((w, i) => [0, i, sine({ w })]);
-  waves.forEach((w, i) => { const t = 0.5 + i * 0.7; steps.push({ call: "setProgram", args: [i, i] }, on(i, 69, t), off(i, 69, t + 0.55)); });
   SCENARIOS.push({
-    name: "pitch-waves", about: "A4 with each built-in oscillator waveform",
-    spec: { duration: 0.5 + waves.length * 0.7 + 0.2, masterVol: LEVEL, timbres, steps, pcm: "L" },
-    analyze: ([x], sr) => ({ notes: waves.map((w, i) => { const t = 0.5 + i * 0.7; return pitchCheck(w, notePitch(x, sr, t + 0.1, t + 0.5, 440), 440); }) }),
-    verify: (m, tol, check) => { for (const p of m.notes) check(p.name + " A4 fundamental", Math.abs(p.cents) <= tol.pitchCents, p.measuredHz.toFixed(4) + " Hz, " + p.cents.toFixed(4) + " cents"); },
+    name: "pitch-waves", about: "A4 with each built-in oscillator waveform, each rendered alone",
+    items: waves.map((w) => ({ label: w, spec: noteSpec([on(0, 69, NOTE_ON), off(0, 69, NOTE_ON + 0.55)], 0.9, [[0, 0, sine({ w })]]), slot: [NOTE_ON + 0.1, NOTE_ON + 0.5] })),
+    analyzeItems: (chs, sr) => ({ notes: waves.map((w, i) => windowCheck(chs[i][0], sr, { name: w, t0: NOTE_ON + 0.1, t1: NOTE_ON + 0.5 }, 440)) }),
+    verify: (m, tol, check) => verifyPitches(m.notes, tol, check, (p) => p.name + " A4 fundamental"),
   });
 }
 
 /* ---- tuning (RPN, Universal and GS SysEx) ---- */
 {
   // GS part number -> MIDI channel: part 0x10 is channel 10 (rhythm), 0x11..0x19 channels 1..9.
+  // Each case starts from a fresh synth, so it sends every message its expectation depends on.
+  const scaleA = gs([0x40, 0x18, 0x49], [94]);
   const cases = [
     { name: "RPN 1 fine +50", ch: 0, pre: rpn(0, 1, 0x60), cents: fine14(0x60) },
     { name: "RPN 1 fine -25", ch: 1, pre: rpn(1, 1, 48), cents: fine14(48) },
     { name: "RPN 1 fine with LSB +0.78", ch: 2, pre: rpn(2, 1, 0x40, 0x40), cents: fine14(0x40, 0x40) },
     { name: "RPN 2 coarse +2", ch: 3, pre: rpn(3, 2, 66), cents: 200 },
     { name: "RPN 2 coarse -12", ch: 4, pre: rpn(4, 2, 52), cents: -1200 },
-    { name: "Universal master fine -25", ch: 5, pre: [universal(3, 0, 48)], post: [universal(3, 0, 64)], cents: fine14(48) },
-    { name: "Universal master coarse +1", ch: 5, pre: [universal(4, 0, 65)], post: [universal(4, 0, 64)], cents: 100 },
-    { name: "GS master tune +10.0", ch: 6, pre: [gs([0x40, 0x00, 0x00], [0, 4, 6, 4])], post: [gs([0x40, 0x00, 0x00], [0, 4, 0, 0])], cents: (0x464 - 0x400) / 10 },
-    { name: "GS master transpose +3", ch: 6, pre: [gs([0x40, 0x00, 0x05], [0x43])], post: [gs([0x40, 0x00, 0x05], [0x40])], cents: 300 },
-    { name: "GS scale tuning A +30 (part 8)", ch: 7, pre: [gs([0x40, 0x18, 0x49], [94])], cents: 94 - 64 },
-    { name: "GS scale tuning C -20 does not touch A", ch: 7, pre: [gs([0x40, 0x18, 0x40], [44])], cents: 30 },
-    { name: "RPN coarse +1, fine +50, master fine -25", ch: 8, pre: [...rpn(8, 2, 65), ...rpn(8, 1, 0x60), universal(3, 0, 48)], post: [universal(3, 0, 64)], cents: 100 + 50 - 25 },
+    { name: "Universal master fine -25", ch: 5, pre: [universal(3, 0, 48)], cents: fine14(48) },
+    { name: "Universal master coarse +1", ch: 5, pre: [universal(4, 0, 65)], cents: 100 },
+    { name: "GS master tune +10.0", ch: 6, pre: [gs([0x40, 0x00, 0x00], [0, 4, 6, 4])], cents: (0x464 - 0x400) / 10 },
+    { name: "GS master transpose +3", ch: 6, pre: [gs([0x40, 0x00, 0x05], [0x43])], cents: 300 },
+    { name: "GS scale tuning A +30 (part 8)", ch: 7, pre: [scaleA], cents: 94 - 64 },
+    { name: "GS scale tuning C -20 does not touch A", ch: 7, pre: [scaleA, gs([0x40, 0x18, 0x40], [44])], cents: 30 },
+    { name: "RPN coarse +1, fine +50, master fine -25", ch: 8, pre: [...rpn(8, 2, 65), ...rpn(8, 1, 0x60), universal(3, 0, 48)], cents: 100 + 50 - 25 },
   ];
-  const steps = [];
-  cases.forEach((c, i) => {
-    const t = 0.5 + i * 0.7;
-    steps.push(...c.pre, on(c.ch, 69, t), off(c.ch, 69, t + 0.55), ...(c.post || []));
-  });
   SCENARIOS.push({
-    name: "tuning", about: "RPN fine/coarse, Universal master fine/coarse, GS master tune/transpose/scale tuning on A4",
-    spec: { duration: 0.5 + cases.length * 0.7 + 0.2, masterVol: LEVEL, timbres: [[0, 0, sine()]], steps, pcm: "L" },
-    analyze: ([x], sr) => ({ notes: cases.map((c, i) => { const t = 0.5 + i * 0.7; const f = 440 * Math.pow(2, c.cents / 1200); return Object.assign(pitchCheck(c.name, notePitch(x, sr, t + 0.1, t + 0.5, f), f), { expectedCents: c.cents }); }) }),
-    verify: (m, tol, check) => { for (const p of m.notes) check(p.name + " (" + p.expectedCents.toFixed(3) + " cents)", Math.abs(p.cents) <= tol.pitchCents, p.measuredHz.toFixed(4) + " Hz, error " + p.cents.toFixed(4) + " cents"); },
+    name: "tuning", about: "RPN fine/coarse, Universal master fine/coarse, GS master tune/transpose/scale tuning on A4, each rendered alone",
+    items: cases.map((c) => ({ label: c.name, spec: noteSpec([...c.pre, on(c.ch, 69, NOTE_ON), off(c.ch, 69, NOTE_ON + 0.55)], 0.9), slot: [NOTE_ON + 0.1, NOTE_ON + 0.5] })),
+    analyzeItems: (chs, sr) => ({
+      notes: cases.map((c, i) => Object.assign(windowCheck(chs[i][0], sr, { name: c.name, t0: NOTE_ON + 0.1, t1: NOTE_ON + 0.5 }, 440 * Math.pow(2, c.cents / 1200)), { expectedCents: c.cents })),
+    }),
+    verify: (m, tol, check) => verifyPitches(m.notes, tol, check, (p) => p.name + " (" + p.expectedCents.toFixed(3) + " cents)"),
   });
 }
 
 /* ---- pitch bend ---- */
 {
   const bendCents = (value, range = 256) => (value - 8192) * range * BEND_UNIT_CENTS / 8192;
-  const steps = [
-    { send: [0xe0, 0x7f, 0x7f], t: 0 }, on(0, 69, 0.5), off(0, 69, 1.05),
-    on(1, 69, 1.2), { send: [0xe1, 0x00, 0x20], t: 1.5 }, off(1, 69, 1.85),
-    ...rpn(2, 0, 12, 0), { send: [0xe2, 0x7f, 0x7f], t: 0 }, on(2, 69, 2.0), off(2, 69, 2.55),
-  ];
-  const parts = [
-    { name: "bend +8191 before the note (default range)", t0: 0.6, t1: 1.0, cents: bendCents(16383), midiCents: 8191 / 8192 * 200 },
-    { name: "before a mid-note bend", t0: 1.25, t1: 1.48, cents: 0, midiCents: 0 },
-    { name: "after a mid-note bend to 4096", t0: 1.55, t1: 1.8, cents: bendCents(4096), midiCents: -100 },
-    { name: "RPN 0 range 12 semitones, bend +8191", t0: 2.1, t1: 2.5, cents: bendCents(16383, 12 * 128), midiCents: 8191 / 8192 * 1200 },
+  const items = [
+    { label: "bend before the note", steps: [{ send: [0xe0, 0x7f, 0x7f], t: 0 }, on(0, 69, NOTE_ON), off(0, 69, NOTE_ON + 0.55)],
+      windows: [{ name: "bend +8191 before the note (default range)", t0: NOTE_ON + 0.1, t1: NOTE_ON + 0.5, cents: bendCents(16383), midiCents: 8191 / 8192 * 200 }] },
+    { label: "mid-note bend", steps: [on(0, 69, NOTE_ON), { send: [0xe0, 0x00, 0x20], t: NOTE_ON + 0.3 }, off(0, 69, NOTE_ON + 0.65)],
+      windows: [{ name: "before a mid-note bend", t0: NOTE_ON + 0.05, t1: NOTE_ON + 0.28, cents: 0, midiCents: 0 },
+        { name: "after a mid-note bend to 4096", t0: NOTE_ON + 0.35, t1: NOTE_ON + 0.6, cents: bendCents(4096), midiCents: -100 }] },
+    { label: "RPN 0 range 12", steps: [...rpn(0, 0, 12, 0), { send: [0xe0, 0x7f, 0x7f], t: 0 }, on(0, 69, NOTE_ON), off(0, 69, NOTE_ON + 0.55)],
+      windows: [{ name: "RPN 0 range 12 semitones, bend +8191", t0: NOTE_ON + 0.1, t1: NOTE_ON + 0.5, cents: bendCents(16383, 12 * 128), midiCents: 8191 / 8192 * 1200 }] },
   ];
   SCENARIOS.push({
-    name: "bend", about: "pitch bend before and during a note, and with an RPN 0 bend range",
-    spec: { duration: 2.8, masterVol: LEVEL, timbres: [[0, 0, sine()]], steps, pcm: "L" },
-    analyze: ([x], sr) => ({ parts: parts.map((p) => { const f = 440 * Math.pow(2, p.cents / 1200); return Object.assign(pitchCheck(p.name, notePitch(x, sr, p.t0, p.t1, f), f), { expectedCents: p.cents, midiCents: p.midiCents }); }) }),
-    verify: (m, tol, check) => { for (const p of m.parts) check(p.name + " (" + p.expectedCents.toFixed(3) + " cents; MIDI unit would give " + p.midiCents.toFixed(3) + ")", Math.abs(p.cents) <= tol.pitchCents, "error " + p.cents.toFixed(4) + " cents"); },
+    name: "bend", about: "pitch bend before and during a note, and with an RPN 0 bend range, each note rendered alone",
+    items: items.map((it) => ({ label: it.label, spec: noteSpec(it.steps, 1.0), slot: [it.windows[0].t0, it.windows[it.windows.length - 1].t1] })),
+    analyzeItems: (chs, sr) => ({
+      parts: items.flatMap((it, i) => it.windows.map((w) => Object.assign(windowCheck(chs[i][0], sr, w, 440 * Math.pow(2, w.cents / 1200)), { expectedCents: w.cents, midiCents: w.midiCents }))),
+    }),
+    verify: (m, tol, check) => verifyPitches(m.parts, tol, check, (p) => p.name + " (" + p.expectedCents.toFixed(3) + " cents; MIDI unit would give " + p.midiCents.toFixed(3) + ")"),
   });
 }
 
 /* ---- modulation (vibrato) ---- */
 {
-  const steps = [cc(0, 1, 127), on(0, 69, 0.5), off(0, 69, 2.5), cc(1, 1, 64), on(1, 69, 2.7), off(1, 69, 4.7)];
-  const parts = [{ name: "CC1 127", t0: 0.7, t1: 2.4, depth: 127 * 100 / 127 }, { name: "CC1 64", t0: 2.9, t1: 4.6, depth: 64 * 100 / 127 }];
+  const parts = [{ name: "CC1 127", value: 127, depth: 127 * 100 / 127 }, { name: "CC1 64", value: 64, depth: 64 * 100 / 127 }];
+  const T0 = NOTE_ON + 0.2, T1 = NOTE_ON + 1.9;
   SCENARIOS.push({
-    name: "modulation", about: "CC1 vibrato depth and rate on a sine A4",
-    spec: { duration: 4.9, masterVol: LEVEL, timbres: [[0, 0, sine()]], steps, pcm: "L" },
-    analyze: ([x], sr) => ({
-      parts: parts.map((p) => {
-        const zc = A.zeroCrossingFrequencies(x, sr, { start: p.t0, duration: p.t1 - p.t0 });
+    name: "modulation", about: "CC1 vibrato depth and rate on a sine A4, each note rendered alone",
+    items: parts.map((p) => ({ label: p.name, spec: noteSpec([cc(0, 1, p.value), on(0, 69, NOTE_ON), off(0, 69, NOTE_ON + 2.0)], 2.4), slot: [T0, T1] })),
+    analyzeItems: (chs, sr) => ({
+      parts: parts.map((p, i) => {
+        const x = chs[i][0];
+        const zc = A.zeroCrossingFrequencies(x, sr, { start: T0, duration: T1 - T0 });
         const dev = zc.map((z) => A.cents(z.freq, 440));
         const depth = (Math.max(...dev) - Math.min(...dev)) / 2;
         const mid = (Math.max(...dev) + Math.min(...dev)) / 2;
         const ups = [];
-        for (let i = 1; i < dev.length; ++i) if (dev[i - 1] < mid && dev[i] >= mid) ups.push(zc[i - 1].t + (mid - dev[i - 1]) / (dev[i] - dev[i - 1]) * (zc[i].t - zc[i - 1].t));
-        return { name: p.name, expectedDepth: p.depth, depth, centre: mid, rate: (ups.length - 1) / (ups[ups.length - 1] - ups[0]) };
+        for (let k = 1; k < dev.length; ++k) if (dev[k - 1] < mid && dev[k] >= mid) ups.push(zc[k - 1].t + (mid - dev[k - 1]) / (dev[k] - dev[k - 1]) * (zc[k].t - zc[k - 1].t));
+        return { name: p.name, amp: ampOver(x, sr, T0, T1), expectedDepth: p.depth, depth, centre: mid, rate: (ups.length - 1) / (ups[ups.length - 1] - ups[0]) };
       }),
     }),
     verify: (m, tol, check) => {
       for (const p of m.parts) {
+        if (!check(p.name + ": the note sounds in its own render (amplitude >= " + tol.noteAmpMin + ")", p.amp >= tol.noteAmpMin, p.amp.toExponential(3))) continue;
         check(p.name + " depth " + p.expectedDepth.toFixed(2) + " cents", Math.abs(p.depth - p.expectedDepth) <= tol.vibratoDepthCents, p.depth.toFixed(3) + " cents");
         check(p.name + " centred on A4", Math.abs(p.centre) <= tol.vibratoDepthCents, p.centre.toFixed(3) + " cents");
         check(p.name + " rate " + LFO_HZ + " Hz", Math.abs(p.rate - LFO_HZ) <= tol.vibratoRateHz, p.rate.toFixed(3) + " Hz");
