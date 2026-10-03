@@ -30,6 +30,14 @@ FINDING_LIKE_RE = re.compile(r"^#{1,6}\s*\[")
 FIELD_RE = re.compile(r"^- \*\*(" + "|".join(re.escape(f) for f in FINDING_FIELDS) + r"):\*\*(.*)$")
 
 
+CODEX_AUTH_FAILURE = ("Codex authentication failed: the org secret CODEX_AUTH_DOT_JSON needs to be refreshed "
+                      "(or switch to an API-key credential)")
+# Authentication signatures printed by the pinned Codex CLI: its refresh-failure
+# messages (codex-rs/login/src/auth/manager.rs at rust-v0.160.0) and HTTP 401.
+CODEX_AUTH_RE = re.compile(r"Your access token could not be refreshed|Please (log out and )?sign in again"
+                           r"|\b401 Unauthorized\b")
+
+
 class ReviewError(Exception):
     """A configuration, input or detection problem. Messages are safe to print."""
 
@@ -144,6 +152,14 @@ def resolve_settings(provider, config, env):
     if errors:
         raise ReviewError("; ".join(errors))
     return {"model": model, "effort": effort, "model_variable": model_var, "effort_variable": effort_var}
+
+
+def classify_codex_failure(exit_code, log):
+    """Explain a nonzero Codex exit. The log is matched, never quoted."""
+    if CODEX_AUTH_RE.search(log or ""):
+        return CODEX_AUTH_FAILURE
+    return (f"the Codex CLI exited with status {exit_code}; if its log shows an authentication error, "
+            "the org secret CODEX_AUTH_DOT_JSON may need to be refreshed")
 
 
 def codex_argv(settings, workdir, output_file):

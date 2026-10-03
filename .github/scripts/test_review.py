@@ -469,7 +469,7 @@ class PromptTests(Workspace):
 
 class ResultTests(Workspace):
     def codex_result(self, *, exit_code="0", review="lgtm", header=("fixture-codex-model", "medium"),
-                     env=None, auth_file=None):
+                     env=None, auth_file=None, log_extra=""):
         run = self.dir / f"run-{len(list(self.dir.glob('run-*')))}"
         run.mkdir()
         if exit_code is not None:
@@ -479,7 +479,7 @@ class ResultTests(Workspace):
         log = "OpenAI Codex\n--------\n"
         if header:
             log += f"model: {header[0]}\nprovider: openai\nreasoning effort: {header[1]}\n"
-        (run / "codex.log").write_text(log)
+        (run / "codex.log").write_text(log + log_extra)
         out = run / "out"
         completed = self.review(
             "result", "--config-root", ROOT, "--provider", "codex", "--event", self.make_event(),
@@ -528,6 +528,43 @@ class ResultTests(Workspace):
         result, _, _ = self.codex_result(review="Summary first.\n" + finding())
         self.assertEqual(result["status"], "incomplete")
 
+    def test_codex_authentication_failures_are_actionable(self):
+        # Messages from codex-rs/login/src/auth/manager.rs at rust-v0.160.0, and a 401
+        # line as Codex 0.160.0 printed it locally with an invalid auth.json.
+        auth_logs = [
+            "Your access token could not be refreshed because your refresh token has expired. "
+            "Please log out and sign in again.",
+            "Your access token could not be refreshed because your refresh token was already used. "
+            "Please log out and sign in again.",
+            "Your access token could not be refreshed. Please log out and sign in again.",
+            "Your access token could not be refreshed because you have since logged out or signed in to another "
+            "account. Please sign in again.",
+            "ERROR: unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, "
+            "url: https://api.openai.com/v1/responses",
+        ]
+        for log in auth_logs:
+            with self.subTest(log=log[:50]):
+                self.assertEqual(lib.classify_codex_failure("1", log), lib.CODEX_AUTH_FAILURE)
+                result, _, _ = self.codex_result(exit_code="1", review="lgtm", log_extra=log + "\n")
+                self.assertEqual(result["status"], "failed")
+                self.assertIn(lib.CODEX_AUTH_FAILURE, result["errors"])
+                passed, messages = lib.evaluate_gate(
+                    policy="review", upstream=dict.fromkeys(("prepare", "review", "publish"), "success"),
+                    expected=[("codex", "tinysynth")], results={("codex", "tinysynth"): result},
+                    event_head="b" * 40, event_base="a" * 40, blocking_severities=["HIGH"])
+                self.assertFalse(passed)
+                self.assertIn("Codex authentication failed: the org secret CODEX_AUTH_DOT_JSON needs to be "
+                              "refreshed (or switch to an API-key credential)", " ".join(messages))
+        for log in ("ERROR: unexpected status 429 Too Many Requests", "thread 'main' panicked", "4010 Unauthorizedx", ""):
+            with self.subTest(log=log):
+                message = lib.classify_codex_failure("101", log)
+                self.assertNotEqual(message, lib.CODEX_AUTH_FAILURE)
+                self.assertIn("exited with status 101", message)
+                self.assertIn("CODEX_AUTH_DOT_JSON may need to be refreshed", message)
+        result, _, completed = self.codex_result(exit_code="1", log_extra=auth_logs[0] + "\n")
+        for secret in SECRETS_ENV.values():
+            self.assertNotIn(secret, json.dumps(result) + completed.stdout)
+
     def test_credentials_in_output_are_withheld(self):
         refreshed = self.dir / "auth.json"
         refreshed.write_text(json.dumps({"tokens": {"refresh_token": "refreshed-token-abcdefghijklmnop"}}))
@@ -564,6 +601,8 @@ class ResultTests(Workspace):
             "shell tool available": ([init | {"tools": ["Read", "Bash"]}, ok], {}),
             "MCP tool available": ([init | {"tools": ["Read", "mcp__github__add_comment"]}, ok], {}),
             "tool set not reported": ([{k: v for k, v in init.items() if k != "tools"}, ok], {}),
+            "success without init": ([ok], {}),
+            "success without init after assistant lgtm": ([assistant, ok], {}),
         }
         for name, (messages, kwargs) in failures.items():
             with self.subTest(name):
@@ -589,6 +628,18 @@ class ResultTests(Workspace):
                                            f"head `{'b' * 12}`")
                     headings.add(line)
         self.assertEqual(len(headings), 4)
+
+    def test_success_without_init_cannot_pass_the_gate(self):
+        ok = {"type": "result", "subtype": "success", "is_error": False, "result": "lgtm"}
+        result = self.claude_result([ok])
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("no init message", " ".join(result["errors"]))
+        passed, messages = lib.evaluate_gate(
+            policy="review", upstream=dict.fromkeys(("prepare", "review", "publish"), "success"),
+            expected=[("claude", "tinysynth")], results={("claude", "tinysynth"): result},
+            event_head="b" * 40, event_base="a" * 40, blocking_severities=["HIGH"])
+        self.assertFalse(passed)
+        self.assertIn("no init message", " ".join(messages))
 
     def test_require_complete(self):
         for status, code in (("complete", 0), ("incomplete", 1), ("failed", 1)):

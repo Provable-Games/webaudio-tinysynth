@@ -23,7 +23,7 @@ the pull request; section 6 lists what that run must confirm.
 | `.github/scripts/review_lib.py`, `review.py` | Configuration and settings validation, change detection, prompt building, result parsing, credential guard, comment rendering, upsert and gate |
 | `.github/scripts/run-codex-review.sh` | Runs the pinned Codex CLI with a minimal environment |
 | `.github/scripts/codex-cli/package.json`, `package-lock.json` | Codex CLI pin `@openai/codex` 0.160.0 with integrity hashes. The root `.gitignore` matches `package-lock.json`, so the lockfile was added with `git add -f`; once T1 tooling removes that entry, nothing changes. |
-| `.github/scripts/test_review.py` | 52 `unittest` tests |
+| `.github/scripts/test_review.py` | 54 `unittest` tests |
 | `.github/scripts/.gitignore` | Ignores `__pycache__/` |
 | `.github/workflows/codex-review.yml`, `claude-review.yml` | Jobs `prepare` → `review` (matrix) → `publish` → `gate` per provider |
 | `.github/workflows/review-helpers.yml` | Runs the tests, shellcheck and a pinned, checksum-verified actionlint on the review workflows |
@@ -54,7 +54,7 @@ No file outside `.github/` and this record changed.
 
 | Command | Result |
 | --- | --- |
-| `python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v` (Python 3.12.3) | 52 tests OK after the follow-ups (`_evidence/t1-ai-review/unittest.log`) |
+| `python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v` (Python 3.12.3) | 54 tests OK after the follow-ups (`_evidence/t1-ai-review/unittest.log`) |
 | `actionlint` 1.7.12 linux_amd64 (sha256 `8aca8db9…` verified against the release `checksums.txt`) on `.github/workflows/*review*.yml`, with shellcheck on PATH | exit 0 |
 | `shellcheck` 0.11.0 (asset digest `sha256:8c3be12b…` verified against the GitHub release) on `.github/scripts/*.sh` | exit 0 |
 | Mutation checks on a scratch copy: removing fence tracking, the bot identity match, the Claude `--effort` flag, the stale check, the partial-output rule, the fork failure, the Codex header check, the credential guard or the Claude tool-set check | each made the suite fail |
@@ -250,6 +250,38 @@ Tests: `PublishTests.test_a_comment_quoting_another_marker_is_not_owned` (only
 the genuine Codex comment is patched; nothing is deleted) and
 `test_ownership_requires_the_exact_first_line`. Reverting to a substring match
 fails four tests.
+
+## 6c. Follow-up: Claude init requirement and Codex authentication failures
+
+The rerun at `e9e31e6` passed and updated both comments in place. Two new
+MEDIUM findings are fixed here.
+
+- **Claude without init (Codex finding).** A transcript with a successful
+  `result` but no `system/init` message skipped the working-directory and
+  tool-set checks. `claude_execution` now fails when the init message is
+  missing, or when no expected working directory was given. Tests:
+  `ResultTests.test_success_without_init_cannot_pass_the_gate` and the
+  `success without init` cases in `test_claude_final_result_extraction`. Making
+  init optional again fails three tests.
+- **Codex credential lifetime (Claude finding).** `CODEX_AUTH_DOT_JSON` is
+  ChatGPT-mode auth, and refreshed tokens are discarded after each run. The
+  secret is organization-managed and shared, so the workflow neither writes
+  secrets nor adds an API-key path. `review_lib.classify_codex_failure` instead
+  turns an authentication failure into "Codex authentication failed: the org
+  secret CODEX_AUTH_DOT_JSON needs to be refreshed (or switch to an API-key
+  credential)". This message reaches the comment and the gate. Signatures: the
+  refresh-failure messages in `codex-rs/login/src/auth/manager.rs` at
+  `rust-v0.160.0` (`REFRESH_TOKEN_*_MESSAGE`, all "Your access token could not
+  be refreshed…", "…sign in again") and HTTP `401 Unauthorized`. The real 0.160.0
+  log from an invalid `auth.json` is classified correctly
+  (`_evidence/t1-ai-review/auth-errors/`). Other nonzero exits keep the exit
+  status and add a hint to check the secret. The log itself is never quoted.
+  Test: `ResultTests.test_codex_authentication_failures_are_actionable`, which
+  covers each refresh message, the 401 line, non-auth failures, the gate
+  message and the absence of secrets. Disabling the classifier fails five
+  tests. The README documents the credential-lifetime dependency. Persisting
+  refreshed tokens, or an API-key credential, is an organization-level
+  decision.
 
 ## 7. Recommendations (not performed)
 

@@ -64,6 +64,28 @@ Validation happens before any paid run, and errors name the variable:
   result step requires the CLI header to show exactly the configured `model:`
   and `reasoning effort:`, which proves what was sent.
 
+### Codex credential lifetime
+
+`CODEX_AUTH_DOT_JSON` is a ChatGPT-mode `auth.json` with an access token and a
+refresh token. It is organization-managed and shared with other repositories.
+Each run writes it to a fresh `CODEX_HOME`. Codex may refresh the tokens during
+the run, but the workflow discards that file afterwards and never writes
+secrets. If the refresh token expires, is revoked, or rotates when used
+elsewhere, the stored secret goes stale and every Codex review fails until an
+organization admin replaces it.
+
+The failure is explicit. The review comment reads "Review not completed: Codex
+authentication failed: the org secret CODEX_AUTH_DOT_JSON needs to be refreshed
+(or switch to an API-key credential)", and the `Codex review gate` fails with
+the same message. The result step recognizes the pinned CLI's refresh-failure
+messages ("Your access token could not be refreshed…", "Please log out and sign
+in again") and HTTP `401 Unauthorized`. Any other CLI failure reports its exit
+status with a hint to check the secret. The log is printed only when it contains
+no credential value.
+
+Persisting refreshed tokens back into the secret, or switching to an API-key
+credential, is an organization-level decision. These workflows do neither.
+
 ## Pins
 
 Each pin has one place:
@@ -91,6 +113,8 @@ All jobs run on `ubuntu-24.04-arm`. Both CLIs publish linux-arm64 builds.
 | No changed files (git and GitHub agree) | Passes with an explicit skip notice |
 | Git finds no changes but GitHub reports some | Fails: a detection failure is not an empty diff |
 | Missing or invalid variable, missing secret | Fails, naming the variable or secret |
+| Expired, revoked or rejected Codex credential | Fails with "Codex authentication failed: the org secret CODEX_AUTH_DOT_JSON needs to be refreshed (or switch to an API-key credential)" |
+| Claude transcript without an init message, or with a different working directory or a non-read-only tool | Fails; a final result alone is never accepted |
 | CLI failure, cancellation, timeout, missing or blank output | Fails. Partial output from a failed run is discarded, even `lgtm`. |
 | Output that is not exactly `lgtm`, valid findings, or `Review incomplete: …` | Fails as incomplete; the raw text is shown in the comment |
 | Output containing a credential value | Fails; the output is withheld |

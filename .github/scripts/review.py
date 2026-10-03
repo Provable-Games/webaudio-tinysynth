@@ -291,7 +291,7 @@ def codex_execution(args, settings, errors):
         errors.append("the Codex CLI did not run")
         return None, None, log
     if exit_code != "0":
-        errors.append(f"the Codex CLI exited with status {exit_code}")
+        errors.append(lib.classify_codex_failure(exit_code, log))
     header = {}
     for line in log.splitlines():  # the header follows any startup errors
         for key in ("model", "reasoning effort"):
@@ -329,8 +329,14 @@ def claude_execution(args, errors):
                  and m.get("subtype") == "init"), None)
     resolved = init.get("model") if isinstance(init, dict) else None
     permission_mode = init.get("permissionMode") if isinstance(init, dict) else None
-    if isinstance(init, dict):
-        if args.expected_cwd and init.get("cwd") != args.expected_cwd:
+    # No result is accepted unless the init message proves where Claude ran and
+    # that it had read-only tools.
+    if not isinstance(init, dict):
+        errors.append("Claude produced no init message, so its working directory and tool set are unverified")
+    else:
+        if not args.expected_cwd:
+            errors.append("no expected working directory was given, so Claude's working directory is unverified")
+        elif init.get("cwd") != args.expected_cwd:
             errors.append(f"Claude ran in {init.get('cwd')!r}, not the pull request checkout {args.expected_cwd!r}")
         tools = init.get("tools")
         if not isinstance(tools, list):
