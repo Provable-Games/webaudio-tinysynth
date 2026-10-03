@@ -307,23 +307,23 @@ function parent() {
 
       test("a zero-duration default loop plays once, then stops with curTick = maxTick (#8)", () => {
         const r = get("zero-duration default loop (issue snippet)");
-        assert.deepEqual(r.afterFirst, { play: 0, maxTick: 0, curTick: 0 });
-        assert.deepEqual(r.status, { play: 0, maxTick: 0, curTick: 0 });
+        assert.deepEqual(r.afterFirst, H.playStatus(0, 0, 0));
+        assert.deepEqual(r.status, H.playStatus(0, 0, 0));
         assert.equal(r.sends, 2);
         assert.deepEqual(r.notes, [0.1]);
         const at960 = get("one-tick loop at tick 960, loopEnd 0");
-        assert.deepEqual([at960.status, at960.sends, at960.notes], [{ play: 0, maxTick: 960, curTick: 960 }, 2, [0.1]]);
+        assert.deepEqual([at960.status, at960.sends, at960.notes], [H.playStatus(0, 960, 960), 2, [0.1]]);
         // The rest before End-of-Track does not count: a pass spans the retained events only.
         const trailing = get("one-tick loop at tick 0 with End-of-Track at 1920, loopEnd 0");
-        assert.deepEqual([trailing.status, trailing.sends, trailing.notes], [{ play: 0, maxTick: 1920, curTick: 1920 }, 2, [0.1]]);
+        assert.deepEqual([trailing.status, trailing.sends, trailing.notes], [H.playStatus(0, 1920, 1920), 2, [0.1]]);
         const negative = get("one-tick loop with a negative loopEnd");
-        assert.deepEqual([negative.status, negative.sends, negative.notes], [{ play: 0, maxTick: 0, curTick: 0 }, 2, [0.1]]);
+        assert.deepEqual([negative.status, negative.sends, negative.notes], [H.playStatus(0, 0, 0), 2, [0.1]]);
       });
 
       test("a looping one-tick song of tempo and state events plays once, then stops (#8)", () => {
         const r = get("tempo and program change at tick 0 only, looping");
-        assert.deepEqual(r.started, { play: 1, maxTick: 0, curTick: 0 });
-        assert.deepEqual(r.status, { play: 0, maxTick: 0, curTick: 0 });
+        assert.deepEqual(r.started, H.playStatus(1, 0, 0, 0.1)); // tick 0 sounds 0.1 s after playMIDI() at time 0
+        assert.deepEqual(r.status, H.playStatus(0, 0, 0));
         assert.deepEqual(r.sends, [[0xc0, 5]]);
         assert.equal(r.pg0, 5);
       });
@@ -331,7 +331,7 @@ function parent() {
       test("a 5000-event same-tick loop takes five callbacks of 1000 events, in order, then stops (#8)", () => {
         const r = get("5000-event same-tick batch, looping");
         assert.deepEqual(r.perStep.slice(0, 6), [LIMIT, LIMIT, LIMIT, LIMIT, LIMIT, 0]);
-        assert.deepEqual(r.status, { play: 0, maxTick: 0, curTick: 0 });
+        assert.deepEqual(r.status, H.playStatus(0, 0, 0));
         assert.equal(r.inOrder, true);
         assert.deepEqual(r.times, [r.start]);
         assert.equal(r.notes, 1);
@@ -413,7 +413,7 @@ function parent() {
           }
           assert.equal(r.normalStarted.play, 1);
           assert.equal(r.normalFinished, true);
-          assert.deepEqual(r.normal.status, { play: 0, maxTick: 720, curTick: 720 });
+          assert.deepEqual(r.normal.status, H.playStatus(0, 720, 720));
           assert.equal(r.normal.notes.length, 2);
           close(r.normal.notes[1] - r.normal.notes[0], 0.5, "normal song");
         });

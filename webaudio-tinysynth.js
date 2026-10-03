@@ -667,8 +667,8 @@ function WebAudioTinySynthCore(target) {
          (see playMIDI), or null when not playing. Like curTick, it follows the scheduler: it
          moves to the next pass once the current pass's last event is scheduled, up to 0.2 s
          before that event sounds and before any rest up to loopEnd, so it can be later than
-         currentTime. Not enumerable: the object's keys and JSON stay as upstream. */
-      return Object.defineProperty({play:this.playing, maxTick:this.maxTick, curTick:this.playTick},"startTime",{value:this.playing?this._st:null});
+         currentTime. */
+      return {play:this.playing, maxTick:this.maxTick, curTick:this.playTick, startTime:this.playing?this._st:null};
     },
     locateMIDI:(tick,load)=>{
       if(!this._live())

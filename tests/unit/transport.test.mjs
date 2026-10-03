@@ -83,7 +83,7 @@ describe.each(variants)("$name: replaying a completed song (#10)", (variant) => 
       const p = playPass(s, pass * 700);
       expect(p.times, "pass " + pass).toHaveLength(expected.length);
       p.times.forEach((t, i) => close(t, expected[i]));
-      expect(s.synth.getPlayStatus()).toEqual({ play: 0, maxTick: Math.max(...fx.ev.map((e) => e.tick)), curTick: Math.max(...fx.ev.map((e) => e.tick)) });
+      expect(s.synth.getPlayStatus()).toEqual(H.playStatus(0, Math.max(...fx.ev.map((e) => e.tick)), Math.max(...fx.ev.map((e) => e.tick))));
     }
   });
 
@@ -420,7 +420,7 @@ describe.each(MODES)("$name: seeking (#21)", ({ variant, quality }) => {
       override(s.synth); // and whatever the previous target's play left behind
       s.synth.locateMIDI(tick);
       const resume = resumeTick(tick);
-      expect(s.synth.getPlayStatus()).toEqual({ play: 0, maxTick: 2640, curTick: resume });
+      expect(s.synth.getPlayStatus()).toEqual(H.playStatus(0, 2640, resume));
       const after = playAndDescribe(s, names);
       // Legacy rule (D-005): when the next event is at maxTick, the song counts as completed and play restarts.
       const k = resume >= 2640 ? 0 : RICH_NOTES.findIndex((t) => t >= tick);
@@ -534,7 +534,8 @@ describe.each(MODES)("$name: seeking (#21)", ({ variant, quality }) => {
     const recs = recordNotes(s);
     const start = s.synth.getAudioContext().currentTime + 0.1;
     s.synth.locateMIDI(1440);
-    expect(s.synth.getPlayStatus()).toEqual({ play: 1, maxTick: 2640, curTick: 1440 });
+    // startTime: tick 0 of this pass, 1440 ticks before the next event, which plays at `start` (D-023).
+    expect(s.synth.getPlayStatus()).toEqual(H.playStatus(1, 2640, 1440, expect.closeTo(start - at(RICH_TEMPOS, 1440), 9)));
     H.runUntil(s.env, () => s.synth.getPlayStatus().play === 0, 60000);
     H.runUntil(s.env, () => false, 6000);
     const entries = s.trace.map((l) => JSON.parse(l));
@@ -689,7 +690,7 @@ describe.each(MODES)("$name: seeking (#21)", ({ variant, quality }) => {
     const s = make();
     s.synth.loadMIDI(H.toArrayBuffer(H.makeMidi(PPQ, [noteOn(0, 0, 60, 100), noteOff(0, 0, 60)]))); // maxTick 0
     s.synth.setLoop(0);
-    expect(s.synth.getPlayStatus()).toEqual({ play: 0, maxTick: 0, curTick: 0 });
+    expect(s.synth.getPlayStatus()).toEqual(H.playStatus(0, 0, 0));
     s.synth.setProgram(0, 40);
     const first = playPass(s, 300);
     expect(first.notes.map((n) => n[4] === s.synth.program[40].p)).toEqual([true]);
@@ -706,10 +707,10 @@ describe.each(variants)("$name: seek positions, overrides and edge cases (#21)",
     s.synth.loadMIDI(H.toArrayBuffer(withEot(ev, 1920)));
     s.synth.setLoop(0);
     s.synth.locateMIDI(1440);
-    expect(s.synth.getPlayStatus()).toEqual({ play: 0, maxTick: 1920, curTick: 1440 });
+    expect(s.synth.getPlayStatus()).toEqual(H.playStatus(0, 1920, 1440));
     expect(playPass(s).notes).toHaveLength(0); // only the last note-off was left
     s.synth.locateMIDI(1441);
-    expect(s.synth.getPlayStatus()).toEqual({ play: 0, maxTick: 1920, curTick: 1920 });
+    expect(s.synth.getPlayStatus()).toEqual(H.playStatus(0, 1920, 1920));
     const p = playPass(s);
     expect(p.times).toHaveLength(2);
     close(p.times[1], 1); // the whole song again: 960 ticks at 120 BPM
@@ -723,7 +724,7 @@ describe.each(variants)("$name: seek positions, overrides and edge cases (#21)",
     for (const tick of [0, 480, -1, undefined, NaN]) expect(() => s.synth.locateMIDI(tick)).not.toThrow();
     expect(s.trace.length).toBe(calls);
     expect(JSON.stringify(H.playbackState(s.synth))).toBe(before);
-    expect(s.synth.getPlayStatus()).toEqual({ play: 0, maxTick: 0, curTick: 0 });
+    expect(s.synth.getPlayStatus()).toEqual(H.playStatus(0, 0, 0));
     expect(() => s.synth.playMIDI()).not.toThrow();
     expect(s.synth.getPlayStatus().play).toBe(0);
   });
@@ -752,7 +753,7 @@ describe.each(variants)("$name: seek positions, overrides and edge cases (#21)",
     s.synth.loadMIDI(H.toArrayBuffer(H.makeMidi(PPQ, [sysex(0, [0x7f, 0x7f, 0x04, 0x04, 0x00, 0x42, 0xf7]), gs(960, 0x11, 0x40, 0x50)])));
     s.synth.setLoop(0);
     s.synth.playMIDI();
-    expect(s.synth.getPlayStatus()).toEqual({ play: 1, maxTick: 960, curTick: 0 });
+    expect(s.synth.getPlayStatus()).toEqual(H.playStatus(1, 960, 0, s.synth.getAudioContext().currentTime + 0.1));
     expect(H.runUntil(s.env, () => s.synth.getPlayStatus().play === 0, 5000)).toBe(true);
     expect([s.synth.masterTuningC, s.synth.scaleTuning[0][0], s.notes.length]).toEqual([2, 0.16, 0]);
   });
@@ -762,7 +763,7 @@ describe.each(variants)("$name: seek positions, overrides and edge cases (#21)",
     s.synth.loadMIDI(H.toArrayBuffer(H.makeMidi(PPQ, [program(0, 0, 5), cc(960, 0, 7, 50)])));
     s.synth.setLoop(0);
     s.synth.playMIDI();
-    expect(s.synth.getPlayStatus()).toEqual({ play: 1, maxTick: 960, curTick: 0 });
+    expect(s.synth.getPlayStatus()).toEqual(H.playStatus(1, 960, 0, s.synth.getAudioContext().currentTime + 0.1));
     const from = s.trace.length;
     expect(H.runUntil(s.env, () => s.synth.getPlayStatus().play === 0, 5000)).toBe(true);
     // The volume change is scheduled 960 ticks (1 s at 120 BPM) after the start, 0.1 s after playMIDI.

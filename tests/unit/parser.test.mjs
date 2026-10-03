@@ -107,7 +107,7 @@ describe.each(variants)("$name: loadMIDI rejects bad headers without side effect
     const notes = s.notes.length;
     expect(H.runUntil(s.env, () => s.synth.getPlayStatus().play === 0, 60000)).toBe(true);
     expect(s.notes.length).toBeGreaterThan(notes);
-    expect(s.synth.getPlayStatus()).toEqual({ play: 0, maxTick: 1700, curTick: 1700 });
+    expect(s.synth.getPlayStatus()).toEqual(H.playStatus(0, 1700, 1700));
     expect(s.synth.pg[1]).toBe(33);
   });
 
@@ -116,7 +116,7 @@ describe.each(variants)("$name: loadMIDI rejects bad headers without side effect
     expect(loadError(s.synth, withHeader([0, 0, 0, 1, 0xe7, 0x28]))).toMatchObject({ code: DIV });
     expect(s.synth.getPlayStatus().play).toBe(1);
     expect(loadError(s.synth, H.smf(0, 96, [H.trackBytes([noteOn(96, 2, 64, 100), noteOff(192, 2, 64)])]))).toBe(null);
-    expect(s.synth.getPlayStatus()).toEqual({ play: 0, maxTick: 192, curTick: 96 });
+    expect(s.synth.getPlayStatus()).toEqual(H.playStatus(0, 192, 96));
     expect(s.synth.song.timebase).toBe(4 * 96);
     expect(s.synth.pg[1]).toBe(0);
     expect(s.synth.notetab).toHaveLength(0);

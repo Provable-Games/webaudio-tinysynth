@@ -245,31 +245,30 @@ describe.each(variants)("$name: leading rest and startTime (D-023)", (variant) =
     close(s.notes[from][0], t0 + 0.1 + at(CONSUMER, next) - at(CONSUMER, cur));
   });
 
-  test("startTime is null when not playing, and is not enumerable: the keys and JSON stay as upstream", async () => {
+  test("startTime is a fourth field of getPlayStatus(): null when not playing, tick 0's time when playing", async () => {
     const s = synthFor(variant);
     const status = () => s.synth.getPlayStatus();
-    expect(status().startTime).toBe(null); // no song
+    expect(status()).toEqual(H.playStatus(0, 0, 0)); // no song
     load(s, CONSUMER);
-    expect(status().startTime).toBe(null); // loaded, not playing
+    expect(status()).toEqual(H.playStatus(0, 768, 96)); // loaded, not playing
     s.synth.setLoop(0);
     s.synth.setLoopEnd(768);
     s.synth.playMIDI();
-    expect(typeof status().startTime).toBe("number");
-    expect(Object.keys(status())).toEqual(["play", "maxTick", "curTick"]);
-    expect(JSON.stringify(status())).toBe(JSON.stringify({ play: 1, maxTick: 768, curTick: 96 }));
-    expect(Object.getOwnPropertyDescriptor(status(), "startTime")).toMatchObject({ enumerable: false, writable: false });
+    expect(status()).toEqual(H.playStatus(1, 768, 96, now(s) + 0.1));
+    expect(Object.keys(status())).toEqual(["play", "maxTick", "curTick", "startTime"]);
+    expect(JSON.parse(JSON.stringify(status()))).toEqual(H.playStatus(1, 768, 96, now(s) + 0.1));
     s.synth.stopMIDI();
-    expect(status().startTime).toBe(null); // stopped
+    expect(status()).toEqual(H.playStatus(0, 768, 96)); // stopped
     s.synth.playMIDI();
     expect(H.runUntil(s.env, () => status().play === 0, 20000)).toBe(true);
-    expect(status().startTime).toBe(null); // ended
+    expect(status()).toEqual(H.playStatus(0, 768, 768)); // ended
     s.synth.setLoop(1);
     s.synth.playMIDI();
-    expect(typeof status().startTime).toBe("number");
+    expect(status()).toEqual(H.playStatus(1, 768, 96, now(s) + 0.1)); // replay
     s.synth.loadMIDI(H.toArrayBuffer(CONSUMER.bytes));
-    expect(status().startTime).toBe(null); // a load stops
+    expect(status()).toEqual(H.playStatus(0, 768, 96)); // a load stops
     s.synth.playMIDI();
     await s.synth.dispose();
-    expect(status().startTime).toBe(null); // disposed
+    expect(status()).toEqual(H.playStatus(0, 768, 96)); // disposed
   });
 });
