@@ -45,7 +45,9 @@ All commits are GPG-signed (no `--no-gpg-sign` fallback was needed).
 | `95f7b9b` | #5 | Relax engines, keep artifact line endings, note verify constraints | `package.json`, `.gitattributes` (assigned for this change), this record |
 | `f40de89` | #5 | Sync the lockfile's root engines with package.json | `package-lock.json` (root entry only), this record |
 | `71425ca` | #24, G0 M4 | Make the test suites fail closed | `scripts/run-node-tests.js`, `scripts/node-test-events.mjs`, `scripts/run-unit-tests.js`, `scripts/run-regressions.js`, `scripts/run-with-deadline.js`, `tests/node/runner.test.cjs`, `tests/node/fixtures/**`, `package.json`, `README.md` |
-| M4 record | G0 M4 | Record the fail-closed test runners | this record (§11) |
+| `8a127dd` | G0 M4 | Record the fail-closed test runners | this record (§11) |
+| `59b8db5` | #24, G0 C2-L2 | Fail the differential test when a baseline MIDI fixture is missing | `tests/differential.js` |
+| C2-L2 record | G0 C2-L2 | Record the fixture check | this record (§12) |
 
 The source (`e0ff12c`) and the build options (`008f99a`) changed, so the branch ends with the regeneration commit made by the pinned `npm run build`, after this record (D-003). Between `e0ff12c` and that commit, `npm run verify` fails by design because the committed distribution is stale. The regenerated files must have the hashes in §4; they are the bytes two independent clean clones built (§7).
 
@@ -290,4 +292,22 @@ Resolved at about 2026-10-03T02:01Z with `gh api repos/<repo>/releases/latest`, 
 - A file that exits 0 after all of its registered tests have finished cannot be told apart from a normal end. Neither can a run that loses tests yet stays at or above the floors.
 - The `PASS:` contract assumes a script prints its final line only after all its checks.
 - On Linux, pipe writes are synchronous, so a `PASS:` line printed just before `process.exit` is not lost. Other platforms were not checked.
+
+## 12. Required MIDI fixtures (G0 re-review C2-L2)
+
+**Finding.** `tests/differential.js` compared `ws.mid` plus whatever `.mid` files `test-midi/` held. With the `test-midi` fixtures renamed, it compared only `ws.mid` and exited 0. Reproduced with the pre-fix script (`8a127dd`): "1 files, 259 notes per variant", `PASS`, exit 0.
+
+**Fix (`59b8db5`).** `differential.js` lists the eight fixtures present at the T0 baseline: `ws.mid` and the seven `test-midi/*.mid` files. Before comparing anything, it fails through `H.fail` if any is missing. Extra `.mid` files are still compared, and the comparisons and expectations are unchanged. To add a required fixture, append it to `REQUIRED_FIXTURES`.
+
+**Other scripts.** None enumerates fixtures. `tempo.js` generates its MIDI in memory. `loop-end.js` reads `ws.mid` by name, and `browser-smoke.js` reads the named fixture (default `ws.mid`; `test:browser` names both), so a missing file throws and the script exits 1. The runner then also reports it, since no final `PASS:` line is printed.
+
+**Demonstration** (fresh clone at `59b8db5`, `scratch/l2-demo`, logs `logs/l2demo-*.log`):
+
+| Case | Result |
+| --- | --- |
+| All seven `test-midi/*.mid` renamed, `npm run test:regression` | exit 1: `FAIL: missing MIDI fixture(s): test-midi/all-gm-sounds.mid, …` (all seven listed), "2 of 3 scripts passed" |
+| `ws.mid` renamed, `node tests/differential.js` | exit 1: `FAIL: missing MIDI fixture(s): ws.mid` |
+| Pre-fix script, `test-midi` renamed | exit 0, compared 1 file (the false pass) |
+
+After the fix, `npm run lint` and `npm test` pass: unit 30, node 33, 3 of 3 scripts, and the differential compares 8 files.
 
