@@ -817,53 +817,82 @@ describe.each(variants)("$name: stopMIDI() silences what the transport scheduled
     expect(s.synth.getPlayStatus().play).toBe(0);
   });
 
-  /* Volume and pan written to channel 0's nodes, in trace order, from trace line `from`. */
-  const writes = (s, from) => calls(s.trace, from).filter(([op, id]) => op === "setValueAtTime" && (id === s.synth.chvol[0].gain._id || id === s.synth.chpan[0].pan._id))
-    .map(([, id, v, t]) => [id === s.synth.chvol[0].gain._id ? "vol" : "pan", v, t]);
-  const PAUSE = song([cc(48, 0, 7, 20), cc(48, 0, 10, 0), noteOn(480, 0, 69, 100), noteOff(1440, 0, 69)]);
 
-  test("stop, then play: the controller changes the stop cancelled are sent again (review F1)", () => {
-    const straight = make(variant);
-    straight.synth.loadMIDI(PAUSE);
-    const t0 = straight.env.clock.ms / 1000;
-    let from = straight.trace.length;
-    straight.synth.playMIDI();
-    H.runUntil(straight.env, () => straight.synth.getPlayStatus().play === 0, 10000);
-    const want = writes(straight, from).map(([k, v, t]) => [k, v, t - t0]);
-    // The song's first event (tick 48) plays 0.1 s after playMIDI() (next-event positioning, D-005).
-    expect(want).toEqual([["vol", 3 * 20 * 20 / (127 * 127), expect.closeTo(0.1, 9)], ["pan", -1, expect.closeTo(0.1, 9)]]);
-
+  /*
+   * An AudioParam's value at time T from the recorded calls: setValueAtTime events, with a
+   * cancel removing the events at or after its time (Web Audio semantics; the latest event at
+   * or before T wins, and among events at the same time the one added last).
+   */
+  function paramAt(trace, id, T) {
+    let ev = [];
+    for (const [op, pid, a, b] of calls(trace)) {
+      if (pid !== id) continue;
+      if (op === "setValueAtTime") ev.push([b, a]);
+      else if (op === "cancel") ev = ev.filter(([t]) => t < a);
+    }
+    let best = null;
+    for (const [t, v] of ev) if (t <= T && (!best || t >= best[0])) best = [t, v];
+    return best && best[1];
+  }
+  /* Channel 0's volume and pan when the song's last note starts. */
+  function heard(s) {
+    const note = s.notes.at(-1);
+    return { pitch: note[2], vol: paramAt(s.trace, s.synth.chvol[0].gain._id, note[0]), pan: paramAt(s.trace, s.synth.chpan[0].pan._id, note[0]) };
+  }
+  /* Play `bytes` straight, or stopped once the scheduler has moved on to tick `pause` (sending the events before it ahead) and played again. */
+  function pauseResume(bytes, pause) {
     const s = make(variant);
-    s.synth.loadMIDI(PAUSE);
+    s.synth.loadMIDI(bytes);
     s.synth.playMIDI();
-    H.runUntil(s.env, () => s.synth.getPlayStatus().curTick >= 480, 1000); // the CCs were sent ahead
-    const stopAt = s.env.clock.ms / 1000;
-    expect(writes(s, 0).filter(([, , t]) => t > stopAt)).toHaveLength(2); // not due yet
-    s.synth.stopMIDI();
-    expect(s.synth.getPlayStatus().curTick).toBe(48); // the transport moved back to them
-    const t1 = s.env.clock.ms / 1000;
-    from = s.trace.length;
-    s.synth.playMIDI();
+    if (pause) {
+      H.runUntil(s.env, () => s.synth.getPlayStatus().curTick >= pause, 1000);
+      s.stopAt = s.env.clock.ms / 1000;
+      s.notesAtStop = s.notes.length;
+      s.synth.stopMIDI();
+      s.synth.playMIDI();
+    }
     H.runUntil(s.env, () => s.synth.getPlayStatus().play === 0, 10000);
-    expect(writes(s, from).map(([k, v, t]) => [k, v, t - t1])).toEqual([["vol", want[0][1], expect.closeTo(0.1, 9)], ["pan", -1, expect.closeTo(0.1, 9)]]);
-    // and the note sounds after them, at the song's spacing (432 ticks at 120 BPM)
-    const start = s.notes.at(-1)[0];
-    expect(start - t1).toBeCloseTo(0.1 + 432 / 960, 9);
+    return s;
+  }
+
+  test.each([
+    ["CC7 and CC10 sent ahead and not yet due", []],
+    ["the same, with a tempo event right after them (PR #37 round 2)", [H.midi.tempo(96, 500000)]],
+  ])("stop, then play: the resumed note has the song's volume and pan (review F1): %s", (name, extra) => {
+    const bytes = song([cc(48, 0, 7, 20), cc(48, 0, 10, 0), ...extra, noteOn(960, 0, 69, 100), noteOff(1440, 0, 69)]);
+    const straight = heard(pauseResume(bytes, false));
+    expect(straight).toEqual({ pitch: 69, vol: 3 * 20 * 20 / (127 * 127), pan: -1 });
+    const s = pauseResume(bytes, 960);
+    expect(s.stopAt).toBeLessThan(0.1); // the changes were due 0.1 s after the start (the song's first event)
+    expect(heard(s)).toEqual(straight);
   });
 
-  test("a stop does not move the transport back across a tempo event or when nothing is queued", () => {
+  test("stop, then play: a note sent ahead is not replayed with a later program (PR #37 round 2)", () => {
+    const s = pauseResume(song([noteOn(48, 0, 60, 100), noteOff(300, 0, 60), program(96, 0, 40), noteOn(960, 0, 64, 100), noteOff(1440, 0, 64)]), 300);
+    expect(s.stopAt).toBeLessThan(0.1); // the note at tick 48 was sent ahead, due 0.1 s after the start
+    expect(s.notes.slice(0, s.notesAtStop).map((n) => n[2])).toEqual([60]); // created before the stop, then stopped
+    const after = s.notes.slice(s.notesAtStop);
+    expect(after.map((n) => n[2])).toEqual([64]);
+    expect(after[0][4]).toBe(s.synth.program[40].p);
+  });
+
+  test("queued changes never apply while stopped; play applies the channels' latest values first", () => {
     const s = make(variant);
-    s.synth.loadMIDI(song([H.midi.tempo(48, 400000), cc(96, 0, 7, 20), noteOn(960, 0, 69, 100), noteOff(1440, 0, 69)]));
+    s.synth.loadMIDI(MIXED);
     s.synth.playMIDI();
-    H.runUntil(s.env, () => s.synth.getPlayStatus().curTick >= 960, 1000);
+    H.runUntil(s.env, () => false, 300);
+    const now = s.env.clock.ms / 1000;
+    const ids0 = [s.synth.chvol[0].gain._id, s.synth.chpan[0].pan._id, s.synth.chmod[0].gain._id];
+    const at = (T) => ids0.map((id) => paramAt(s.trace, id, T));
+    const before = at(now);
+    s.synth.send([0xb0, 7, 20], now + 0.5); s.synth.send([0xb0, 10, 0], now + 0.5); s.synth.send([0xb0, 1, 64], now + 0.5);
     s.synth.stopMIDI();
-    expect(s.synth.getPlayStatus().curTick).toBe(96); // back to the CC, not past the tempo event at 48
+    s.synth.stopMIDI();
+    expect(at(now + 5)).toEqual(before); // cancelled: nothing changes after the stop (D-023)
+    H.runUntil(s.env, () => false, 1000);
+    const t1 = s.env.clock.ms / 1000;
     s.synth.playMIDI();
-    H.runUntil(s.env, () => false, 2000);
-    const tick = s.synth.getPlayStatus().curTick;
-    s.synth.stopMIDI();
-    s.synth.stopMIDI();
-    expect(s.synth.getPlayStatus().curTick).toBe(tick);
+    expect(at(t1)).toEqual([3 * 20 * 20 / (127 * 127), -1, 64 * 100 / 127]); // the latest values, from the resume on
   });
 
   test("loadMIDI's internal stop keeps the upstream calls: no cancel and no drum stop", () => {
