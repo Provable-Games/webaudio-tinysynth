@@ -26,6 +26,7 @@ const MATRIX = {
     embed: { kind: "assert", dims: ["build", "quality"], about: "inline script and MIDI, network blocked (setContent and data: URL), zero requests" },
     render: { kind: "assert", dims: ["build", "quality", "sampleRate"], about: "OfflineAudioContext renders: pitch, tuning, controllers, envelope, sustain, silence, finite samples, reverb, GM programs and drums, source/min parity, same-seed repeatability" },
     gesture: { kind: "assert", dims: ["build"], about: "default autoplay policy at an http origin: suspended before a real click/key, running and advancing after it (other start paths observed)" },
+    url: { kind: "assert", dims: ["build"], about: "loadMIDIUrl against the controlled server: success asserted; non-200, network failure, malformed bytes and races observed" },
     variation: { kind: "observe", dims: ["build"], about: "run-to-run variation: repeat launches, seeds, sample rates (tolerance evidence)" },
   },
 };
