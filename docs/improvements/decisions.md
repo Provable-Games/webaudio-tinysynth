@@ -324,3 +324,19 @@ Binding rules are in `_evidence/assignments/CONCURRENCY.md`:
 - Recompute test floors after each merge.
 
 Integration stays in dependency order: T4, then T3.1, then T11, then T6-B.1 and T9-D, then T5. Overlapping T5 with T11, and moving T8 (#7 seed) or T12 (#27) ahead of T7, are re-sequences put to the user separately.
+
+## D-030 Maximum safe parallelism, and Opus for all subagents (2026-10-03)
+
+The user asked for "as many as can be safely/neatly run in parallel … If all of the above can be run without major merge conflicts, do it. Use Opus 5.5 for all subagents." That approves T5 overlapping T11, T8-seed (#7) and T12 (#27) running ahead of T7, which amends D-022 and D-026 for these tasks. Everything runs in parallel from T4's head `d1f0e26`, except T9-D and T6-B.1, which started from integration.
+
+How merges stay mechanical:
+- T11 and T12 each add one private validation helper (wave name, filter fields), called from `setTimbre` with one line.
+- T5 integrates last among the engine tasks and folds both helpers into its general validator.
+- T12 confines its `_note` change to the gain→output connection; T11 confines its change to the wave lookup and the `n*` branch.
+- T8-seed stays in `setAudioContext` buffer generation and the `seed` constructor option.
+- The non-finite computed-value guard (consumer FM-chain and `k` cases) moves out of T5 into a small follow-up, T5.2, after T12 integrates. That keeps three agents out of `_note` at once.
+- Consumer fixtures use separate files.
+
+Integration order: T4 → T3.1 → T11 → T8-seed → T12 → T5 → T5.2. T6-B.1 and T9-D integrate whenever they are ready, since their files are disjoint. T6 phase-B rows for T4, T5, T8, T11 and T12 follow those tasks.
+
+Unchanged: the refactor (T7), the #18 performance work, the T9 documentation pass, T1B, and T10 keep their order after these. New subagents are dispatched with `model: opus`. Earlier subagents inherited this session's model.
