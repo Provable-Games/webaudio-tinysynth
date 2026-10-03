@@ -478,9 +478,11 @@ function WebAudioTinySynthCore(target) {
               }
             }
           }
-          if(this.playing && this.song.ev.length>0){
-            let e=this.song.ev[this.playIndex];
-            while(this.actx.currentTime+this.preroll>this.playTime){
+          /* playMIDI only starts songs with events. At most 1000 events per callback
+             (#8): the rest follow on the next callbacks, in order, at their own times. */
+          if(this.playing){
+            let e=this.song.ev[this.playIndex],n=1e3;
+            while(n-- && this.actx.currentTime+this.preroll>this.playTime){
               if(e.m[0]==0xff51){
                 this.song.tempo=e.m[1];
                 this.tick2Time=4*60/this.song.tempo/this.song.timebase;
@@ -489,7 +491,10 @@ function WebAudioTinySynthCore(target) {
                 this.send(e.m,this.playTime);
               ++this.playIndex;
               if(this.playIndex>=this.song.ev.length){
-                if(this.loop){
+                /* Wrap only if the next pass advances (#8). Without a positive loopEnd,
+                   a song whose events share one tick would repeat at one instant
+                   forever, so it ends here as if looping were off. */
+                if(this.loop && (this.loopEnd>0 || this.playTick>this.song.ev[0].t)){
                   e=this.song.ev[this.playIndex=0];
                   if(this.loopEnd){
                     /* Pad to loopEnd at the tempo the pass ended on. Then restart at
@@ -551,35 +556,33 @@ function WebAudioTinySynthCore(target) {
     getPlayStatus:()=>{
       return {play:this.playing, maxTick:this.maxTick, curTick:this.playTick};
     },
-    locateMIDI:(tick)=>{
-      let i,p=this.playing;
+    locateMIDI:(tick,load)=>{
+      /* Seek (#21, D-005): stop all notes, restore the state loadMIDI installs (reset(),
+         scale tuning 0, 120 BPM), then apply the tempo and channel-state events before
+         tick, in order, through send() and without notes. Playback resumes at the first
+         event at or after tick; with none left, curTick is maxTick and play restarts.
+         Without a song this does nothing. Queued channel volume, pan and modulation
+         changes (from the scheduler's lookahead or a timed send()) are cancelled first,
+         so they cannot override the rebuilt state. loadMIDI passes load, which skips the
+         cancel and keeps the upstream load calls (D-019). */
+      const s=this.song,p=this.playing;
+      let i=0,e;
+      if(!s)
+        return;
       this.stopMIDI();
-      for(i=0;i<this.song.ev.length && tick>this.song.ev[i].t;++i){
-        var m=this.song.ev[i];
-        var ch=m.m[0]&0xf;
-        switch(m.m[0]&0xf0){
-        case 0xb0:
-          switch(m.m[1]){
-          case 1:  this.setModulation(ch,m.m[2]); break;
-          case 7:  this.setChVol(ch,m.m[2]); break;
-          case 10: this.setPan(ch,m.m[2]); break;
-          case 11: this.setExpression(ch,m.m[2]); break;
-          case 64: this.setSustain(ch,m.m[2]); break;
-          }
-          break;
-        case 0xc0: this.pg[m.m[0]&0x0f]=m.m[1]; break;
-        }
-        if(m.m[0]==0xff51)
-          this.song.tempo=m.m[1];
+      for(;!load && i<16;++i)
+        [this.chvol[i].gain,this.chmod[i].gain,(this.chpan[i]||0).pan].forEach(a=>a && a.cancelScheduledValues(this.actx.currentTime));
+      this.reset();
+      for(i=0;i<16;)
+        this.scaleTuning[i++].fill(0);
+      for(s.tempo=120,i=0;(e=s.ev[i]) && e.t<tick;++i){
+        if(e.m[0]==0xff51)
+          s.tempo=e.m[1];
+        else if((e.m[0]&0xe0)!=0x80) // not a note-off or note-on
+          this.send(e.m);
       }
-      if(!this.song.ev[i]){
-        this.playIndex=0;
-        this.playTick=this.maxTick;
-      }
-      else{
-        this.playIndex=i;
-        this.playTick=this.song.ev[i].t;
-      }
+      this.playIndex=i; // ev.length when no event is left: playMIDI restarts the song
+      this.playTick=e?e.t:this.maxTick;
       if(p)
         this.playMIDI();
     },
@@ -629,17 +632,23 @@ function WebAudioTinySynthCore(target) {
         this.allSoundOff(i);
     },
     playMIDI:()=>{
-      if(!this.song)
+      /* A song with no events other than tempo (empty, metadata-only or tempo-only)
+         stays stopped (#9). A completed song (not one just loaded at maxTick) starts a
+         new pass with the state of locateMIDI(0) (#10, D-005), but the previous pass's
+         sounding and already scheduled notes play on, as upstream (D-019): its voices are
+         kept out of the seek's reach. A song stopped before its end resumes as it is. */
+      const s=this.song,n=this.notetab;
+      if(!s || !s.ev.some(e=>e.m[0]!=0xff51))
         return;
+      if(this.playIndex && this.playTick>=this.maxTick)
+        this.notetab=[], this.playing=0, this.locateMIDI(0), this.notetab=n;
       const dummy=this.actx.createOscillator();
       dummy.connect(this.actx.destination);
       dummy.frequency.value=0;
       dummy.start(0);
       dummy.stop(this.actx.currentTime+0.001);
-      if(this.playTick>=this.maxTick)
-        this.playTick=0,this.playIndex=0;
       this.playTime=this.actx.currentTime+.1;
-      this.tick2Time=4*60/this.song.tempo/this.song.timebase;
+      this.tick2Time=4*60/s.tempo/s.timebase;
       this.playing=1;
     },
     loadMIDI:(data)=>{
@@ -768,8 +777,7 @@ function WebAudioTinySynthCore(target) {
         this.notetab.length=0;
       this.maxTick=maxTick;
       this.song=song;
-      this.reset();
-      this.locateMIDI(0);
+      this.locateMIDI(0,1); // includes reset()
     },
     setQuality:(q)=>{
       if(q!=undefined)
