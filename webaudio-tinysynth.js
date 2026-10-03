@@ -2,10 +2,8 @@
  * webaudio-tinysynth by Tatsuya Shinyagaito (g200kg)
  * https://github.com/g200kg/webaudio-tinysynth - Apache License 2.0
  *
- * Modified by Provable Games (see NOTICE):
- * - GUI and custom element removed;
- * - MIDI tempo kept fractional instead of rounded down to whole BPM;
- * - loopEnd / setLoopEnd added for looping on a bar boundary.
+ * Modified by Provable Games (https://github.com/Provable-Games/webaudio-tinysynth);
+ * see NOTICE for the changes.
  */
 ( function(window){
 "use strict";

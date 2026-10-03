@@ -19,6 +19,10 @@ Modifications by Provable Games, based on upstream commit
   - webaudio-tinysynth.js: added the loopEnd property and setLoopEnd()
     so a looping song can restart on a bar boundary instead of on its
     last event. With loopEnd unset (0) behavior is unchanged.
+  - webaudio-tinysynth.js: loadMIDI parses Standard MIDI Files with
+    bounded, validated reads. Malformed or unsupported input (format 2,
+    SMPTE or zero division, truncation) throws an Error with a code
+    (SMF_*) and keeps the previous song.
   - webaudio-tinysynth.min.js and its source map are regenerated from
     the modified source.
   - Demo pages and README updated to use the JavaScript API; tests added.
