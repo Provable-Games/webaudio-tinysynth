@@ -334,8 +334,8 @@ function cases(shared) {
       const pass = (o) => n.filter((x) => x.start >= o - TIME_TOL && x.start < o + exp[exp.length - 1] + 0.05).map((x) => x.start - o);
       const p1 = pass(o1), p2 = pass(o2);
       const diff = (p) => p.length === exp.length ? Math.max(...p.map((x, i) => Math.abs(x - exp[i]))) : Infinity;
-      t.check("first pass: note times equal the tempo map (" + exp.join(", ") + " s)", diff(p1) <= TIME_TOL, p1.map(fmt).join(", "));
-      t.check("replay: note times equal the tempo map, starting at 120 BPM again", diff(p2) <= TIME_TOL, p2.map(fmt).join(", "));
+      t.check("the first pass and the replay both play on the tempo map (" + exp.join(", ") + " s; 120 BPM until tick 960)", diff(p1) <= TIME_TOL && diff(p2) <= TIME_TOL,
+        "first pass " + p1.map(fmt).join(", ") + "; replay " + p2.map(fmt).join(", "));
       t.observe("largest timing difference (s)", Math.max(diff(p1), diff(p2)));
     });
 
