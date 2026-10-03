@@ -133,7 +133,8 @@ Settings are changed with the functions below (`setMasterVol()`, `setReverbLev()
 >  **voices** : max number of voices.  
 >  **context** : an AudioContext or OfflineAudioContext to use instead of creating one. It stays yours: the synth never closes it.  
 >  **destination** : with `context`, the AudioNode to play into. default is `context.destination`.  
->  **lazy** : if `true`, no AudioContext is created until `resume()`, or until the first call that plays a note or sets MIDI state: `send()`, `noteOn()`, the channel `set...` functions, `loadMIDI()`, `locateMIDI()` or `playMIDI()`. Other calls do not create it, and `getAudioContext()` returns `null` until then. Call `resume()` from the click that starts audio.
+>  **lazy** : if `true`, no AudioContext is created until `resume()`, or until the first call that plays a note or sets MIDI state: `send()`, `noteOn()`, the channel `set...` functions, `reset()`, `loadMIDI()`, `locateMIDI()` or `playMIDI()`. Other calls do not create it, and `getAudioContext()` returns `null` until then. Call `resume()` from the click that starts audio, and call `loadMIDI()` and `reset()` in that click handler or after `resume()`: called earlier, they create the AudioContext outside the gesture (it then starts suspended until `resume()`).  
+>  On an OfflineAudioContext, schedule notes with explicit times; `playMIDI()` throws there. Every note scheduled before the render counts against `voices`, so call `setVoices()` with at least the number of notes, or the earliest ones are dropped.
 >
 >  For example, `new WebAudioTinySynth({quality:0, useReverb:0, voices:32})`  
 >  An invalid `context`, `destination` or `lazy` throws a `TypeError` before anything is created.
@@ -145,6 +146,7 @@ Settings are changed with the functions below (`setMasterVol()`, `setReverbLev()
 > In default, though audioContext is internally created and used, this function can specify `audioContext` should be used.  
 > All sounds are routed to specified `destinationNode`, or audioContext.destination is used if destinationNode is not specified.  
 > the audioContext in use currently can be accessed with `getAudioContext()` fucntion.
+> The previous context's sounds stop, and the synth closes it if it created it. Call `stopMIDI()` before switching contexts during playback: the sequencer keeps the old context's clock, as upstream, so playback on a new context waits until that context's clock catches up.
 
 **resume()**  
 > Returns a `Promise` that resolves once the AudioContext is running. Browsers start audio only after a user gesture, so call it from a click, key or pointer handler. With `lazy`, it creates the AudioContext first. It rejects with the browser's error, or with an `Error` whose `code` is `AUDIO_CONTEXT_CLOSED` (the context is closed) or `SYNTH_DISPOSED`. On an OfflineAudioContext it resolves at once.
@@ -194,7 +196,7 @@ Settings are changed with the functions below (`setMasterVol()`, `setReverbLev()
 > play loaded MIDI data. On a finished song, starts again from the beginning at the song's initial tempo and channel state. Does nothing for a song with no playable events.
 
 **stopMIDI()**
-> stop playing MIDI data. Every sounding or scheduled note and drum hit stops, and channel volume, pan and modulation changes scheduled for later are cancelled.
+> stop playing MIDI data. Every sounding or scheduled note and drum hit stops, and channel volume, pan and modulation changes scheduled for later are cancelled. The song's own changes are sent again when `playMIDI()` resumes, so a resumed song sounds as if it had played through. A change you scheduled yourself with a time (`send(msg, t)` or a timed setter) is cancelled, but its value stays in the channel's stored volume or expression, as it did upstream; set it again after the stop if needed.
 
 **locateMIDI(tick)**
 > locate current playing position in tick. Playback resumes at the first event at or after `tick`. Tempo and channel state are rebuilt from the song up to `tick`, replacing manual channel changes (see [What behaves differently](#about-this-fork)).
