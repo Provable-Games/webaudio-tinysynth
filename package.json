@@ -42,9 +42,17 @@
     "url": "https://github.com/g200kg/webaudio-tinysynth/issues"
   },
   "homepage": "https://github.com/g200kg/webaudio-tinysynth#readme",
-  "engines": {
-    "node": ">=24.11.0 <25",
-    "npm": ">=11 <12"
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": ">=24.11.0 <25",
+      "onFail": "warn"
+    },
+    "packageManager": {
+      "name": "npm",
+      "version": ">=11 <12",
+      "onFail": "warn"
+    }
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
