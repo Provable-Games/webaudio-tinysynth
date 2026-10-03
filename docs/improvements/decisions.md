@@ -141,7 +141,7 @@ The user observed that PR #28's clean Claude comment showed a bare `lgtm`, with 
 
 Needed before T2 (#4/#6), and followed by T5 (#13/#14).
 
-- **`loadMIDI(data)` failures throw.** The library throws an `Error` with a stable `code` string and a descriptive message: `SMF_INVALID_HEADER`, `SMF_UNSUPPORTED_FORMAT` (format 2 or unknown), `SMF_UNSUPPORTED_DIVISION` (SMPTE/high-bit or zero PPQ), `SMF_TRUNCATED` (data ends inside a chunk, event or variable-length quantity, or fewer chunks than declared) and `SMF_MALFORMED` (an over-long VLQ, an invalid status or data byte, a missing running status, or a bad meta or SysEx length, including tempo length ≠ 3 or tempo 0). The thrown error carries `track` (0-based chunk index) and `offset` (absolute byte offset) where applicable.
+- **`loadMIDI(data)` failures throw.** The library throws an `Error` with a stable `code` string and a descriptive message: `SMF_INVALID_HEADER`, `SMF_UNSUPPORTED_FORMAT` (format 2 or unknown), `SMF_UNSUPPORTED_DIVISION` (SMPTE/high-bit or zero PPQ), `SMF_TRUNCATED` (data ends inside a chunk, event or variable-length quantity, or fewer chunks than declared) and `SMF_MALFORMED` (an over-long VLQ, an invalid status or data byte, a missing running status, or a bad meta or SysEx length, including tempo length ≠ 3 or tempo 0). The thrown error carries `track` (0-based index of the `MTrk` chunk; unknown chunks are not counted) and `offset` (absolute byte offset) where applicable. A meta or SysEx length that runs past the chunk end is reported as `SMF_TRUNCATED` (wording corrected after the T2 review, F4).
 - **Failed loads are transactional and side-effect free.** The previous song, playback state and channel state stay as they were, and no partial event is installed. The parser builds a temporary song and installs it only after full validation. A successful load keeps today's effects: stop, install, `reset()`, `locateMIDI(0)`.
 - **Legacy differences** are ledger L-01, L-02 and L-03:
   - Non-`MThd` input used to return silently after stopping playback; it now throws without side effects.
@@ -170,3 +170,12 @@ Inputs: G0 independent review of `1eff7ba` (`g0/review` `03003e9`, `tasks/G0-rev
 - Finding: the ruleset's `conditions.ref_name.include` is empty, and `GET /repos/…/rules/branches/main` returns no rules. So no rule in that ruleset (required checks, signed commits, PR requirement, deletion and non-fast-forward protection) is in effect on `main`. This corrects D-002's kickoff note, which read the rules from the ruleset definition rather than from their effective application. Enforcement needs the target set to `~DEFAULT_BRANCH` (or `refs/heads/main`); that is the user's ruleset change.
 - The user acknowledged the Codex ChatGPT-credential rotation risk and the Dependabot policy (AI review gates fail on Dependabot PRs without Dependabot secrets). No change is planned. Both remain documented in `.github/scripts/README.md`.
 - Update (2026-10-03): the user retargeted the ruleset to `~DEFAULT_BRANCH`. `GET /rules/branches/main` now returns `deletion`, `non_fast_forward`, `required_signatures`, `pull_request` and `required_status_checks` (`test`, `lint`, `build-verify`, `browser-smoke`, `Claude review gate`, `Codex review gate`). Enforcement on `main` is verified. `improve/integration` has no rules, as intended.
+
+## D-016 NOTICE and source-header policy (2026-10-03)
+
+The T2 independent review (F6) and both of PR #32's AI reviews flagged that NOTICE and the source header's modification list were not updated for the parser change. The contract (contracts.md) requires NOTICE updates per modification set. The source header is kept in the minified build (T1, +347 B), so a header that enumerates changes grows the onchain artifact with every task.
+
+Decision:
+- `NOTICE` gets one bullet per modification set, added by the implementing task. NOTICE is not part of the minified build.
+- The source header becomes a fixed attribution: the upstream author and URL, the Apache-2.0 line, and "Modified by Provable Games (fork URL); see NOTICE for the changes". This satisfies Apache-2.0 §4(b) ("prominent notices stating that You changed the files") without growing per task. T2 makes the change. Later tasks only add NOTICE bullets and do not touch the header.
+- T9 reviews the final NOTICE and README wording (#20).
