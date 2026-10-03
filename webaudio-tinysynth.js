@@ -487,10 +487,8 @@ function WebAudioTinySynthCore(target) {
                 this.song.tempo=e.m[1];
                 this.tick2Time=4*60/this.song.tempo/this.song.timebase;
               }
-              else{
+              else
                 this.send(e.m,this.playTime);
-                this.queued>this.playTime || (this.queued=this.playTime); // latest time anything was queued for
-              }
               ++this.playIndex;
               if(this.playIndex>=this.song.ev.length){
                 /* Wrap only if the next pass advances (#8). Without a positive loopEnd,
@@ -563,18 +561,17 @@ function WebAudioTinySynthCore(target) {
          scale tuning 0, 120 BPM), then apply the tempo and channel-state events before
          tick, in order, through send() and without notes. Playback resumes at the first
          event at or after tick; with none left, curTick is maxTick and play restarts.
-         Without a song this does nothing. Channel volume, pan and modulation changes the
-         scheduler queued ahead are cancelled first while any may be pending (the latest
-         time it queued anything for is still ahead), so they cannot override the rebuilt
-         state. loadMIDI passes load, keeping the upstream load calls. */
+         Without a song this does nothing. Queued channel volume, pan and modulation
+         changes (from the scheduler's lookahead or a timed send()) are cancelled first,
+         so they cannot override the rebuilt state. loadMIDI passes load, which skips the
+         cancel and keeps the upstream load calls (D-019). */
       const s=this.song,p=this.playing;
       let i=0,e;
       if(!s)
         return;
       this.stopMIDI();
-      if(!load && this.queued>this.actx.currentTime)
-        for(this.queued=0;i<16;++i)
-          [this.chvol[i].gain,this.chmod[i].gain,(this.chpan[i]||0).pan].forEach(a=>a && a.cancelScheduledValues(this.actx.currentTime));
+      for(;!load && i<16;++i)
+        [this.chvol[i].gain,this.chmod[i].gain,(this.chpan[i]||0).pan].forEach(a=>a && a.cancelScheduledValues(this.actx.currentTime));
       this.reset();
       for(i=0;i<16;)
         this.scaleTuning[i++].fill(0);
@@ -636,13 +633,15 @@ function WebAudioTinySynthCore(target) {
     },
     playMIDI:()=>{
       /* A song with no events other than tempo (empty, metadata-only or tempo-only)
-         stays stopped (#9). A completed song starts a new pass as after locateMIDI(0)
-         (#10, D-005); a song stopped before its end resumes with its current state. */
-      const s=this.song;
+         stays stopped (#9). A completed song (not one just loaded at maxTick) starts a
+         new pass with the state of locateMIDI(0) (#10, D-005), but the previous pass's
+         sounding and already scheduled notes play on, as upstream (D-019): its voices are
+         kept out of the seek's reach. A song stopped before its end resumes as it is. */
+      const s=this.song,n=this.notetab;
       if(!s || !s.ev.some(e=>e.m[0]!=0xff51))
         return;
-      if(this.playIndex && this.playTick>=this.maxTick) // completed, not just loaded at maxTick
-        this.playing=0, this.locateMIDI(0);
+      if(this.playIndex && this.playTick>=this.maxTick)
+        this.notetab=[], this.playing=0, this.locateMIDI(0), this.notetab=n;
       const dummy=this.actx.createOscillator();
       dummy.connect(this.actx.destination);
       dummy.frequency.value=0;
