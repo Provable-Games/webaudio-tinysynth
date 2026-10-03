@@ -179,3 +179,10 @@ Decision:
 - `NOTICE` gets one bullet per modification set, added by the implementing task. NOTICE is not part of the minified build.
 - The source header becomes a fixed attribution: the upstream author and URL, the Apache-2.0 line, and "Modified by Provable Games (fork URL); see NOTICE for the changes". This satisfies Apache-2.0 §4(b) ("prominent notices stating that You changed the files") without growing per task. T2 makes the change. Later tasks only add NOTICE bullets and do not touch the header.
 - T9 reviews the final NOTICE and README wording (#20).
+
+## D-017 T6 phase A as an integrated increment; upstream observations kept (2026-10-03)
+
+- T6 phase A (the browser and rendered-audio infrastructure, plus baseline characterization; no runtime changes) is integrated once its PR passes CI, the arm64 browser matrix, and the AI review gates. T3–T5 then get browser and audio coverage as they land. Full T6 acceptance remains at G1, after the phase-B assertions (T6.md §13) are added on top of the integrated T2–T5. The G1 independent review covers all of T6.
+- **Bend-range unit.** The engine converts the stored bend range with `brange*100/127` cents. MIDI's RPN 0 value is `semitones*128 + cents`, so the default 2-semitone range plays as 201.57 cents, not 200. This is upstream behavior that the differential tests assert, and no registered issue covers it. It is kept unchanged and listed as a future recommendation, since any change would be an unscoped sound change.
+- **Drum peaks.** In quality 1, drums 49 and 55 peak at 1.16–1.29 at the default volume. These are upstream timbre levels, kept unchanged (no timbre redesign). The consumer's suggested `master_vol` of 40 % leaves headroom. This is listed as an observation for the consumer and in the final recommendations.
+- **Offline renders.** The library's 60 ms timer prunes voices during `OfflineAudioContext` renders, so T6 tests stop it as a test control. T4 (#12: "Define supported suspended, closed, and OfflineAudioContext behavior") must define the real behavior.
