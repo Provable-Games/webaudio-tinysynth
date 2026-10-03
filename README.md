@@ -196,7 +196,7 @@ Settings are changed with the functions below (`setMasterVol()`, `setReverbLev()
 > play loaded MIDI data. On a finished song, starts again from the beginning at the song's initial tempo and channel state. Does nothing for a song with no playable events.
 
 **stopMIDI()**
-> stop playing MIDI data. Every sounding or scheduled note and drum hit stops, and channel volume, pan and modulation changes scheduled for later are cancelled. The song's own changes are sent again when `playMIDI()` resumes, so a resumed song sounds as if it had played through. A change you scheduled yourself with a time (`send(msg, t)` or a timed setter) is cancelled, but its value stays in the channel's stored volume or expression, as it did upstream; set it again after the stop if needed.
+> stop playing MIDI data. Every sounding or scheduled note and drum hit stops, and channel volume, pan and modulation changes scheduled for later are cancelled, so nothing changes after the stop. When `playMIDI()` resumes, it first gives every channel its latest volume, expression, pan and modulation: the values the song had set up to the resume position (including changes it had sent ahead of the stop) and your own, including a change you had scheduled for later with a time. Notes that were due in the 0.2 s after the stop are not replayed, as upstream.
 
 **locateMIDI(tick)**
 > locate current playing position in tick. Playback resumes at the first event at or after `tick`. Tempo and channel state are rebuilt from the song up to `tick`, replacing manual channel changes (see [What behaves differently](#about-this-fork)).
