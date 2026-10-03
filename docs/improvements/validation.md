@@ -159,3 +159,34 @@ Details: [tasks/G0-review.md, "Final remote verification"](tasks/G0-review.md#fi
 - **Gates not required.** `Codex review gate`, `Claude review gate` and the CI jobs are not required checks yet. That ruleset change needs user authorization (D-002); until then a red gate does not block merging.
 - **M2 residual (accepted).** Codex's read-only sandbox can read `auth.json`. The output guard covers literal, escaped, reversed, hex and base64 forms, but not partial, base32 or split copies.
 - **Lightweight trusted-path review.** The trusted-path review was of a records-only diff (2 files). No trusted-path run has yet reviewed a code change.
+
+## T6 browser and audio validation
+
+Phase A of T6 on `t6/validation` (base `25d2a3d`). Record: [tasks/T6.md](tasks/T6.md). Raw logs, `results.json` files and WAV renders are in `/workspace/webaudio-tinysynth-worktrees/_evidence/t6-validation/`.
+
+### Declared matrix
+
+`tests/browser/matrix.js`: Chromium, Firefox and WebKit × the source and minified builds × quality 0 and 1 × 44.1 and 48 kHz, Math.random seed `0x5eed0001` in the test pages only. A browser that cannot launch fails the run. Assert specs: `embed`, `render`, `gesture`, `url`, `lifecycle`. Observe specs: `hang`, `variation`. Every case has a Node-side deadline, and every engine runs in a worker under `run-with-deadline.js`.
+
+### Local results (linux-x64, Playwright 1.63.0)
+
+| Command | Result |
+| --- | --- |
+| `npm run test:browser:matrix` | PASS: 42 cases, 1,554 checks; Chromium 153.0.8010.12, Firefox 155.0 and WebKit 26.6 each pass 518 of 518; the cross-engine comparison passes |
+| `npm run test:browser:observe` | PASS: 36 cases (hangs detected and recovered; variation evidence) |
+| `npm run lint`, `npm test`, `npm run test:browser`, `npm run verify` | exit 0 |
+| actionlint 1.7.12 with shellcheck 0.11.0 on `browser-matrix.yml` | exit 0 |
+| Failure demonstrations | an empty browser path, and a path without WebKit, both exit 1 ("NOT LAUNCHED"); a mutant source with a +3.93-cent pitch error, and one with `releaseRatio` 2.5, both exit 1 |
+
+### Rendered-audio contract (measured)
+
+- Pitch is within 0.0065 cents of 12-TET in every engine (tolerance 0.05). RPN, Universal and GS tuning, bend, vibrato, CC7, CC11, pan, the envelope, the sustain pedal, drum length, silence and reverb are all within the tolerances in `tests/browser/tolerances.js`.
+- The DynamicsCompressor adds 6.0 ms of latency in all three engines.
+- Generated buffers are deterministic data: the same seed and sample rate give identical hashes in every engine.
+- Same-engine renders are bit-identical in Firefox. In Chromium they differ by up to 5.45e-5 because input summation order varies (engine behavior). In WebKit they differ by up to 9.3e-8 in percussion renders.
+- Across engines, at the default master volume, Firefox's compressor makes loud drums up to 5.5 dB quieter.
+
+### Pending
+
+- **CI is pending.** `.github/workflows/browser-matrix.yml` (one `ubuntu-24.04-arm` job per engine) has not run yet. The arm64 builds of all three engines are available (HTTP 200), but none has been executed on arm64.
+- **Manual listening is pending.** The steps are in [tasks/T6.md §12](tasks/T6.md#12-manual-listening). No automated listening is claimed.
