@@ -622,6 +622,28 @@ describe.each(MODES)("$name: seeking (#21)", ({ variant, quality }) => {
     expect(vol.at(1.03)).toBe(0);
   });
 
+  test("a stop, an immediate resume and then a seek still cancel changes queued before the stop", () => {
+    // Volume 0 at tick 480 is queued for 0.6 s at 0.42 s; the resume at 0.42 s restarts timing at 0.52 s.
+    const s = make();
+    s.synth.loadMIDI(H.toArrayBuffer(withEot([noteOn(0, 0, 60, 100), noteOff(240, 0, 60), cc(480, 0, 7, 0), program(960, 0, 5)], 1920)));
+    s.synth.setLoop(0);
+    const vol = timeline(s.synth.chvol[0].gain, s.env.clock);
+    s.synth.playMIDI();
+    H.runUntil(s.env, () => s.env.clock.ms >= 420, 2000);
+    expect(vol.at(0.6)).toBe(0);
+    s.synth.stopMIDI();
+    s.synth.playMIDI(); // resumes at the program change, at 0.52 s
+    H.runUntil(s.env, () => s.env.clock.ms >= 540, 2000);
+    const notesFrom = s.notes.length;
+    s.synth.locateMIDI(0);
+    s.synth.playMIDI(); // the song again from 0.64 s; its own volume 0 comes at 1.14 s
+    H.runUntil(s.env, () => s.synth.getPlayStatus().play === 0, 5000);
+    close(s.notes[notesFrom][0], 0.64);
+    const full = ROUND(3 * 100 * 100 / (127 * 127));
+    for (const t of [0.6, 0.64, 1.1]) expect(ROUND(vol.at(t)), "at " + t + " s").toBe(full);
+    expect(vol.at(1.15)).toBe(0);
+  });
+
   test("a song loaded at maxTick keeps settings made after loading on its first play; its replay restores the baseline", () => {
     const s = make();
     s.synth.loadMIDI(H.toArrayBuffer(H.makeMidi(PPQ, [noteOn(0, 0, 60, 100), noteOff(0, 0, 60)]))); // maxTick 0
