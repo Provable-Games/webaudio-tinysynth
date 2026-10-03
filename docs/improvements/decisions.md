@@ -307,3 +307,20 @@ The user applied the project principle "check format, not cost": validate only w
 - **Registry:** no count limit and no memory bound. T11 measures and documents memory per wave and per sample rate.
 - **Filters (#27):** `fl` is one of the three types. `ff` is finite and > 0: Hz with `fk:0`, a note-frequency multiple with `fk:1`. `fq` is finite and > 0, converted to dB Q for low-pass and high-pass. `fk` is 0 or 1. The engine still applies a defined, sample-rate-aware handling of cutoffs at or above Nyquist (D-007): the computed cutoff is clamped into (0, Nyquist), with T12 setting the margin from evidence. That is engine behavior, not a throttle. Filter fields without `fl`, or on modulators, are still rejected (format).
 - The consumer mirrors these caps exactly and is informed.
+
+## D-029 Concurrent execution within the approved order (2026-10-03)
+
+At the user's request for more concurrency, five agents now run in parallel, all within the order already approved (D-022, D-026):
+- T4 (fix round).
+- T11 and T3.1, both based on T4's head `d1f0e26`. They merge `improve/integration` once T4 lands.
+- T9-D, the engine-independent #19 demo fixes, which the plan allows in parallel.
+- T6-B.1, browser assertions for the integrated T2 and T3 behavior.
+
+Binding rules are in `_evidence/assignments/CONCURRENCY.md`:
+- Never kill processes you did not start.
+- Use the shared browsers read-only.
+- Use ephemeral ports only.
+- Do not edit README or NOTICE; the supervisor adds those bullets at integration.
+- Recompute test floors after each merge.
+
+Integration stays in dependency order: T4, then T3.1, then T11, then T6-B.1 and T9-D, then T5. Overlapping T5 with T11, and moving T8 (#7 seed) or T12 (#27) ahead of T7, are re-sequences put to the user separately.
