@@ -754,21 +754,59 @@ function WebAudioTinySynthCore(target) {
       return this._slot(m,n).name;
     },
     loadMIDIfromSrc:()=>{
-      this.loadMIDIUrl(this.src);
+      return this.loadMIDIUrl(this.src);
     },
-    loadMIDIUrl:(url)=>{
-      if(!url)
-        return;
-      var xhr=new XMLHttpRequest();
-      xhr.open("GET",url,true);
-      xhr.responseType="arraybuffer";
-      xhr.loadMIDI=this.loadMIDI.bind(this);
-      xhr.onload=function(){
-        if(this.status==200){
-          this.loadMIDI(this.response);
-        }
-      };
-      xhr.send();
+    loadMIDIUrl:(url,o)=>{
+      /* Load a Standard MIDI File from a URL (#14). Returns a promise that resolves with the
+         response's ArrayBuffer once loadMIDI() has installed it. Otherwise it rejects and the
+         song is unchanged: a TypeError for a missing url or an opts.signal that is not an
+         AbortSignal; SYNTH_DISPOSED; opts.signal's reason; LOAD_SUPERSEDED when a newer
+         loadMIDIUrl() starts or a direct loadMIDI() installs a song first; HTTP_STATUS (with
+         status) for a status outside 200-299; NETWORK_ERROR; or loadMIDI()'s error. It never
+         throws, and an ignored rejection is handled. A newer call or the signal aborts the
+         request; dispose() settles the promise and discards the response when it arrives. */
+      const s=o && o.signal,r=new Promise((res,rej)=>{
+        if(!url)
+          throw new TypeError("url");
+        if(this._dead)
+          throw CodedError("SYNTH_DISPOSED");
+        if(s && s.aborted)
+          throw s.reason;
+        const x=new XMLHttpRequest(),s0=this.song,
+          f=(e,v)=>{ // settles once and unhooks the load
+            if(this._pend.delete(d)){
+              s && s.removeEventListener("abort",a);
+              e ? rej(e) : res(v);
+            }
+          },
+          d=(e)=>{ // dispose() calls it without e; a newer load with e, and aborts the request
+            f(CodedError(e ? "LOAD_SUPERSEDED" : "SYNTH_DISPOSED"));
+            e && x.abort();
+          },
+          a=()=>{ f(s.reason); x.abort(); };
+        x.open("GET",url);
+        x.responseType="arraybuffer";
+        s && s.addEventListener("abort",a); // throws for a bad signal, before anything changes
+        x.onload=()=>{
+          if(this._pend.has(d)){
+            try{
+              if(this.song!==s0) // a direct loadMIDI() came first
+                throw CodedError("LOAD_SUPERSEDED");
+              if(x.status<200 || x.status>299)
+                throw Object.assign(CodedError("HTTP_STATUS"),{status:x.status});
+              this.loadMIDI(x.response);
+              f(0,x.response);
+            }catch(e){ f(e); }
+          }
+        };
+        x.onerror=x.onabort=()=>f(CodedError("NETWORK_ERROR"));
+        this._pend.forEach(g=>g.u && g(1)); // the newest load wins
+        d.u=1;
+        this._pend.add(d);
+        x.send();
+      });
+      r.catch(()=>{}); // fire-and-forget calls cause no unhandled rejection
+      return r;
     },
     reset:()=>{
       for(let i=0;i<16;++i){
