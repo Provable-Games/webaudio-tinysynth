@@ -128,13 +128,14 @@ describe.each(variants)("$name: replaying a completed song (#10)", (variant) => 
     replay.times.forEach((t, i) => close(t, at(ISSUE10.tempos, ticks[i])));
   });
 
-  test("playMIDI on a completed song makes the same calls as locateMIDI(0) then playMIDI", () => {
+  test("with no voice left, playMIDI on a completed song makes the same calls as locateMIDI(0) then playMIDI", () => {
     const [a, b] = [synthFor(variant), synthFor(variant)];
     for (const s of [a, b]) {
       s.synth.loadMIDI(H.toArrayBuffer(H.makeMidi(PPQ, ISSUE10.ev)));
       s.synth.setLoop(0);
       s.synth.setProgram(0, 7);
-      playPass(s, 300);
+      playPass(s, 6000);
+      expect(s.synth.notetab).toHaveLength(0);
       s.synth.setProgram(0, 40); // a manual override after the end
       s.synth.send([0xb0, 7, 20]);
     }
@@ -145,6 +146,32 @@ describe.each(variants)("$name: replaying a completed song (#10)", (variant) => 
     expect(pa.notes).toEqual(pb.notes);
     // The replay restored program 0 from the seek baseline (D-005).
     expect(pa.notes.every((n) => n[4] === a.synth.program[0].p)).toBe(true);
+  });
+
+  test("a replay at the end lets the previous pass's scheduled and sounding notes play, as upstream; locateMIDI(0) stops them", () => {
+    // Three short notes in the last 0.2 s: the song reports its end while they are still scheduled.
+    const bytes = H.makeMidi(PPQ, [noteOn(0, 0, 60, 100), noteOff(240, 0, 60), noteOn(1800, 0, 62, 100), noteOff(1820, 0, 62),
+      noteOn(1840, 0, 64, 100), noteOff(1860, 0, 64), noteOn(1880, 0, 65, 100), noteOff(1900, 0, 65)]);
+    /* Oscillators of the first pass that are stopped before they start or cut at once, after `restart` at the end. */
+    const cut = (source, restart) => {
+      const s = H.createSynth(source, "replay");
+      s.synth.loadMIDI(H.toArrayBuffer(bytes));
+      s.synth.setLoop(0);
+      s.synth.playMIDI();
+      H.runUntil(s.env, () => s.synth.getPlayStatus().play === 0, 5000);
+      const now = s.env.clock.ms / 1000, from = s.trace.length;
+      const started = new Map(s.trace.map((l) => JSON.parse(l)).filter(([op, id, t]) => op === "start" && id.startsWith("osc#") && t > 0).map(([, id, t]) => [id, t]));
+      restart(s.synth);
+      const stopped = s.trace.slice(from).map((l) => JSON.parse(l)).filter(([op, id, t]) => op === "stop" && started.has(id) && t === null).map(([, id]) => id);
+      return { now, scheduled: [...started.values()].filter((t) => t > now).length, stopped, neverStarted: stopped.filter((id) => started.get(id) > now).length };
+    };
+    const reference = cut(H.referenceSource(), (y) => y.playMIDI());
+    const replay = cut(variant.source, (y) => y.playMIDI());
+    const seek = cut(variant.source, (y) => { y.locateMIDI(0); y.playMIDI(); });
+    expect(reference.scheduled).toBeGreaterThanOrEqual(3); // the last three notes had not started when play became 0
+    expect(replay.scheduled).toBe(reference.scheduled);
+    expect([reference.stopped, replay.stopped]).toEqual([[], []]);
+    expect(seek.neverStarted).toBe(seek.scheduled); // a user seek still stops every voice
   });
 
   test("a stopped song keeps manual overrides when resumed, and loses them on replay after its end", () => {
@@ -575,11 +602,12 @@ describe.each(MODES)("$name: seeking (#21)", ({ variant, quality }) => {
     expect(mine.slice(1).map(([op, , , t]) => [op, ROUND(t)])).toEqual([["setValueAtTime", 1.56]]);
   });
 
-  test("a seek right after stopMIDI cancels the queued changes; a later seek cancels nothing", () => {
+  test("every seek cancels queued channel changes, the scheduler's and the caller's timed ones", () => {
     const s = make();
     s.synth.loadMIDI(H.toArrayBuffer(QUEUED));
     s.synth.setLoop(0);
-    const vol = timeline(s.synth.chvol[0].gain, s.env.clock);
+    const vol = timeline(s.synth.chvol[0].gain, s.env.clock), pan2 = timeline(s.synth.chpan[1].pan, s.env.clock);
+    const mod3 = timeline(s.synth.chmod[2].gain, s.env.clock), vol4 = timeline(s.synth.chvol[3].gain, s.env.clock);
     s.synth.playMIDI();
     H.runUntil(s.env, () => s.env.clock.ms >= 960, 2000); // tick 960's volume 20 is queued for 1.1 s
     s.synth.stopMIDI();
@@ -588,9 +616,22 @@ describe.each(MODES)("$name: seeking (#21)", ({ variant, quality }) => {
     expect(channelCancels(s.synth, s.trace.slice(from))).toHaveLength(48);
     expect(ROUND(vol.at(1.2))).toBe(ROUND(3 * 90 * 90 / (127 * 127))); // tick 0's volume, rebuilt; not 20
     H.runUntil(s.env, () => false, 500);
+    // Changes the caller schedules ahead: a timed send() and timed setters (the Codex reproduction on PR #34).
+    const t = s.env.clock.ms / 1000 + 1;
+    s.synth.send([0xb0, 7, 0], t);
+    s.synth.setPan(1, 0, t);
+    s.synth.setModulation(2, 127, t);
+    s.synth.setExpression(3, 0, t);
+    expect([vol.at(t), pan2.at(t), ROUND(mod3.at(t)), vol4.at(t)]).toEqual([0, -1, 100, 0]);
     from = s.trace.length;
-    s.synth.locateMIDI(700); // nothing is queued any more: the same calls as before the cancel existed
-    expect(channelCancels(s.synth, s.trace.slice(from))).toEqual([]);
+    s.synth.locateMIDI(0);
+    expect(channelCancels(s.synth, s.trace.slice(from))).toHaveLength(48);
+    s.synth.playMIDI();
+    H.runUntil(s.env, () => s.env.clock.ms / 1000 >= t + 0.1, 3000);
+    // At that time the song, playing from tick 0 again since t - 0.9 s, is past tick 600 (channel 1 volume 50);
+    // the other channels are at the defaults. None of the caller's changes took effect.
+    const full = ROUND(3 * 100 * 100 / (127 * 127));
+    expect([ROUND(vol.at(t)), pan2.at(t), mod3.at(t), ROUND(vol4.at(t))]).toEqual([ROUND(3 * 50 * 50 / (127 * 127)), 0, 0, full]);
   });
 
   test("a load cancels no channel automation, even replacing a playing song", () => {
@@ -704,6 +745,16 @@ describe.each(variants)("$name: seek positions, overrides and edge cases (#21)",
     expect([s.synth.masterTuningC, s.synth.masterTuningF, s.synth.notetab.length]).toEqual([0, 0, 0]);
     expect([s.synth.masterVol, s.synth.reverbLev, s.synth.quality, s.synth.voices, s.synth.loop, s.synth.loopEnd]).toEqual([0.3, 0.1, 0, 16, 1, 960]);
     expect(s.synth.program[5].p[0].w).toBe("square");
+  });
+
+  test("a song of SysEx events only plays as timed silence and applies them (#9 boundary)", () => {
+    const s = synthFor(variant);
+    s.synth.loadMIDI(H.toArrayBuffer(H.makeMidi(PPQ, [sysex(0, [0x7f, 0x7f, 0x04, 0x04, 0x00, 0x42, 0xf7]), gs(960, 0x11, 0x40, 0x50)])));
+    s.synth.setLoop(0);
+    s.synth.playMIDI();
+    expect(s.synth.getPlayStatus()).toEqual({ play: 1, maxTick: 960, curTick: 0 });
+    expect(H.runUntil(s.env, () => s.synth.getPlayStatus().play === 0, 5000)).toBe(true);
+    expect([s.synth.masterTuningC, s.synth.scaleTuning[0][0], s.notes.length]).toEqual([2, 0.16, 0]);
   });
 
   test("a song of state events only plays as timed silence and ends (#9 boundary)", () => {

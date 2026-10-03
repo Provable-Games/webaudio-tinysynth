@@ -92,6 +92,12 @@ const CASES = {
     for (let i = 0; i < 50; ++i) s.step();
     return { status: s.status(), sends: s.sent.length, notes: noteOnTimes(s) };
   },
+  "one-tick loop at tick 0 with End-of-Track at 1920, loopEnd 0": (v) => {
+    const s = instrument(v, withEot([noteOn(0, 0, 60, 100), noteOff(0, 0, 60)], 1920), (y) => y.setLoop(1));
+    s.synth.playMIDI();
+    for (let i = 0; i < 50; ++i) s.step();
+    return { status: s.status(), sends: s.sent.length, notes: noteOnTimes(s) };
+  },
   "one-tick loop with a negative loopEnd": (v) => {
     const s = instrument(v, H.makeMidi(PPQ, [noteOn(0, 0, 60, 100), noteOff(0, 0, 60)]), (y) => { y.setLoop(1); y.setLoopEnd(-480); });
     s.synth.playMIDI();
@@ -307,6 +313,9 @@ function parent() {
         assert.deepEqual(r.notes, [0.1]);
         const at960 = get("one-tick loop at tick 960, loopEnd 0");
         assert.deepEqual([at960.status, at960.sends, at960.notes], [{ play: 0, maxTick: 960, curTick: 960 }, 2, [0.1]]);
+        // The rest before End-of-Track does not count: a pass spans the retained events only.
+        const trailing = get("one-tick loop at tick 0 with End-of-Track at 1920, loopEnd 0");
+        assert.deepEqual([trailing.status, trailing.sends, trailing.notes], [{ play: 0, maxTick: 1920, curTick: 1920 }, 2, [0.1]]);
         const negative = get("one-tick loop with a negative loopEnd");
         assert.deepEqual([negative.status, negative.sends, negative.notes], [{ play: 0, maxTick: 0, curTick: 0 }, 2, [0.1]]);
       });
