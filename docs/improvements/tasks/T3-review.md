@@ -260,3 +260,54 @@ The fixed scheduler cases cover:
 | R12b on 6c0a353 | 36,917 | 9,939 | | −58 B / +64 B |
 
 `npm run verify` confirms source and min.js parity at both heads, and every adversarial suite ran on both builds with identical outcomes.
+
+## Delta re-review: `99177f4`
+
+| Item | Value |
+| --- | --- |
+| Head | `t3/transport` at `99177f4` (`6c0a353..99177f4`: `d6a4506`, `1ae44b6`, `1ee5f66`, rebuild). Applies D-019 as revised on improve/integration in `b1b018c`. |
+| min.js | `b49e8ceb…`, 36,960 B, 9,948 B gzip (verified). Change from T2: −15 B raw, +73 B gzip. |
+| Validation | Full-history scratch clone (`logs/h9-clone/`): `npm ci`, `lint`, `verify`, `npm test` (unit 280, node 105, regressions 3 of 3), `pack:check`, `test:browser` all exit 0 |
+
+**Verdict: accept.** F3 and F4 are fixed, F7's gaps are closed and F10's wording is corrected. F1 has not regressed, and loads are still trace-identical to upstream. Two new LOW items follow (F11, F12); neither blocks.
+
+| Check | Result at `99177f4` (earlier result) |
+| --- | --- |
+| F3: caller-scheduled seek fuzz (`adv-seek.js` with `CALLER_TIMED=1`, seed 22, 300 × 2 builds, mock) | **600 of 600** (414 at `6c0a353`) |
+| Seek fuzz, standard (seed 21) | 600 of 600 |
+| F4: replay at the flip, queued notes that never start (`adv-stale.js`, PICKUP) | **0** (6 before; upstream 0) |
+| F4: previous-pass voices at a replay (`adv-replay-voices.js`) | none stopped, still in `notetab`; a user `locateMIDI(0)` right after stops both oscillators |
+| F1: Chromium replay at the flip / stop, seek, play / replay after 1 s (5 runs × 2 builds each) | 10 of 10, 10 of 10, 10 of 10 correct (gain 1.86) |
+| F1: mock stale cases and Codex's stop → resume → seek case | all correct |
+| Load trace against upstream (`adv-trace-h9.js`: load while playing, just stopped or just ended, then play; 40 songs × 4 builds) | 160 of 160 identical |
+| Upstream differential (`adv-compat.js`, 60 songs × 2 builds: default loop wrap, load path, one pass) | 360 of 360 identical |
+| Replay timing (`adv-replay.js`) | 400 of 400 |
+| Chromium flood | responsive, maximum lag 20 ms |
+| Nothing-queued seeks | now 48 channel cancels each (80 of 80), as revised D-019 intends; seeks are not upstream-identical by design |
+
+**Surviving mutants, rerun on `99177f4`** (`mutation/summary.tsv`, both builds rebuilt):
+
+| Mutant | Result |
+| --- | --- |
+| R1/H1 → K1, wrap gate on `maxTick` | killed by the new trailing-End-of-Track case (scheduler, 2 failures) |
+| R2/H2 → K2, SysEx-only song treated as silent | killed (unit, 2) |
+| H5, `queued` not cleared | obsolete: `queued` was removed |
+
+**New mutants on the new code:**
+
+| Mutant | Result |
+| --- | --- |
+| N1, replay cuts the previous pass's voices | killed (2) |
+| N2, cancel only while playing | killed (12) |
+| N3, cancel on load too | killed (unit 4; regressions 1 of 3 pass) |
+| N4, replay drops the previous pass's voices from `notetab` without stopping them | **survives** (F11) |
+
+### F11 (LOW): no test pins that a seek after a replay still stops the previous pass's voices
+
+N4 leaves those voices unreachable: a later `stopMIDI` or `locateMIDI` cannot stop them, and notes held by sustain would hang. The code is right (shown above). Add a test that seeks right after a replay at the flip and expects the old oscillators to stop.
+
+### F12 (LOW, accept or document): previous-pass tails sound through the new pass's channel state
+
+The replay keeps the old voices but resets and cancels the shared channel gain. For example, a song that fades CC7 to 0 has its last note return to the baseline gain of 1.86 for about 0.16 s plus release, where upstream kept it faded (`adversarial/replay-voices-scratchpad.json`). This is inherent to shared channel nodes. Note it beside the D-019 replay bullet.
+
+F5, F6, F8 and F9 are unchanged and recorded as accepted or deferred in the revised D-019.
