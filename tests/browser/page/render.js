@@ -6,7 +6,8 @@
  * with setAudioContext(), schedules every note and controller with an explicit
  * time, renders, and returns the PCM and some data about the run.
  *
- * Test control: the intervals the constructor started (its 60 ms scheduler)
+ * Test controls: the constructor's own context is a never-rendered
+ * OfflineAudioContext (see below), and the intervals the constructor started (its 60 ms scheduler)
  * are cleared before rendering, unless spec.keepScheduler is set. The
  * scheduler cannot play a song offline, but it still runs while the offline
  * context renders and prunes released voices whenever the context's
@@ -25,6 +26,8 @@
  *   slots       [[start, end], ...] seconds; per-slot summaries computed here
  *   threshold   magnitude threshold for the slot first/last sample indices
  *   keepScheduler  leave the library's interval running during the render
+ *   realtimeInternal  let the constructor create its usual realtime AudioContext
+ *               (by default it gets a never-rendered OfflineAudioContext)
  */
 (function () {
   "use strict";
@@ -95,7 +98,22 @@
     t6.seed(spec.seed);
     var rejectionsBefore = t6.rejections.length;
     var intervalsBefore = t6.intervals.length;
-    var synth = new WebAudioTinySynth(spec.options || {});
+    // The constructor always creates its own context with `new AudioContext()`.
+    // Unless spec.realtimeInternal is set, that context is a never-rendered
+    // OfflineAudioContext, so no realtime audio thread (playing the
+    // constructor's warm-up note) runs while the offline render runs. On
+    // arm64 CI, WebKit's quality-1 drum renders differed by up to 0.56 between
+    // identical runs with a realtime internal context per render.
+    var RealAudioContext = window.AudioContext;
+    if (!spec.realtimeInternal) {
+      window.AudioContext = function () { return new OfflineAudioContext(nch, 128, spec.sr); };
+    }
+    var synth;
+    try {
+      synth = new WebAudioTinySynth(spec.options || {});
+    } finally {
+      window.AudioContext = RealAudioContext;
+    }
     var schedulers = t6.intervals.slice(intervalsBefore).filter(function (r) { return r.active; });
     if (!spec.keepScheduler) schedulers.forEach(function (r) { window.clearInterval(r.id); });
     var internal = synth.getAudioContext();
@@ -127,6 +145,7 @@
           randomCalls: randomCalls,
           schedulerIntervals: schedulers.map(function (r) { return r.ms; }),
           schedulerStopped: !spec.keepScheduler,
+          internalContext: internal ? (internal instanceof OfflineAudioContext ? "offline" : "realtime") : null,
           buffers: buffers,
           hash: hash(chs),
           rejections: t6.rejections.slice(rejectionsBefore),

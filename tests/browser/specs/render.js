@@ -69,6 +69,7 @@ async function renderScenario(p, s, ctx, variant = {}) {
   const sr = parts[0].sr;
   return {
     sr, channels, buffers: parts[0].buffers, randomCalls: parts[0].randomCalls,
+    internalContext: [...new Set(parts.map((r) => r.internalContext))].join(","),
     hash: parts.map((r) => r.hash).join("+"),
     rejections: parts.flatMap((r) => r.rejections),
     whole: { nan: parts.reduce((a, r) => a + r.whole.nan, 0), inf: parts.reduce((a, r) => a + r.whole.inf, 0), peak: Math.max(...parts.map((r) => r.whole.peak)) },
@@ -78,7 +79,27 @@ async function renderScenario(p, s, ctx, variant = {}) {
       return { label: s.items[i].label, peak: Math.max(...r.channels.map((x) => A.peak(x, a, b))), rms: Math.hypot(...r.channels.map((x) => A.rms(x, a, b))) / Math.sqrt(r.channels.length) };
     }),
     renders: parts.length,
+    items: parts.map((r, i) => ({ label: s.items[i].label, length: r.channels[0].length })),
   };
+}
+
+/* For a combined item result: the item with the largest difference and where it starts. */
+function worstItem(a, b) {
+  if (!a.items || !b.items || !a.channels || !b.channels) return "";
+  let at = 0, worst = null;
+  a.items.forEach((it) => {
+    let m = 0, first = -1;
+    for (let c = 0; c < a.channels.length; ++c) {
+      for (let i = at; i < at + it.length; ++i) {
+        const d = Math.abs(a.channels[c][i] - b.channels[c][i]);
+        if (d > 0 && (first < 0 || i - at < first)) first = i - at;
+        if (d > m) m = d;
+      }
+    }
+    if (m > 0 && (!worst || m > worst.m)) worst = { label: it.label, m, first };
+    at += it.length;
+  });
+  return worst ? "; worst " + worst.label + " (" + worst.m.toExponential(3) + ", first difference at sample " + worst.first + ")" : "";
 }
 
 /* Largest absolute sample difference between two renders (Infinity if their shapes differ). */
@@ -115,6 +136,7 @@ function cases(shared) {
           let renders = 0;
           const finiteProblems = [];
           const overFullScale = [];
+          const realtimeInternal = [];
           const gmOver = {};
           const unknownRejections = [];
           const measurements = {};
@@ -135,6 +157,7 @@ function cases(shared) {
                 unknownRejections.push(...c.unknown.map((u) => s.name + "/" + build + ": " + u.name + ": " + u.message));
                 if (r.whole.nan || r.whole.inf) finiteProblems.push(s.name + "/" + build + " " + JSON.stringify(r.whole));
                 if (r.whole.peak > 1) overFullScale.push(s.name + "/" + build + " " + r.whole.peak.toFixed(4));
+                if (r.internalContext !== "offline") realtimeInternal.push(s.name + "/" + build + " " + r.internalContext);
                 res[build].push(r);
               }
             }
@@ -144,7 +167,7 @@ function cases(shared) {
             else sameEngine.differing[s.name + " source/min"] = diff;
             const parity = diff <= tol.sameEngineSample;
             t.check(s.name + ": min renders the same PCM as source (max |diff| <= " + tol.sameEngineSample + ")", parity,
-              identical ? "bit-identical" : "max |diff| " + diff.toExponential(3));
+              identical ? "bit-identical" : "max |diff| " + diff.toExponential(3) + (parity ? "" : worstItem(res.source[0], res.min[0])));
             for (const build of parity ? ["source"] : matrix.builds) {
               const prefix = s.name + (parity ? "" : " [" + build + "]") + ": ";
               const check = (name, ok, detail) => t.check(prefix + name, ok, detail);
@@ -163,6 +186,7 @@ function cases(shared) {
             if (["pitch-sine", "gm-drums", "reverb"].includes(s.name)) kept[s.name] = res.source[0];
           }
           t.check("all " + renders + " renders finite (no NaN or Infinity)", !finiteProblems.length, finiteProblems.slice(0, 3).join(" | "));
+          t.check("no realtime context ran during the renders (constructor context was the offline stub)", !realtimeInternal.length, realtimeInternal.slice(0, 3).join(" | "));
           t.observe("renders with samples beyond full scale (not asserted)", { renders: overFullScale, slots: gmOver });
           t.check("no unrecognized unhandled rejections", !unknownRejections.length, unknownRejections.slice(0, 3).join(" | "));
           t.observe("known baseline unhandled rejections (#12, removed by T4)", rejectionCounts);
@@ -176,7 +200,7 @@ function cases(shared) {
             if (r.hash === kept[name].hash) sameEngine.bitIdentical.push(name + " repeat");
             else sameEngine.differing[name + " repeat"] = d;
             t.check(name + ": a repeat render in a fresh page matches (max |diff| <= " + tol.sameEngineSample + ")", d <= tol.sameEngineSample,
-              r.hash === kept[name].hash ? "bit-identical" : "max |diff| " + d.toExponential(3));
+              r.hash === kept[name].hash ? "bit-identical" : "max |diff| " + d.toExponential(3) + (d <= tol.sameEngineSample ? "" : worstItem(kept[name], r)));
           }
           for (const name of ["gm-drums", "reverb"]) {
             const s = SCENARIOS.find((x) => x.name === name);
