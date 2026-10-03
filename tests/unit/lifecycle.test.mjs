@@ -665,7 +665,7 @@ describe.each(variants)("$name: scheduled percussion (D-019)", (variant) => {
   function drums(s) {
     const now = s.env.clock.ms / 1000;
     const hits = s.synth._src.filter((v) => v.ch === 9);
-    return { ahead: hits.filter((v) => v.t > now).flatMap(ids), sounding: hits.filter((v) => v.t <= now).flatMap(ids) };
+    return { ahead: hits.filter((v) => v.t > now).flatMap(ids), sounding: hits.filter((v) => v.t <= now && now < v.e).flatMap(ids) };
   }
   const touched = (trace, from) => new Set(calls(trace, from).map(([, id]) => id));
 
@@ -773,6 +773,18 @@ describe.each(variants)("$name: stopMIDI() silences what the transport scheduled
     const after = calls(s.trace, from);
     expect(after.filter(([op, id]) => op === "cancel" && params.has(id))).toEqual([]);
     expect(after.filter(([, id]) => hits.includes(id))).toEqual([]);
+  });
+
+  test("stopMIDI() used as an event listener (an Event argument) is still a full stop", () => {
+    const s = make(variant);
+    playUntilDrumAhead(s);
+    const hits = s.synth._src.filter((v) => v.ch === 9 && v.e > s.env.clock.ms / 1000).flatMap((v) => v.o.map((o) => o._id));
+    const from = s.trace.length;
+    s.synth.stopMIDI({ type: "click" });
+    const after = calls(s.trace, from);
+    for (const id of hits) expect(after).toContainEqual(["stop", id, null]);
+    expect(after.some(([op]) => op === "cancel")).toBe(true);
+    expect(s.synth.stopMIDI.length).toBe(0);
   });
 
   test("a stop when nothing is playing, before first use or after dispose() does not throw", async () => {

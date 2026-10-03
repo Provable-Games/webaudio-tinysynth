@@ -676,12 +676,12 @@ function WebAudioTinySynthCore(target) {
          Without a song this does nothing. Queued channel volume, pan and modulation
          changes (from the scheduler's lookahead or a timed send()) are cancelled first, by
          stopMIDI(), so they cannot override the rebuilt state. loadMIDI passes load, which
-         skips the cancel and keeps the upstream load calls (D-019, D-023). */
+         stops as upstream instead and keeps the upstream load calls (D-019, D-023). */
       const s=this.song,p=this.playing;
       let i,e;
       if(!s)
         return;
-      this.stopMIDI(load);
+      load ? this._halt() : this.stopMIDI();
       this.reset();
       for(i=0;i<16;)
         this.scaleTuning[i++].fill(0);
@@ -736,20 +736,29 @@ function WebAudioTinySynthCore(target) {
       this.masterTuningF=0;
       this.rhythm[9]=1;
     },
-    stopMIDI:(load)=>{
-      /* A caller's stop silences everything the transport scheduled (D-023, #11): melodic
-         voices, as upstream; every percussion hit, sounding or scheduled ahead (D-019); and
-         the queued channel volume, pan and modulation automation, cancelled from now on. A
-         seek stops the same way. loadMIDI's internal stops pass load and keep the upstream
-         calls. Nodes a caller swapped into chvol are handled (not a supported API). */
-      const c=this.actx;
+    _halt:()=>{
+      /* The upstream stop, kept for loadMIDI's internal stops (D-023). */
       this.playing=0;
       for(var i=0;i<16;++i)
         this.allSoundOff(i);
-      if(!load && c){
-        for(i=this._src.length-1;i>=0;--i)
-          if(this._src[i].ch!=undefined)
-            this._pruneNote(this._src.splice(i,1)[0]);
+    },
+    stopMIDI:()=>{
+      /* A caller's stop silences everything the transport scheduled (D-023, #11): melodic
+         voices, as upstream; every percussion hit, sounding or scheduled ahead (D-019); and
+         the queued channel volume, pan and modulation automation, cancelled from now on. A
+         seek stops the same way. Nodes a caller swapped into chvol are handled (not a
+         supported API). */
+      const c=this.actx;
+      let i,v;
+      this._halt();
+      if(c){
+        for(i=this._src.length-1;i>=0;--i){
+          if((v=this._src[i]).ch!=undefined){
+            this._src.splice(i,1);
+            if(v.e>c.currentTime) // a hit that has ended needs nothing
+              this._pruneNote(v);
+          }
+        }
         for(i=0;i<16;++i)
           [(this.chvol[i]||0).gain,(this.chmod[i]||0).gain,(this.chpan[i]||0).pan].forEach(a=>a && a.cancelScheduledValues(c.currentTime));
       }
@@ -901,7 +910,7 @@ function WebAudioTinySynthCore(target) {
         ++tr;
       }
       song.ev.sort(function(x,y){return x.t-y.t});
-      this.stopMIDI(1); // internal: the upstream calls (D-023)
+      this._halt(); // internal: the upstream calls (D-023)
       if(tr)
         this.notetab.length=0;
       this.maxTick=maxTick;
