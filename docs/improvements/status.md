@@ -72,5 +72,5 @@ Local checks at f01ca19 all exit 0: `npm ci`, lint, verify, `pack:check`, `npm t
 ## Next actions
 
 1. (running) T2 parser and T6 phase A.
-2. (done) Umbrella draft PR #31 `improve/integration → main`.
+2. Umbrella PR #31 `improve/integration → main` was converted back to draft on 2026-10-03 at the user's request. It is marked ready only at the delivery gate (G2), so the AI reviews don't re-run on every integration push.
 3. User decision pending: whether to make `CI` jobs and the `Codex review gate`/`Claude review gate` required checks (a ruleset change, D-002), and whether the org wants Dependabot secrets or an API-key Codex credential (D-014).
