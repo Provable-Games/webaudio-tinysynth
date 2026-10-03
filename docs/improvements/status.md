@@ -27,7 +27,7 @@ States: `pending`, `running`, `review`, `accepted`, `blocked`.
 | Task | Issues | Branch / worktree | Base | State | Accepted commit | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
 | T0 | #16 (baseline), #7/#21/#26/#27 contracts | `t0/baseline` | b70ba90 | accepted | c2252bc | Policy decisions D-004 to D-007 and D-010; evidence in tasks/T0.md |
-| T1 | #5 #15 #16 #22 #23 #24 #25 | tooling: `t1/tooling`; AI review: `t1/ai-review` | 1e6184c | running | | Two parallel agents; tooling owns package/lockfile. Initial CI gate G0 |
+| T1 | #5 #15 #16 #22 #23 #24 #25 | tooling: `t1/tooling`; AI review: `t1/ai-review` | 1e6184c | running | | Tooling running. AI review in review: local work complete (1f17527), PR #28 bootstrap run pending. Initial CI gate G0 |
 | T9A | #19 #20 (read-only audit) | `t9/audit` | 1e6184c | accepted | 3e9d013 | Findings and T9 plan in tasks/T9A.md; D-011 |
 | T2 | #4 #6 | `t2/parser` | after G0 | pending | | |
 | T3 | #8 #9 #10 #21 | `t3/transport` | after T2 | pending | | D-005 |
