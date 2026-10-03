@@ -101,10 +101,10 @@ function cases(shared) {
           t.check("self-check: nodes by type", m && m.nodes.Oscillator === 2 && m.nodes.Gain === 2 && m.nodes.BufferSource === 1, JSON.stringify(m && m.nodes));
           t.check("self-check: live edges after connect/disconnect (osc>g1, src>g1, g1>destination, lfo>g1.gain)", m && m.liveEdges === 4 && m.paramEdges === 1, m && m.liveEdges + " edges, " + m.paramEdges + " to params");
           t.check("self-check: sources started and stop() calls", m && m.sources.started === 3 && m.sources.stopCalls === 2, JSON.stringify(m && m.sources));
-          const bs = (x) => (x && x.sourcesByType.BufferSource) || {};
+          const bs = (x) => (x && x.sourcesByType && x.sourcesByType.BufferSource) || {};
           t.check("self-check: the buffer source is tracked (started, active before rendering)", bs(m).started === 1 && bs(m).active === 1, JSON.stringify(m && m.sourcesByType));
           t.check("self-check: both stopped sources (oscillator and buffer source) reported ended after rendering",
-            a && bs(a).ended === 1 && a.sourcesByType.Oscillator && a.sourcesByType.Oscillator.ended >= 1, JSON.stringify(a && a.sourcesByType));
+            a && bs(a).ended === 1 && a.sourcesByType && a.sourcesByType.Oscillator && a.sourcesByType.Oscillator.ended >= 1, JSON.stringify(a && (a.sourcesByType || a.sources)));
           t.check("self-check: intervals (one of two cleared, then the other)", r.mid.activeIntervals === r.before + 1 && r.intervalsEnd === r.before, r.before + " -> " + r.mid.activeIntervals + " -> " + r.intervalsEnd);
           t.check("self-check: no page errors", !p.pageErrors.length, p.pageErrors.join(" | "));
         }
