@@ -28,6 +28,9 @@ const SELF_CHECK = async () => {
   osc.connect(g1); g1.connect(ctx.destination); osc.connect(g2); osc.disconnect(g2);
   lfo.connect(g1.gain); lfo.connect(osc.detune); lfo.disconnect(osc.detune);
   osc.start(0); osc.stop(0.05); lfo.start(0);
+  // A buffer source: AudioBufferSourceNode has its own start(), which must be tracked too.
+  const buf = ctx.createBuffer(1, 441, 44100), src = ctx.createBufferSource();
+  src.buffer = buf; src.connect(g1); src.start(0, 0); src.stop(0.02);
   const id1 = setInterval(() => {}, 1000), id2 = setInterval(() => {}, 2000);
   clearInterval(id1);
   const mid = L.snapshot();
@@ -95,10 +98,13 @@ function cases(shared) {
           const r = await p.page.evaluate(SELF_CHECK);
           const m = r.mid.contexts[r.key], a = r.after.contexts[r.key];
           t.check("self-check: one new offline context recorded", !!m && m.kind === "offline", r.key + " " + (m && m.kind));
-          t.check("self-check: nodes by type", m && m.nodes.Oscillator === 2 && m.nodes.Gain === 2, JSON.stringify(m && m.nodes));
-          t.check("self-check: live edges after connect/disconnect (osc>g1, g1>destination, lfo>g1.gain)", m && m.liveEdges === 3 && m.paramEdges === 1, m && m.liveEdges + " edges, " + m.paramEdges + " to params");
-          t.check("self-check: sources started and stop() calls", m && m.sources.started === 2 && m.sources.stopCalls === 1, JSON.stringify(m && m.sources));
-          t.check("self-check: the stopped source reported ended after rendering", a && a.sources.ended >= 1, JSON.stringify(a && a.sources));
+          t.check("self-check: nodes by type", m && m.nodes.Oscillator === 2 && m.nodes.Gain === 2 && m.nodes.BufferSource === 1, JSON.stringify(m && m.nodes));
+          t.check("self-check: live edges after connect/disconnect (osc>g1, src>g1, g1>destination, lfo>g1.gain)", m && m.liveEdges === 4 && m.paramEdges === 1, m && m.liveEdges + " edges, " + m.paramEdges + " to params");
+          t.check("self-check: sources started and stop() calls", m && m.sources.started === 3 && m.sources.stopCalls === 2, JSON.stringify(m && m.sources));
+          const bs = (x) => (x && x.sourcesByType.BufferSource) || {};
+          t.check("self-check: the buffer source is tracked (started, active before rendering)", bs(m).started === 1 && bs(m).active === 1, JSON.stringify(m && m.sourcesByType));
+          t.check("self-check: both stopped sources (oscillator and buffer source) reported ended after rendering",
+            a && bs(a).ended === 1 && a.sourcesByType.Oscillator && a.sourcesByType.Oscillator.ended >= 1, JSON.stringify(a && a.sourcesByType));
           t.check("self-check: intervals (one of two cleared, then the other)", r.mid.activeIntervals === r.before + 1 && r.intervalsEnd === r.before, r.before + " -> " + r.mid.activeIntervals + " -> " + r.intervalsEnd);
           t.check("self-check: no page errors", !p.pageErrors.length, p.pageErrors.join(" | "));
         }
@@ -115,7 +121,7 @@ function cases(shared) {
             contextState: marks.contextState,
             intervals: { constructed: marks.constructed.activeIntervals, afterStopMIDI: marks.afterStopMIDI.activeIntervals, afterThreeSynths: marks.afterTwoMoreSynths.activeIntervals, afterDroppingReferences: marks.afterDroppingReferences.activeIntervals },
             firstContext: { stateAfterReplacement: marks.firstContextStateAfterReplacement, closeCalls: c0(marks.afterSetAudioContext).closeCalls, liveEdgesAfterReplacement: c0(marks.afterSetAudioContext).liveEdges, activeSourcesAfterReplacement: (c0(marks.afterSetAudioContext).sources || {}).active },
-            voices: { playing: c0(marks.playing).sources, afterRelease: c0(marks.afterRelease).sources, edgesPlaying: c0(marks.playing).liveEdges, edgesAfterRelease: c0(marks.afterRelease).liveEdges },
+            voices: { playing: c0(marks.playing).sourcesByType, afterRelease: c0(marks.afterRelease).sourcesByType, edgesPlaying: c0(marks.playing).liveEdges, edgesAfterRelease: c0(marks.afterRelease).liveEdges },
             contexts: Object.keys(marks.afterTwoMoreSynths.contexts).length,
             disposeMethod: marks.dispose,
           });

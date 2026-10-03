@@ -1,4 +1,4 @@
-/* global window, AudioContext, OfflineAudioContext, BaseAudioContext, AudioNode, AudioParam, AudioScheduledSourceNode */
+/* global window, AudioContext, OfflineAudioContext, BaseAudioContext, AudioNode, AudioParam */
 /*
  * Lifecycle instrumentation for test pages (#11), inlined after the prelude
  * and before the library when a page is built with {instrument: true}.
@@ -10,8 +10,10 @@
  *     AudioNode (node id, type, context);
  *   - AudioNode.prototype.connect/disconnect (live edges to nodes and to
  *     AudioParams, which are mapped back to their node and name);
- *   - AudioScheduledSourceNode.prototype.start/stop, plus an "ended" listener
- *     added with addEventListener (the library's onended property is untouched).
+ *   - start/stop of every source node prototype that defines its own
+ *     (AudioScheduledSourceNode, AudioBufferSourceNode, ...), plus an "ended"
+ *     listener added with addEventListener (the library's onended property
+ *     is untouched).
  * Interval timers are recorded by the prelude.
  *
  * window.__t6.lifecycle.snapshot() returns counts per context and overall;
@@ -115,26 +117,42 @@
     return r;
   };
 
-  var realStart = AudioScheduledSourceNode.prototype.start;
-  AudioScheduledSourceNode.prototype.start = function () {
-    var rec = nodeInfo.get(this);
-    if (rec && !rec.started) {
-      rec.started = true;
-      this.addEventListener("ended", function () { rec.ended = true; });
+  /*
+   * Source starts and stops. AudioBufferSourceNode defines its own start()
+   * (with offset and duration), so wrapping AudioScheduledSourceNode alone
+   * would miss every buffer source (the library's noise and drum voices).
+   * Each prototype that has its own start or stop is wrapped, and each
+   * wrapper calls that prototype's original, so nothing is counted twice.
+   */
+  function wrapSourceMethods(proto) {
+    if (!proto) return;
+    if (Object.prototype.hasOwnProperty.call(proto, "start")) {
+      var realStart = proto.start;
+      proto.start = function () {
+        var rec = nodeInfo.get(this);
+        if (rec && !rec.started) {
+          rec.started = true;
+          this.addEventListener("ended", function () { rec.ended = true; });
+        }
+        return realStart.apply(this, arguments);
+      };
     }
-    return realStart.apply(this, arguments);
-  };
-  var realStop = AudioScheduledSourceNode.prototype.stop;
-  AudioScheduledSourceNode.prototype.stop = function () {
-    var rec = nodeInfo.get(this);
-    if (rec) rec.stopCalls++;
-    return realStop.apply(this, arguments);
-  };
+    if (Object.prototype.hasOwnProperty.call(proto, "stop")) {
+      var realStop = proto.stop;
+      proto.stop = function () {
+        var rec = nodeInfo.get(this);
+        if (rec) rec.stopCalls++;
+        return realStop.apply(this, arguments);
+      };
+    }
+  }
+  [window.AudioScheduledSourceNode, window.AudioBufferSourceNode, window.OscillatorNode, window.ConstantSourceNode]
+    .forEach(function (ctor) { if (ctor) wrapSourceMethods(ctor.prototype); });
 
   function snapshot() {
     var byContext = {};
     contexts.forEach(function (c) {
-      byContext[c.id] = { kind: c.kind, state: c.ctx.state, closeCalls: c.closeCalls, nodes: {}, sources: { started: 0, ended: 0, active: 0, stopCalls: 0 }, liveEdges: 0, paramEdges: 0 };
+      byContext[c.id] = { kind: c.kind, state: c.ctx.state, closeCalls: c.closeCalls, nodes: {}, sources: { started: 0, ended: 0, active: 0, stopCalls: 0 }, sourcesByType: {}, liveEdges: 0, paramEdges: 0 };
     });
     var idToContext = {};
     records.forEach(function (n) {
@@ -142,8 +160,10 @@
       idToContext[n.id] = n.context;
       c.nodes[n.type] = (c.nodes[n.type] || 0) + 1;
       if (n.started) {
+        var bt = c.sourcesByType[n.type] = c.sourcesByType[n.type] || { started: 0, ended: 0, active: 0 };
         c.sources.started++;
-        if (n.ended) c.sources.ended++; else c.sources.active++;
+        bt.started++;
+        if (n.ended) { c.sources.ended++; bt.ended++; } else { c.sources.active++; bt.active++; }
       }
       c.sources.stopCalls += n.stopCalls;
     });
