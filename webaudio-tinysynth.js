@@ -654,7 +654,8 @@ function WebAudioTinySynthCore(target) {
          a failed load: the previous song, playback and channel state remain. Running
          status is per track and is cancelled by meta and SysEx events. Unknown chunks
          are skipped. A track without End-of-Track is accepted when its chunk ends
-         right after a complete event; the track then ends at that event's tick. */
+         right after a complete event and is followed by the end of the file or by
+         an MTrk chunk; the track then ends at that event's tick. */
       var s=new Uint8Array(data), n=s.length, song={copyright:"",text:"",tempo:120,timebase:0,ev:[]};
       var TRUNCATED="SMF_TRUNCATED", MALFORMED="SMF_MALFORMED", maxTick=0, tr=-1, ntrk, len, idx, end, p, e0, tick, rs, v, k, m;
       function Fail(code, msg, off) {
@@ -705,7 +706,12 @@ function WebAudioTinySynthCore(target) {
           Fail(TRUNCATED,"chunk past file end",idx);
         if(Get4(idx)!=0x4d54726b) // not "MTrk"
           continue;
-        for(p=idx+8,tick=0,rs=0;p<end;){
+        for(p=idx+8,tick=0,rs=0;;){
+          if(p>=end){ // no End-of-Track: accepted only at the end of the file or before a track chunk
+            if(end<n && Get4(end)!=0x4d54726b)
+              Fail(MALFORMED,"no End-of-Track",end);
+            break;
+          }
           tick+=Vlq();
           Need(1,"event",e0=p);
           if((v=s[p])<0x80){

@@ -169,6 +169,12 @@ test.describe("documented differences from the baseline parser (ledger L-01 to L
     ["a 2-byte tempo", H.smf(0, 480, [[0x00, 0xff, 0x51, 0x02, 0x07, 0xa1, ...fourNotes]]), "SMF_MALFORMED"],
     ["End-of-Track with a data byte", H.smf(0, 480, [[...fourNotes.slice(0, -1), 0x01, 0x00]]), "SMF_MALFORMED"],
     ["SMPTE division 0xE728", H.smf(0, 0xe728, [fourNotes]), "SMF_UNSUPPORTED_DIVISION"],
+    // Review F5: the baseline read to End-of-Track whatever the length said; a missing End-of-Track is now accepted only at the end of the file or before an MTrk chunk.
+    ["all-gm-sounds.mid with a track length that leaves out its End-of-Track", (() => {
+      const b = Buffer.from(fs.readFileSync(path.join(H.ROOT, "test-midi/all-gm-sounds.mid")));
+      b.writeUInt32BE(b.readUInt32BE(18) - 4, 18);
+      return b;
+    })(), "SMF_MALFORMED"],
   ]) {
     test(name + ": the baseline loaded it; now " + code + " and the playing song is kept", () => {
       assert.equal(load(idleSynth(REFERENCE), bytes).error, null);

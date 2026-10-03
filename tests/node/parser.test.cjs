@@ -125,6 +125,12 @@ function parent() {
   const valid = H.smf(0, PPQ, [fourNotesBytes()]);
   const n4 = fourNotesBytes(false).length; // bytes of the four notes without End-of-Track
   const on = [0x00, 0x90, 60, 100]; // a note-on at delta 0
+  /* A single-track fixture whose MTrk length leaves out its last `cut` bytes, which stay in the file after the chunk. */
+  const understated = (file, cut) => {
+    const b = Buffer.from(fs.readFileSync(path.join(H.ROOT, file)));
+    b.writeUInt32BE(b.readUInt32BE(18) - cut, 18);
+    return b;
+  };
   /* A format-1 file whose track 0 is `t0` (followed by a valid track 1), so a read past track 0 would reach track 1. */
   const withNext = (t0) => H.smf(1, PPQ, [t0, secondTrack()]);
 
@@ -155,6 +161,12 @@ function parent() {
     { name: "meta data cut by the chunk end", bytes: withNext([...fourNotesBytes(false), 0x00, 0xff, 0x01, 0x05, 0x41, 0x42]), code: T, track: 0, offset: TRACK0 + n4 + 1 },
     { name: "SysEx data cut by the chunk end", bytes: withNext([...fourNotesBytes(false), 0x00, 0xf0, 0x05, 0x7e, 0x7f]), code: T, track: 0, offset: TRACK0 + n4 + 1 },
     { name: "End-of-Track cut by the chunk end", bytes: withNext([...fourNotesBytes(false), 0x00, 0xff, 0x2f]), code: T, track: 0, offset: TRACK0 + n4 + 3 },
+    // A track without End-of-Track must be followed by the end of the file or an MTrk chunk (review F5).
+    { name: "missing End-of-Track before trailing bytes", bytes: Buffer.concat([H.smf(0, PPQ, [fourNotesBytes(false)]), Buffer.from([0, 0, 0])]), code: M, track: 0, offset: TRACK0 + n4 },
+    { name: "missing End-of-Track before an unknown chunk", bytes: H.smf(1, PPQ, [fourNotesBytes(false), { raw: H.chunk("XFIH", [1]) }, secondTrack()]), code: M, track: 0, offset: TRACK0 + n4 },
+    { name: "track length understated to the first event boundary", bytes: H.smf(0, PPQ, [{ raw: H.chunk("MTrk", fourNotesBytes(), 4) }], { ntrks: 1 }), code: M, track: 0, offset: TRACK0 + 4 },
+    { name: "all-gm-sounds.mid with its End-of-Track outside the track length", bytes: understated("test-midi/all-gm-sounds.mid", 4), code: M, track: 0, offset: fs.readFileSync(path.join(H.ROOT, "test-midi/all-gm-sounds.mid")).length - 4 },
+    { name: "missing End-of-Track in the second of two tracks, before an unknown chunk", bytes: H.smf(1, PPQ, [fourNotesBytes(), secondTrack().slice(0, -4), { raw: H.chunk("XFIH", [1]) }]), code: M, track: 1, offset: valid.length + 8 + secondTrack().length - 4 },
     // Malformed events.
     { name: "delta-time longer than 4 bytes", bytes: H.smf(0, PPQ, [[0x81, 0x80, 0x80, 0x80, 0x00, 0x90, 60, 100, 0x00, 0xff, 0x2f, 0x00]]), code: M, track: 0, offset: TRACK0 },
     { name: "meta length longer than 4 bytes", bytes: H.smf(0, PPQ, [[...on, 0x00, 0xff, 0x01, 0x80, 0x80, 0x80, 0x80, 0x01, 0x41, 0x00, 0xff, 0x2f, 0x00]]), code: M, track: 0, offset: TRACK0 + 7 },
@@ -190,6 +202,7 @@ function parent() {
     { name: "missing End-of-Track after a final meta event", bytes: H.smf(0, PPQ, [[...fourNotesBytes(false), 0x83, 0x60, 0xff, 0x01, 0x01, 0x41]]), maxTick: 1680 + 480, ev: fourNoteEvents() },
     { name: "missing End-of-Track in an empty chunk", bytes: H.smf(0, PPQ, [[]]), maxTick: 0, ev: [] },
     { name: "missing End-of-Track alone: a single event", bytes: H.smf(0, PPQ, [[0x83, 0x60, 0x90, 60, 100]]), maxTick: 480, ev: [{ t: 480, m: [0x90, 60, 100] }] },
+    { name: "missing End-of-Track before an MTrk chunk beyond ntrks", bytes: H.smf(0, PPQ, [fourNotesBytes(false), secondTrack()], { ntrks: 1 }), maxTick: 1680, ev: fourNoteEvents() },
   ];
 
   const encode = (list) => list.map((c) => ({ name: c.name, b64: Buffer.from(c.bytes).toString("base64") }));
