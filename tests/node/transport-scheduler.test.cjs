@@ -345,11 +345,12 @@ function parent() {
         r.notes.forEach((t, i) => close(t, 0.1 + i * 0.5, "note " + i));
       });
 
-      test("one tick at 960 with loopEnd 480 loops every 960 ticks: the wrap restores the leading rest (#8)", () => {
+      test("one tick at 960 with loopEnd 480 loops every 960 ticks: every pass keeps the leading rest (#8, D-023)", () => {
         const r = get("one tick at 960 with loopEnd 480 (not above the tick)");
         assert.equal(r.status.play, 1);
         assert.ok(r.notes.length >= 4, JSON.stringify(r.notes));
-        r.notes.forEach((t, i) => close(t, 0.1 + i * secondsAt([], 960), "note " + i));
+        // Tick 0 of the first pass sounds at 0.1 s, so its note does too 960 ticks later (T3.1).
+        r.notes.forEach((t, i) => close(t, 0.1 + (i + 1) * secondsAt([], 960), "note " + i));
       });
 
       test("a loop that advances by nanoseconds per pass does at most 1000 events per callback (#8)", () => {
