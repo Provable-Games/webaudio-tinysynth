@@ -478,9 +478,11 @@ function WebAudioTinySynthCore(target) {
               }
             }
           }
-          if(this.playing && this.song.ev.length>0){
-            let e=this.song.ev[this.playIndex];
-            while(this.actx.currentTime+this.preroll>this.playTime){
+          /* playMIDI only starts songs with events. At most 1000 events per callback
+             (#8): the rest follow on the next callbacks, in order, at their own times. */
+          if(this.playing){
+            let e=this.song.ev[this.playIndex],n=1e3;
+            while(n-- && this.actx.currentTime+this.preroll>this.playTime){
               if(e.m[0]==0xff51){
                 this.song.tempo=e.m[1];
                 this.tick2Time=4*60/this.song.tempo/this.song.timebase;
@@ -489,7 +491,10 @@ function WebAudioTinySynthCore(target) {
                 this.send(e.m,this.playTime);
               ++this.playIndex;
               if(this.playIndex>=this.song.ev.length){
-                if(this.loop){
+                /* Wrap only if the next pass advances (#8). Without a positive loopEnd,
+                   a song whose events share one tick would repeat at one instant
+                   forever, so it ends here as if looping were off. */
+                if(this.loop && (this.loopEnd>0 || this.playTick>this.song.ev[0].t)){
                   e=this.song.ev[this.playIndex=0];
                   if(this.loopEnd){
                     /* Pad to loopEnd at the tempo the pass ended on. Then restart at
