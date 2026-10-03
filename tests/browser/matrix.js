@@ -1,0 +1,32 @@
+/*
+ * The declared browser matrix (#16). This is the only place that lists the
+ * engines, builds, quality modes, sample rates, specs and deadlines; the
+ * runner (scripts/browser-matrix.js) prints it with the results.
+ *
+ * Every engine listed here must launch. A missing browser or system library
+ * fails the run; no engine, build or spec is ever skipped silently.
+ */
+"use strict";
+
+const MATRIX = {
+  engines: ["chromium", "firefox", "webkit"],
+  builds: ["source", "min"],
+  qualities: [0, 1],
+  sampleRates: [44100, 48000],
+  // Math.random seed for the test pages (tests/browser/page/prelude.js); --seed overrides it.
+  seed: 0x5eed0001,
+  // Seconds. A case still running at its deadline fails and its page is closed;
+  // a worker (one engine) still running at engineDeadline is killed with its process group.
+  caseDeadline: 60,
+  engineDeadline: 1200,
+  // What each spec covers. "assert" specs fail the run on any failed check;
+  // "observe" specs record baseline behavior (JSON) and fail only if the
+  // observation itself cannot be made. Observe-only specs run with --observe.
+  specs: {
+    embed: { kind: "assert", dims: ["build", "quality"], about: "inline script and MIDI, network blocked (setContent and data: URL), zero requests" },
+    render: { kind: "assert", dims: ["build", "quality", "sampleRate"], about: "OfflineAudioContext renders: pitch, tuning, controllers, envelope, sustain, silence, finite samples, reverb, GM programs and drums, source/min parity, same-seed repeatability" },
+    variation: { kind: "observe", dims: ["build"], about: "run-to-run variation: repeat launches, seeds, sample rates (tolerance evidence)" },
+  },
+};
+
+module.exports = { MATRIX };

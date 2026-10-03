@@ -1,0 +1,157 @@
+/*
+ * Case execution for one engine (the worker half of scripts/browser-matrix.js).
+ *
+ * A case is {id, spec, kind, dims, deadline, expectHang, run(t)}. run() gets a
+ * context `t` with check(), observe(), newPage(), the browser and the shared
+ * server. Every case runs under an external deadline enforced from Node: a
+ * page stuck in a synchronous loop cannot stop Node's timer. At the deadline
+ * the case fails (or, for an observe case with expectHang, the hang is the
+ * observation), its pages and contexts are closed, and if the browser does not
+ * respond it is closed and relaunched for the next case.
+ */
+"use strict";
+const fs = require("fs");
+const path = require("path");
+
+const CLOSE_TIMEOUT_MS = 5000;
+
+function withTimeout(promise, ms) {
+  let timer;
+  return Promise.race([
+    Promise.resolve(promise).then((v) => ({ ok: true, value: v }), (e) => ({ ok: false, error: e })),
+    new Promise((r) => { timer = setTimeout(() => r({ ok: false, timedOut: true }), ms); }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+function short(e) {
+  return String(e && e.message ? e.message : e).split("\n")[0];
+}
+
+class EngineSession {
+  constructor({ engine, playwright, launchOptions = {}, out = null, log = console.log }) {
+    this.engine = engine;
+    this.playwright = playwright;
+    this.launchOptions = launchOptions;
+    this.out = out;
+    this.log = log;
+    this.browser = null;
+    this.version = null;
+    this.relaunches = 0;
+  }
+
+  async launch() {
+    this.browser = await this.playwright[this.engine].launch(Object.assign({ headless: true, timeout: 60000 }, this.launchOptions));
+    this.version = this.browser.version();
+    return this.browser;
+  }
+
+  async closeBrowser() {
+    if (!this.browser) return true;
+    const b = this.browser;
+    this.browser = null;
+    const r = await withTimeout(b.close(), 15000);
+    return r.ok;
+  }
+
+  /* Runs one case; returns its result record. */
+  async run(c, shared) {
+    const started = Date.now();
+    const result = {
+      id: c.id, spec: c.spec, kind: c.kind, dims: c.dims || {}, status: null,
+      checks: [], observations: {}, notes: [], seconds: 0,
+    };
+    const opened = [];
+    const extraBrowsers = [];
+    const t = {
+      engine: this.engine,
+      version: this.version,
+      browser: this.browser,
+      shared,
+      out: this.out,
+      check: (name, ok, detail) => {
+        const rec = { name, ok: !!ok, detail: detail === undefined ? "" : String(detail) };
+        result.checks.push(rec);
+        this.log("  " + (rec.ok ? "ok  " : "FAIL") + " " + c.id + ": " + name + (rec.detail ? " (" + rec.detail + ")" : ""));
+        return rec.ok;
+      },
+      observe: (name, value) => {
+        result.observations[name] = value;
+        const text = JSON.stringify(value);
+        this.log("  obs  " + c.id + ": " + name + " = " + (text.length > 400 ? text.slice(0, 400) + "... (" + text.length + " chars, full value in the results JSON)" : text));
+      },
+      note: (text) => { result.notes.push(text); this.log("  note " + c.id + ": " + text); },
+      /*
+       * A new context and page. offline: abort every request (and count it).
+       * Returns {page, context, requests, pageErrors, consoleErrors, console}.
+       */
+      newPage: async ({ offline = false, contextOptions = {}, browser = null } = {}) => {
+        const context = await (browser || this.browser).newContext(contextOptions);
+        const rec = { context, page: null, requests: [], aborted: [], pageErrors: [], consoleErrors: [], console: [] };
+        opened.push(rec);
+        if (offline) await context.route("**/*", (route) => { rec.aborted.push(route.request().url()); return route.abort(); });
+        const page = await context.newPage();
+        rec.page = page;
+        page.on("request", (r) => rec.requests.push(r.url()));
+        page.on("pageerror", (e) => rec.pageErrors.push(short(e)));
+        page.on("console", (m) => {
+          rec.console.push({ type: m.type(), text: m.text(), at: Date.now() });
+          if (m.type() === "error") rec.consoleErrors.push(m.text());
+        });
+        return rec;
+      },
+      /* A separate browser instance of the same engine, closed when the case ends. */
+      launchBrowser: async () => {
+        const b = await this.playwright[this.engine].launch(Object.assign({ headless: true, timeout: 60000 }, this.launchOptions));
+        extraBrowsers.push(b);
+        return b;
+      },
+      save: (rel, data) => {
+        if (!this.out) return null;
+        const file = path.join(this.out, rel);
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, data);
+        return file;
+      },
+    };
+
+    const deadline = c.deadline * 1000;
+    const r = await withTimeout(Promise.resolve().then(() => c.run(t)), deadline);
+    if (r.timedOut) {
+      if (c.expectHang) {
+        result.status = "observed";
+        t.observe("hang", "page did not return within the " + c.deadline + " s deadline; page closed from Node");
+      } else {
+        result.status = "fail";
+        t.check("finished before the " + c.deadline + " s deadline", false, "deadline exceeded; page closed from Node");
+      }
+    } else if (!r.ok) {
+      result.status = "fail";
+      t.check("ran without an exception", false, short(r.error));
+    }
+    // Close everything the case opened. A context that does not close in time
+    // means the browser is wedged: close it and relaunch.
+    let wedged = false;
+    for (const rec of opened) {
+      if (rec.page) await withTimeout(rec.page.close({ runBeforeUnload: false }), CLOSE_TIMEOUT_MS);
+      const cr = await withTimeout(rec.context.close(), CLOSE_TIMEOUT_MS);
+      if (!cr.ok && !cr.error) wedged = true;
+    }
+    for (const b of extraBrowsers) await withTimeout(b.close(), 15000);
+    if (r.timedOut) t.observe("cleanup", wedged ? "context did not close; browser relaunched" : "pages and contexts closed");
+    if (wedged) {
+      await this.closeBrowser();
+      await this.launch();
+      ++this.relaunches;
+    }
+    if (!result.status) {
+      const failed = result.checks.filter((k) => !k.ok).length;
+      result.status = failed ? "fail" : c.kind === "observe" && !result.checks.length ? "observed" : "pass";
+    }
+    result.seconds = (Date.now() - started) / 1000;
+    this.log((result.status === "fail" ? "FAIL " : result.status === "observed" ? "obs  " : "ok   ") + c.id +
+      " [" + result.checks.filter((k) => k.ok).length + "/" + result.checks.length + " checks, " + result.seconds.toFixed(1) + " s]");
+    return result;
+  }
+}
+
+module.exports = { EngineSession, withTimeout, short };
