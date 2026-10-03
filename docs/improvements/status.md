@@ -39,7 +39,7 @@ States: `pending`, `running`, `review`, `accepted`, `blocked`.
 | T8 | #7 #18 | seed: `t8/seed`; perf later | seed d1f0e26 | #7 seed running (D-030); #18 after T7 | | D-004 |
 | T11 | #26 | `t11/waveforms` | d1f0e26 (T4 head) | running | | D-006, D-021, D-027 (held storage) |
 | T12 | #27 | `t12/filters` | d1f0e26 (T4 head) | running | | D-007, D-028. Integrates after T11 and T8-seed. |
-| T9 | #19 #20, docs for #26/#27 | demos: `t9/demos`; docs later | demos 413f36c | demos running (T9-D); docs after T7, accepted after T12 | | T9-D covers the engine-independent #19 demo fixes. |
+| T9 | #19 #20, docs for #26/#27 | demos: `t9/demos`; docs later | demos 413f36c | demos in review (T9-D head cf3e2e6, PR #38); docs after T7, accepted after T12 | | T9-D covers the engine-independent #19 demo fixes: 11/11 cases in 3 engines, and the demos make zero remote requests offline. T9-3/5/8 deferred to T4/T5. |
 | T1B | later CI extensions | `t1/ci-ext` | after T6/T7/T12 | pending | | |
 | T10 | all (independent verification) | `t10/verify` | after T8 T9 T1B T11 T12 | pending | | Gate G2 |
 
