@@ -72,7 +72,7 @@ Local checks at f01ca19 all exit 0: `npm ci`, lint, verify, `pack:check`, `npm t
 
 ## Consumer coordination
 
-- Session names change after restarts. After the 2026-10-03 container crash, the consumer coordinator is likely `onchain-tinysynth-9b` (formerly `webaudio-tinysynth-15`), and this supervisor is `webaudio-tinysynth-b1` (formerly `-88`). Run `ListAgents` and confirm before messaging.
+- Session names change after restarts. After the 2026-10-03 container crash, the consumer coordinator is `webaudio-tinysynth-33` (formerly `webaudio-tinysynth-15`; the D-028 note first went to `onchain-tinysynth-9b`, a read-only helper, by mistake), and this supervisor is `webaudio-tinysynth-b1` (formerly `-88`). Run `ListAgents` and confirm before messaging.
 - 2026-10-03: interim pinning was offered to the onchain-tinysynth agent (session `webaudio-tinysynth-15`): pin an `improve/integration` SHA plus its min.js sha256, with no class declaration against interim pins. The pin candidate offered was `4b29ff1` / min.js `b49e8ceb…`, and the consumer adopted it (below).
 - Whenever T4 (caller stop), T3.1 (leading rest, `startTime`), #7, #26 or #27 integrates, send that session the new integration SHA and min.js sha256, and flag any change to `playTime`, `playTick`, `chvol`, `chmod` or `chpan` (D-023).
 - The consumer adopted interim pin `4b29ff1` (min.js `b49e8ceb…`) on its main (onchain-tinysynth PR #24). Its checks pass, and no class will be declared against it. Its size metric is gzip, with no budget (D-024).
