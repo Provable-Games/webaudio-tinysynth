@@ -125,5 +125,5 @@ Against T0 (37,060 / 9,444, `5aa3edbc…`), min.js is −688 bytes raw and −22
   - an `edited` event, including the rendered name of a skipped gate.
 
   The supervisor will verify these after integration.
-- **Claude probes were local.** They used the pinned CLI directly with the production arguments, not the base action's SDK path.
+- **Claude probes were local.** They used the pinned CLI directly with the production arguments, not the base action's SDK path. On that CLI path, the configured effort now has independent evidence: requests carried `output_config.effort: "medium"` (`logs/c2-effort-probe.log`). Delivery through the SDK remains verified from code only.
 - **Unchanged limitations.** The gates are still not required checks (D-002), and the local host is x86_64.
