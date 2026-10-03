@@ -182,5 +182,12 @@
     marks: {},
     mark: function (name) { this.marks[name] = snapshot(); return this.marks[name]; },
     contexts: function () { return contexts.map(function (c) { return c.ctx; }); },
+    /* Added for the T4 specs. Started sources that have not ended, as {id, type, context, stopCalls}. */
+    active: function () {
+      return records.filter(function (n) { return n.started && !n.ended; })
+        .map(function (n) { return { id: n.id, type: n.type, context: n.context, stopCalls: n.stopCalls }; });
+    },
+    /* Added for the T4 specs. Live connections as "from>to:output:input" keys (see edgeKey and targetId). */
+    edges: function () { return Array.from(edges.keys()); },
   };
 })();

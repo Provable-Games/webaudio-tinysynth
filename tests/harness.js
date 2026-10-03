@@ -179,6 +179,7 @@ function createEnvironment(trace) {
     }
     get currentTime() { return clock.ms / 1000; }
     resume() { rec("resume"); return Promise.resolve(); }
+    close() { rec("close"); this.state = "closed"; return Promise.resolve(); }
     createGain() { return new Gain(); }
     createOscillator() { return new Oscillator(); }
     createBufferSource() { return new BufferSource(); }
@@ -222,7 +223,8 @@ function createEnvironment(trace) {
     for (const t of timers.values()) t.due = Math.max(t.due, clock.ms);
   }
 
-  return { sandbox, clock, step, skip };
+  // timers: the active intervals (id -> {fn, ms, due}), for lifecycle tests (T4).
+  return { sandbox, clock, step, skip, timers };
 }
 
 /*

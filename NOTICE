@@ -30,6 +30,16 @@ Modifications by Provable Games, based on upstream commit
     tempo and channel state from the start without keeping earlier
     overrides, and replaying a completed song restarts from its initial
     tempo and channel state.
+  - webaudio-tinysynth.js: added resume(), dispose() and the constructor
+    options context, destination and lazy. dispose() stops and
+    disconnects every voice and node, clears the timers and closes only
+    a context the synth created; setAudioContext() tears down the
+    previous graph the same way. stopMIDI() now also stops drums and
+    queued controller changes (seeks too; loading a song keeps the
+    upstream calls). Ended voices are disconnected, send() no longer
+    leaves unhandled rejections, and on an OfflineAudioContext the
+    timer leaves scheduled notes alone and playMIDI() throws
+    AUDIO_CONTEXT_OFFLINE.
   - webaudio-tinysynth.min.js and its source map are regenerated from
     the modified source.
   - Demo pages and README updated to use the JavaScript API; tests added.
