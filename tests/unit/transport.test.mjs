@@ -575,20 +575,64 @@ describe.each(MODES)("$name: seeking (#21)", ({ variant, quality }) => {
     expect(mine.slice(1).map(([op, , , t]) => [op, ROUND(t)])).toEqual([["setValueAtTime", 1.56]]);
   });
 
-  test("a stopped seek and a load cancel no channel automation", () => {
+  test("a seek right after stopMIDI cancels the queued changes; a later seek cancels nothing", () => {
+    const s = make();
+    s.synth.loadMIDI(H.toArrayBuffer(QUEUED));
+    s.synth.setLoop(0);
+    const vol = timeline(s.synth.chvol[0].gain, s.env.clock);
+    s.synth.playMIDI();
+    H.runUntil(s.env, () => s.env.clock.ms >= 960, 2000); // tick 960's volume 20 is queued for 1.1 s
+    s.synth.stopMIDI();
+    let from = s.trace.length;
+    s.synth.locateMIDI(300);
+    expect(channelCancels(s.synth, s.trace.slice(from))).toHaveLength(48);
+    expect(ROUND(vol.at(1.2))).toBe(ROUND(3 * 90 * 90 / (127 * 127))); // tick 0's volume, rebuilt; not 20
+    H.runUntil(s.env, () => false, 500);
+    from = s.trace.length;
+    s.synth.locateMIDI(700); // nothing is queued any more: the same calls as before the cancel existed
+    expect(channelCancels(s.synth, s.trace.slice(from))).toEqual([]);
+  });
+
+  test("a load cancels no channel automation, even replacing a playing song", () => {
     const s = make();
     s.synth.loadMIDI(H.toArrayBuffer(RICH_BYTES));
     s.synth.playMIDI();
     H.runUntil(s.env, () => false, 1000);
-    s.synth.stopMIDI();
-    let from = s.trace.length;
-    s.synth.locateMIDI(700);
+    const from = s.trace.length;
+    s.synth.loadMIDI(H.toArrayBuffer(RICH_BYTES)); // loadMIDI stops it first; its calls stay those of upstream
     expect(channelCancels(s.synth, s.trace.slice(from))).toEqual([]);
+  });
+
+  test("an immediate replay after the end is not overridden by changes the last pass queued", () => {
+    // The last event, volume 0 at tick 480, is queued for 0.6 s; the song reports its end at 0.42 s.
+    const s = make();
+    s.synth.loadMIDI(H.toArrayBuffer(H.makeMidi(PPQ, [noteOn(0, 0, 60, 100), noteOff(240, 0, 60), cc(480, 0, 7, 0)])));
+    s.synth.setLoop(0);
+    const vol = timeline(s.synth.chvol[0].gain, s.env.clock);
     s.synth.playMIDI();
-    H.runUntil(s.env, () => false, 500);
-    from = s.trace.length;
-    s.synth.loadMIDI(H.toArrayBuffer(RICH_BYTES)); // replaces a playing song; loadMIDI stops it first
-    expect(channelCancels(s.synth, s.trace.slice(from))).toEqual([]);
+    H.runUntil(s.env, () => s.synth.getPlayStatus().play === 0, 2000);
+    expect(s.env.clock.ms).toBe(420);
+    expect(vol.at(0.6)).toBe(0);
+    const notesFrom = s.notes.length;
+    s.synth.playMIDI(); // replay: starts at 0.52 s, its volume 0 now comes at 1.02 s
+    H.runUntil(s.env, () => s.synth.getPlayStatus().play === 0, 2000);
+    close(s.notes[notesFrom][0], 0.52);
+    const full = ROUND(3 * 100 * 100 / (127 * 127)); // volume 100, expression 127: as at the start of the first play
+    for (const t of [0.52, 0.6, 1.0]) expect(ROUND(vol.at(t)), "at " + t + " s").toBe(full);
+    expect(vol.at(1.03)).toBe(0);
+  });
+
+  test("a song loaded at maxTick keeps settings made after loading on its first play; its replay restores the baseline", () => {
+    const s = make();
+    s.synth.loadMIDI(H.toArrayBuffer(H.makeMidi(PPQ, [noteOn(0, 0, 60, 100), noteOff(0, 0, 60)]))); // maxTick 0
+    s.synth.setLoop(0);
+    expect(s.synth.getPlayStatus()).toEqual({ play: 0, maxTick: 0, curTick: 0 });
+    s.synth.setProgram(0, 40);
+    const first = playPass(s, 300);
+    expect(first.notes.map((n) => n[4] === s.synth.program[40].p)).toEqual([true]);
+    s.synth.setProgram(0, 40);
+    const replay = playPass(s, 300);
+    expect(replay.notes.map((n) => n[4] === s.synth.program[0].p)).toEqual([true]);
   });
 });
 
