@@ -35,6 +35,7 @@
 "use strict";
 
 const DEFAULT = {
+  noteAmpMin: 2e-3, // a measured note window in its own render; min 1.89e-2 (w9999 A4), a silenced note measures <= 6.5e-10
   pitchCents: 0.05, // max 0.0065 cents (Firefox), 0.0001 (Chromium, WebKit); estimator self-test < 0.001
   vibratoDepthCents: 0.1, // max depth error 0.023 cents, centre 0.0024
   vibratoRateHz: 0.01, // max 0.0004 Hz
