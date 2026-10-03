@@ -136,3 +136,18 @@ Inputs: `tasks/T9A.md` §7, and the T0 embedding evidence.
 ## D-012 Visible provider heading on every review comment (2026-10-02)
 
 The user observed that PR #28's clean Claude comment showed a bare `lgtm`, with the provider and model only in hidden HTML metadata (`review_lib.render_comment`). Decision: every review comment, including a clean one, starts with a visible heading of the form "**Provider review** · model `…` · effort `…` · head `…`", rendered from the result record (no literals). This deliberately departs from the github-ci skill's "visible body only `lgtm`" convention for comments. The model-output contract is unchanged: a complete clean review's output is exactly `lgtm`, and the gate reads parsed result records, never comment text. Affects T1-ai-review (#25).
+
+## D-013 Error and failure contract for loading and API misuse (2026-10-02)
+
+Needed before T2 (#4/#6), and followed by T5 (#13/#14).
+
+- **`loadMIDI(data)` failures throw.** The library throws an `Error` with a stable `code` string and a descriptive message: `SMF_INVALID_HEADER`, `SMF_UNSUPPORTED_FORMAT` (format 2 or unknown), `SMF_UNSUPPORTED_DIVISION` (SMPTE/high-bit or zero PPQ), `SMF_TRUNCATED` (data ends inside a chunk, event or variable-length quantity, or fewer chunks than declared) and `SMF_MALFORMED` (an over-long VLQ, an invalid status or data byte, a missing running status, or a bad meta or SysEx length, including tempo length ≠ 3 or tempo 0). The thrown error carries `track` (0-based chunk index) and `offset` (absolute byte offset) where applicable.
+- **Failed loads are transactional and side-effect free.** The previous song, playback state and channel state stay as they were, and no partial event is installed. The parser builds a temporary song and installs it only after full validation. A successful load keeps today's effects: stop, install, `reset()`, `locateMIDI(0)`.
+- **Legacy differences** are ledger L-01, L-02 and L-03:
+  - Non-`MThd` input used to return silently after stopping playback; it now throws without side effects.
+  - Running status is per track and cancelled by meta and SysEx events, per the SMF specification. The legacy file-wide initial `0x90` running status is removed, and T2 characterizes any valid-file impact.
+  - A missing End-of-Track is accepted only when the declared chunk ends exactly on an event boundary. That track then ends at its last event's tick. This is documented recovery.
+  - Unknown chunk types are skipped, as the SMF specification requires.
+- **The asynchronous path wraps errors.** `loadMIDIUrl` exceptions surface through #14's promise (T5). Until T5 lands, an exception inside the XHR `onload` is an uncaught error in the console, an accepted interim state on the unreleased integration branch.
+- **API misuse** (T5, #13): direct calls with invalid argument types or ranges throw `TypeError` or `RangeError` with descriptive messages, before any mutation. Malformed raw messages passed to `send()` are no-ops (#13). Useful numeric coercions are characterized and kept.
+- Reconsider this if a consumer needs a non-throwing load API. An additive `tryLoadMIDI` would be the route.
