@@ -14,7 +14,14 @@ This is [g200kg/webaudio-tinysynth](https://github.com/g200kg/webaudio-tinysynth
 
 **What behaves differently:**
 - MIDI tempo is kept fractional. Upstream rounds the BPM down to a whole number (`Math.floor(60000000 / microsecondsPerQuarter)`), so 455,000 µs per quarter note (131.868 BPM) plays at 131 BPM, 0.66% slow.
-- `loadMIDI` validates the file before installing it. Data that is not a supported Standard MIDI File (format 0 or 1 with a ticks-per-quarter-note division) throws an `Error` whose `code` is `SMF_INVALID_HEADER`, `SMF_UNSUPPORTED_FORMAT`, `SMF_UNSUPPORTED_DIVISION`, `SMF_TRUNCATED` or `SMF_MALFORMED`. The error has `offset` (the byte offset) and, inside a track, `track` (the 0-based track chunk index). A failed load changes nothing: the previous song, playback and channel state are kept. Upstream returned silently or loaded what it could read, and some truncated files made it hang.
+- `loadMIDI` checks the file before installing it, and throws an `Error` when it cannot use it:
+  - an invalid `MThd` header: `SMF_INVALID_HEADER`;
+  - format 2 or an unknown format: `SMF_UNSUPPORTED_FORMAT`;
+  - an SMPTE or zero time division: `SMF_UNSUPPORTED_DIVISION`;
+  - data that ends inside a header, chunk or event, or fewer track chunks than declared: `SMF_TRUNCATED`;
+  - invalid event data: `SMF_MALFORMED`.
+
+  The error has a `code`, an `offset` (byte offset) and, inside a track, a `track` (0-based track chunk index). A failed load changes nothing: the previous song, playback and channel state are kept. Some irregular files still load, as before: a track without End-of-Track that ends on an event boundary, bytes after End-of-Track, or a header that declares no tracks. So a successful load does not prove a file is strictly valid. Upstream returned silently or loaded what it could read, and some truncated files made it hang.
 
 **What is added:** the `loopEnd` property and `setLoopEnd(ticks)`. When looping, each pass can start on a bar boundary instead of on the song's last event (see `setLoopEnd()` below). Unset, looping works exactly as upstream.
 
@@ -158,7 +165,7 @@ Settings are changed with the functions below (`setMasterVol()`, `setReverbLev()
 
 **loadMIDI(mididata)**
 > load MIDI data to built-in sequencer. mididata is a arraybuffer of SMF (.mid file contents).  
-> Throws an `Error` with an `SMF_*` `code` if the data is not a valid format 0 or 1 SMF (see [What behaves differently](#about-this-fork)); the previous song is kept. Use `try`/`catch` for files you did not create.
+> Throws an `Error` with an `SMF_*` `code` when it cannot parse or does not support the data (see [What behaves differently](#about-this-fork)); the previous song is kept. Some irregular files still load, so it is not a strict validator. Use `try`/`catch` for files you did not create.
 
 **loadMIDIUrl(url)**
 > load MIDI data from specified url
