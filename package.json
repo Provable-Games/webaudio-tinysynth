@@ -30,7 +30,13 @@
     "test:unit": "node scripts/run-unit-tests.js --min-files=6 --min-tests=402",
     "test:node": "node scripts/run-node-tests.js --min-files=7 --min-tests=115",
     "test:regression": "node scripts/run-regressions.js",
-    "test:browser": "node scripts/run-regressions.js --deadline=180 tests/browser-smoke.js \"tests/browser-smoke.js test-midi/all-gm-sounds.mid\""
+    "test:browser": "node scripts/run-regressions.js --deadline=180 tests/browser-smoke.js \"tests/browser-smoke.js test-midi/all-gm-sounds.mid\"",
+    "test:browser:matrix": "node scripts/browser-matrix.js",
+    "test:browser:chromium": "node scripts/browser-matrix.js --engines=chromium",
+    "test:browser:firefox": "node scripts/browser-matrix.js --engines=firefox",
+    "test:browser:webkit": "node scripts/browser-matrix.js --engines=webkit",
+    "test:browser:observe": "node scripts/browser-matrix.js --specs=hang,variation",
+    "test:browser:serve": "node scripts/browser-server.js"
   },
   "repository": {
     "type": "git",
