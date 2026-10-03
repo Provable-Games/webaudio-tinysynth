@@ -1,0 +1,22 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      # Terser is left out of the group: a new version can change the minified
+      # bytes, which CI rejects until the distribution is rebuilt and its new
+      # SHA-256 is recorded, so it gets a pull request of its own.
+      development-dependencies:
+        dependency-type: development
+        patterns: ["*"]
+        exclude-patterns: ["terser"]
