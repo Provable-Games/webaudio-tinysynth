@@ -69,7 +69,7 @@ window.smoke = async () => {
       p.on("console", (m) => { if (m.type() === "error") errors.push("console: " + m.text()); });
 
       await p.setContent(page(scriptFile));
-      const r = await p.evaluate(() => window.smoke());
+      const r = await p.evaluate(() => window.smoke()); // eslint-disable-line no-undef -- runs in the page
       await ctx.close();
 
       const checks = [
