@@ -67,6 +67,29 @@ const FORK_PATCHES = [
     from: "var val = Math.floor(60000000 / Get3(s, i + 3));",
     to: "var val = 60000000 / Get3(s, i + 3);",
   },
+  {
+    name: "a pruned voice is disconnected (#11, T4)",
+    from: "nt.g[k].gain.value = 0;",
+    to: "nt.g[k].gain.value = 0; nt.o[k].disconnect(); nt.g[k].disconnect();",
+  },
+  {
+    name: "percussion hits are tracked (#11, D-019, T4)",
+    from: "this.notetab.push({t:t,e:99999,ch:ch,n:n,o:o,g:g,t2:t+pn.a,v:vp,r:r,f:0});",
+    to: "this.notetab.push({t:t,e:99999,ch:ch,n:n,o:o,g:g,t2:t+pn.a,v:vp,r:r,f:0});\n" +
+      "      else (this._src = this._src || []).push({t:t,ch:ch,o:o,g:g});",
+  },
+  {
+    name: "all sound off also stops the channel's percussion hits that have not started (D-019, T4)",
+    from: "          this.notetab.splice(i,1);\n        }\n      }\n    },\n    resetAllControllers:",
+    to: "          this.notetab.splice(i,1);\n        }\n      }\n" +
+      "      for(let i=(this._src || []).length-1;i>=0;--i){\n" +
+      "        const v=this._src[i];\n" +
+      "        if(v.ch==ch && v.t>this.actx.currentTime){\n" +
+      "          this._pruneNote(v);\n" +
+      "          this._src.splice(i,1);\n" +
+      "        }\n" +
+      "      }\n    },\n    resetAllControllers:",
+  },
 ];
 
 function applyPatches(src, patches) {
@@ -179,6 +202,7 @@ function createEnvironment(trace) {
     }
     get currentTime() { return clock.ms / 1000; }
     resume() { rec("resume"); return Promise.resolve(); }
+    close() { rec("close"); this.state = "closed"; return Promise.resolve(); }
     createGain() { return new Gain(); }
     createOscillator() { return new Oscillator(); }
     createBufferSource() { return new BufferSource(); }
@@ -222,7 +246,8 @@ function createEnvironment(trace) {
     for (const t of timers.values()) t.due = Math.max(t.due, clock.ms);
   }
 
-  return { sandbox, clock, step, skip };
+  // timers: the active intervals (id -> {fn, ms, due}), for lifecycle tests (T4).
+  return { sandbox, clock, step, skip, timers };
 }
 
 /*
