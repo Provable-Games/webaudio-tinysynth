@@ -74,7 +74,7 @@ Local checks at f01ca19 all exit 0: `npm ci`, lint, verify, `pack:check`, `npm t
 
 - 2026-10-03: interim pinning was offered to the onchain-tinysynth agent (session `webaudio-tinysynth-15`): pin an `improve/integration` SHA plus its min.js sha256, with no class declaration against interim pins. The current pin candidate is `4b29ff1` / min.js `b49e8ceb…`. A reply is pending.
 - Whenever T4 (caller stop), T3.1 (leading rest, `startTime`), #7, #26 or #27 integrates, send that session the new integration SHA and min.js sha256, and flag any change to `playTime`, `playTick`, `chvol`, `chmod` or `chpan` (D-023).
-- The consumer replied that interim pinning works technically; adopting it is the user's call. Its contract points are answered in D-021, D-023, D-004 and D-007.
+- The consumer replied that interim pinning works technically; adopting it is the user's call. It accepted all six contract answers (D-021, D-023, D-004, D-007) and recorded #26/#27 on its issues #2/#3. It will drop the `chvol` swap and the `playTime`/`playTick` writes once T4 and T3.1 land, and it will qualify its determinism claims as per sample rate and generation version.
 
 ## Next actions
 
