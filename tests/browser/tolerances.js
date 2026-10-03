@@ -43,7 +43,7 @@ const DEFAULT = {
   silenceRelative: 1e-9, // after a drum stop, relative to the note level; max 1.5e-15
   idlePeak: 1e-8, // after 1 s with no notes; max 3e-12 (Firefox does not snap setTargetAtTime to 0)
   reverbTailDb: 40, // wet over dry tail; min 76 dB (Firefox), dry tail exactly 0 elsewhere
-  audiblePeak: 2e-4, // every GM program and drum; min 1.44e-3 (program 119 at C4, Firefox q0)
+  audiblePeak: 2e-4, // every GM program and drum rendered alone; min 0.080 (drum 53, Firefox q1 48 kHz); a silent program measures <= 2.3e-7
   sameEngineSample: 1e-6, // source vs min and repeat renders, max |sample diff|
   seedEffect: 1e-2, // a different seed must change noise-based renders by more than this; min 0.0295
   crossEngineDb: { linear: 0.25, compressed: 7 }, // per-slot GM energy across engines; max 0.085 dB / 5.5 dB (q1 drum 57)

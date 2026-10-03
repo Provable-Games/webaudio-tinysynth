@@ -117,7 +117,7 @@
     return off.startRendering().then(function (buf) {
       return Promise.resolve(closing).then(function () {
         // Let rejection events from the library's resume() calls be delivered first.
-        return new Promise(function (r) { setTimeout(r, 50); });
+        return new Promise(function (r) { setTimeout(r, 10); });
       }).then(function () {
         var chs = [];
         for (var c = 0; c < buf.numberOfChannels; ++c) chs.push(buf.getChannelData(c));

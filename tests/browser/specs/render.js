@@ -30,8 +30,6 @@ const decode = (b64) => {
 function renderSpec(s, { seed, sr, quality }, variant = {}) {
   const spec = Object.assign({}, s.spec, variant, { seed, sr });
   spec.options = Object.assign({ quality, useReverb: 0 }, s.options || {}, variant.options || {});
-  // GM batches: the left channel only (every channel is centred, so L equals R), slot summaries computed in the page.
-  if (s.gm) spec.pcm = "L";
   return spec;
 }
 
@@ -46,6 +44,41 @@ async function render(p, spec) {
   r.channels = r.pcm ? r.pcm.map(decode) : null;
   delete r.pcm;
   return r;
+}
+
+/*
+ * Renders a scenario. A scenario with `items` (the GM sweeps) renders each
+ * item alone, with a fresh synth and context, and returns one combined
+ * result: the items' channels concatenated, per-item slot summaries in
+ * `slots` (peak and RMS over item.slot, measured here), and the items'
+ * rejections and NaN/Infinity counts added up.
+ */
+async function renderScenario(p, s, ctx, variant = {}) {
+  if (!s.items) return render(p, renderSpec(s, ctx, variant));
+  const parts = [];
+  for (const item of s.items) parts.push(await render(p, renderSpec(Object.assign({}, s, { spec: item.spec }), ctx, variant)));
+  const nch = parts[0].channels.length;
+  const channels = [];
+  for (let c = 0; c < nch; ++c) {
+    const total = parts.reduce((a, r) => a + r.channels[c].length, 0);
+    const out = new Float32Array(total);
+    let at = 0;
+    for (const r of parts) { out.set(r.channels[c], at); at += r.channels[c].length; }
+    channels.push(out);
+  }
+  const sr = parts[0].sr;
+  return {
+    sr, channels, buffers: parts[0].buffers, randomCalls: parts[0].randomCalls,
+    hash: parts.map((r) => r.hash).join("+"),
+    rejections: parts.flatMap((r) => r.rejections),
+    whole: { nan: parts.reduce((a, r) => a + r.whole.nan, 0), inf: parts.reduce((a, r) => a + r.whole.inf, 0), peak: Math.max(...parts.map((r) => r.whole.peak)) },
+    slots: parts.map((r, i) => {
+      const [t0, t1] = s.items[i].slot;
+      const a = Math.round(t0 * sr), b = Math.min(r.channels[0].length, Math.round(t1 * sr));
+      return { label: s.items[i].label, peak: Math.max(...r.channels.map((x) => A.peak(x, a, b))), rms: Math.hypot(...r.channels.map((x) => A.rms(x, a, b))) / Math.sqrt(r.channels.length) };
+    }),
+    renders: parts.length,
+  };
 }
 
 /* Largest absolute sample difference between two renders (Infinity if their shapes differ). */
@@ -74,7 +107,7 @@ function cases(shared) {
       out.push({
         id: "render " + tag,
         dims,
-        deadline: 300,
+        deadline: 600,
         run: async (t) => {
           const seed = options.seed;
           const pg = { source: await openRenderPage(t, "source", seed), min: await openRenderPage(t, "min", seed) };
@@ -95,8 +128,8 @@ function cases(shared) {
             for (const build of matrix.builds) {
               res[build] = [];
               for (const v of [{}, ...variants]) {
-                const r = await render(pg[build], renderSpec(s, { seed, sr, quality }, v));
-                ++renders;
+                const r = await renderScenario(pg[build], s, { seed, sr, quality }, v);
+                renders += r.renders || 1;
                 const c = classifyRejections(r.rejections);
                 for (const [k, n] of Object.entries(c.counts)) rejectionCounts[k] = (rejectionCounts[k] || 0) + n;
                 unknownRejections.push(...c.unknown.map((u) => s.name + "/" + build + ": " + u.name + ": " + u.message));
@@ -116,7 +149,7 @@ function cases(shared) {
               const prefix = s.name + (parity ? "" : " [" + build + "]") + ": ";
               const check = (name, ok, detail) => t.check(prefix + name, ok, detail);
               const chans = res[build].map((r) => r.channels);
-              const m = s.gm ? { slots: res[build][0].slots } : s.analyze(chans[0], sr, ...chans.slice(1));
+              const m = s.items ? { slots: res[build][0].slots } : s.analyze(chans[0], sr, ...chans.slice(1));
               if (build === "source" && t.out) {
                 const pcm = chans[0].length === 1 ? [chans[0][0], chans[0][0]] : chans[0];
                 t.save("renders/" + tag.replace(" ", "-") + "/" + s.name + ".wav", A.wav(pcm, sr));
@@ -138,7 +171,7 @@ function cases(shared) {
           const again = await openRenderPage(t, "source", seed);
           for (const name of Object.keys(kept)) {
             const s = SCENARIOS.find((x) => x.name === name);
-            const r = await render(again, renderSpec(s, { seed, sr, quality }));
+            const r = await renderScenario(again, s, { seed, sr, quality });
             const d = maxDiff(r, kept[name]);
             if (r.hash === kept[name].hash) sameEngine.bitIdentical.push(name + " repeat");
             else sameEngine.differing[name + " repeat"] = d;
@@ -147,7 +180,7 @@ function cases(shared) {
           }
           for (const name of ["gm-drums", "reverb"]) {
             const s = SCENARIOS.find((x) => x.name === name);
-            const r = await render(again, renderSpec(s, { seed: (seed + 1) >>> 0, sr, quality }));
+            const r = await renderScenario(again, s, { seed: (seed + 1) >>> 0, sr, quality });
             const d = maxDiff(r, kept[name]);
             t.check(name + ": seed " + ((seed + 1) >>> 0) + " changes the noise-based output (the seeding is effective)", d >= tol.seedEffect, "max |diff| " + d.toExponential(3));
           }
@@ -162,4 +195,4 @@ function cases(shared) {
   return out;
 }
 
-module.exports = { cases, renderSpec, openRenderPage, render, decode, maxDiff };
+module.exports = { cases, renderSpec, renderScenario, openRenderPage, render, decode, maxDiff };

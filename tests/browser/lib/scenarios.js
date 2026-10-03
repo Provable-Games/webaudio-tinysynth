@@ -328,42 +328,42 @@ for (const useReverb of [0, 1]) {
   });
 }
 
-/* ---- GM programs and drums (summaries computed in the page) ---- */
-function gmBatch(first, count) {
-  const steps = [];
-  const slots = [];
-  for (let i = 0; i < count; ++i) {
-    const t = 0.3 + i * 0.5;
-    steps.push({ call: "setProgram", args: [0, first + i] }, on(0, 60, t), off(0, 60, t + 0.3));
-    slots.push([t, t + 0.5]);
-  }
-  return { duration: 0.3 + count * 0.5 + 0.3, steps, slots, threshold: 1e-4 };
-}
+/*
+ * ---- GM programs and drums ----
+ * Every program and drum note is rendered on its own (a fresh synth and
+ * OfflineAudioContext per item), so no earlier voice can sound in the slot
+ * measured for it: with pruning stopped, a release tail lasts the whole
+ * render. The warm-up note the library plays at construction stays far below
+ * the audibility threshold in the slot (silent-program floor 2.3e-7, T6.md).
+ *
+ * Program notes are held 1.2 s, longer than the longest built-in attack
+ * (a = 1 s). At baseline a note released before its attack ends is silent
+ * until note-off: _releaseNote's cancelScheduledValues(t) removes the whole
+ * pending linear ramp. GM 119 (both qualities) and 125 (quality 1) are
+ * silent with a 0.3 s note; the variation spec records this (phase B).
+ */
+const ITEM_ON = 0.25, ITEM_OFF = 1.45, ITEM_DURATION = 1.6;
+const ITEM_SLOT = [ITEM_ON, ITEM_DURATION];
+const programItem = (n, offAt = ITEM_OFF) => ({ label: "program " + n, spec: { duration: ITEM_DURATION, steps: [{ call: "setProgram", args: [0, n] }, on(0, 60, ITEM_ON), off(0, 60, offAt)], pcm: "L" }, slot: ITEM_SLOT });
+const drumItem = (n) => ({ label: "drum " + n, spec: { duration: ITEM_DURATION, steps: [on(9, n, ITEM_ON)], pcm: "L" }, slot: ITEM_SLOT });
 for (let b = 0; b < 4; ++b) {
   SCENARIOS.push({
-    name: "gm-programs-" + (b * 32) + "-" + (b * 32 + 31), about: "GM programs " + (b * 32) + ".." + (b * 32 + 31) + " at C4, built-in timbres of the case's quality",
-    gm: true, options: { useReverb: 0 }, spec: gmBatch(b * 32, 32),
+    name: "gm-programs-" + (b * 32) + "-" + (b * 32 + 31), about: "GM programs " + (b * 32) + ".." + (b * 32 + 31) + " at C4 held 1.2 s, each rendered alone, built-in timbres of the case's quality",
+    gm: true, options: { useReverb: 0 }, items: Array.from({ length: 32 }, (_, i) => programItem(b * 32 + i)),
     verify: (m, tol, check) => gmVerify(m, tol, check, "program", b * 32),
   });
 }
-{
-  const steps = [], slots = [];
-  for (let n = 35; n <= 81; ++n) {
-    const t = 0.3 + (n - 35) * 0.6;
-    steps.push(on(9, n, t));
-    slots.push([t, t + 0.6]);
-  }
-  SCENARIOS.push({
-    name: "gm-drums", about: "GM drum notes 35..81 on channel 10",
-    gm: true, options: { useReverb: 0 }, spec: { duration: 0.3 + 47 * 0.6 + 0.5, steps, slots, threshold: 1e-4 },
-    verify: (m, tol, check) => gmVerify(m, tol, check, "drum", 35),
-  });
-}
+SCENARIOS.push({
+  name: "gm-drums", about: "GM drum notes 35..81 on channel 10, each rendered alone",
+  gm: true, options: { useReverb: 0 }, items: Array.from({ length: 47 }, (_, i) => drumItem(35 + i)),
+  verify: (m, tol, check) => gmVerify(m, tol, check, "drum", 35),
+});
 function gmVerify(m, tol, check, what, base) {
   const silent = [], loud = [];
   m.slots.forEach((s, i) => { if (!(s.peak >= tol.audiblePeak)) silent.push(base + i); if (!(s.peak <= 1)) loud.push(base + i); });
-  check("every " + what + " is audible (peak >= " + tol.audiblePeak + ")", !silent.length, silent.length ? "silent: " + silent.join(",") : m.slots.length + " of " + m.slots.length);
+  check("every " + what + " is audible on its own (peak >= " + tol.audiblePeak + ")", !silent.length,
+    (silent.length ? "silent: " + silent.join(",") + "; " : "") + "min peak " + Math.min(...m.slots.map((s) => s.peak)).toExponential(3));
   return { overFullScale: loud, maxPeak: Math.max(...m.slots.map((s) => s.peak)) };
 }
 
-module.exports = { SCENARIOS, LEVEL, BEND_UNIT_CENTS, LFO_HZ, sine, sine300, on, off, cc, rpn, gs, universal };
+module.exports = { SCENARIOS, ITEM_SLOT, programItem, LEVEL, BEND_UNIT_CENTS, LFO_HZ, sine, sine300, on, off, cc, rpn, gs, universal };
