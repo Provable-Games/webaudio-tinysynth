@@ -43,7 +43,7 @@ Contract, implemented in T8 and validated in T6:
 Decision: a seek is history-independent.
 
 - Baseline: `locateMIDI(tick)` first restores the state that `loadMIDI` installs. That means `reset()` defaults on all 16 channels (program 0, bend range 2 semitones, modulation 0, volume 100, pan 64, expression 127, sustain off, bend centred, RPN null, channel tuning 0, scale tuning 0, rhythm only on channel 10) plus master tuning 0, and the MIDI default tempo of 120 BPM.
-- It then applies, in event order, every retained state event with `t < tick` (the legacy strictness): tempo, program change, every controller the live `send()` path handles (including RPN/NRPN data entry, bend range, fine/coarse tuning, and reset-all-controllers), pitch bend, and the SysEx messages `send()` supports (GM/GS reset, master tuning, scale tuning, rhythm part). No note-on/off or other sound is produced, and there is no note chase. All sounding notes stop, as in legacy `stopMIDI()`.
+- It then applies, in event order, every retained state event with `t < tick` (the legacy strictness): tempo, program change, every controller the live `send()` path handles (including RPN/NRPN data entry, bend range, fine/coarse tuning, and reset-all-controllers), pitch bend, and the SysEx messages `send()` supports: master tuning, scale tuning and the GS rhythm part. `send()` has no GM/GS reset handler, so none is replayed. Wording corrected after T3. No note-on/off or other sound is produced, and there is no note chase. All sounding notes stop, as in legacy `stopMIDI()`.
 - Manual overrides do not survive a seek. Channel state set by the caller (`setProgram`, `setBend`, `send()` …) is replaced by the song-derived state. Engine-level settings are not channel state and are unaffected: `masterVol`, `reverbLev`, `quality`, `voices`, `loop`, `loopEnd`, the timbre tables (including `setTimbre` custom timbres), the waveform registry (#26), and `seed`.
 - Positioning keeps the legacy next-event behavior. After `locateMIDI(tick)`, playback resumes at the first retained event with `t ≥ tick`. `getPlayStatus().curTick` reports that event's tick, and `playMIDI()` schedules it at `currentTime + 0.1 s`. Any rest between `tick` and that event is not reproduced. Rationale: do not silently change audible alignment. Requested-tick positioning could later be an additive option. Seeking at or beyond the last event keeps the legacy result (`curTick = maxTick`, restart from the beginning on play). The `loopEnd` wrap timing is unchanged.
 - #10: `playMIDI()` on a completed song (`curTick ≥ maxTick`) begins a new pass equivalent to `locateMIDI(0)` followed by play. Tempo returns to the song's initial tempo and channel state to the seek baseline, so a replay sounds the same as the first play after `loadMIDI`. This deliberately deviates for songs whose end state differs from their start state; songs that set their state at tick 0 are unaffected (ledger L-05).
@@ -141,12 +141,12 @@ The user observed that PR #28's clean Claude comment showed a bare `lgtm`, with 
 
 Needed before T2 (#4/#6), and followed by T5 (#13/#14).
 
-- **`loadMIDI(data)` failures throw.** The library throws an `Error` with a stable `code` string and a descriptive message: `SMF_INVALID_HEADER`, `SMF_UNSUPPORTED_FORMAT` (format 2 or unknown), `SMF_UNSUPPORTED_DIVISION` (SMPTE/high-bit or zero PPQ), `SMF_TRUNCATED` (data ends inside a chunk, event or variable-length quantity, or fewer chunks than declared) and `SMF_MALFORMED` (an over-long VLQ, an invalid status or data byte, a missing running status, or a bad meta or SysEx length, including tempo length ≠ 3 or tempo 0). The thrown error carries `track` (0-based chunk index) and `offset` (absolute byte offset) where applicable.
-- **Failed loads are transactional and side-effect free.** The previous song, playback state and channel state stay as they were, and no partial event is installed. The parser builds a temporary song and installs it only after full validation. A successful load keeps today's effects: stop, install, `reset()`, `locateMIDI(0)`.
+- **`loadMIDI(data)` failures throw.** The library throws an `Error` with a stable `code` string and a descriptive message: `SMF_INVALID_HEADER`, `SMF_UNSUPPORTED_FORMAT` (format 2 or unknown), `SMF_UNSUPPORTED_DIVISION` (SMPTE/high-bit or zero PPQ), `SMF_TRUNCATED` (data ends inside a chunk, event or variable-length quantity, or fewer chunks than declared) and `SMF_MALFORMED` (an over-long VLQ, an invalid status or data byte, a missing running status, or a bad meta or SysEx length, including tempo length ≠ 3 or tempo 0). The thrown error carries `track` (0-based index of the `MTrk` chunk; unknown chunks are not counted) and `offset` (absolute byte offset) where applicable. A meta or SysEx length that runs past the chunk end is reported as `SMF_TRUNCATED` (wording corrected after the T2 review, F4).
+- **Failed loads are transactional and side-effect free.** The previous song, playback state and channel state stay as they were, and no partial event is installed. The parser builds a temporary song and installs it only after full validation. A successful load keeps today's effects: stop, install, then `locateMIDI(0)`. Since T3, `locateMIDI(0)` performs the `reset()` itself, as the seek baseline, and the WebAudio call order still matches upstream.
 - **Legacy differences** are ledger L-01, L-02 and L-03:
   - Non-`MThd` input used to return silently after stopping playback; it now throws without side effects.
   - Running status is per track and cancelled by meta and SysEx events, per the SMF specification. The legacy file-wide initial `0x90` running status is removed, and T2 characterizes any valid-file impact.
-  - A missing End-of-Track is accepted only when the declared chunk ends exactly on an event boundary. That track then ends at its last event's tick. This is documented recovery.
+  - A missing End-of-Track is accepted only when the declared chunk ends exactly on an event boundary and the chunk is followed by end of file or by another `MTrk` chunk. That track then ends at its last event's tick. This is documented recovery. Otherwise the result is `SMF_MALFORMED`; after the T2 review (F5), this catches understated lengths that land on event boundaries.
   - Unknown chunk types are skipped, as the SMF specification requires.
 - **The asynchronous path wraps errors.** `loadMIDIUrl` exceptions surface through #14's promise (T5). Until T5 lands, an exception inside the XHR `onload` is an uncaught error in the console, an accepted interim state on the unreleased integration branch.
 - **API misuse** (T5, #13): direct calls with invalid argument types or ranges throw `TypeError` or `RangeError` with descriptive messages, before any mutation. Malformed raw messages passed to `send()` are no-ops (#13). Useful numeric coercions are characterized and kept.
@@ -163,3 +163,70 @@ Inputs: G0 independent review of `1eff7ba` (`g0/review` `03003e9`, `tasks/G0-rev
 - A model output that is clean apart from leading prose is handled per the implementer's documented choice. The contract stays fail-closed: `lgtm` plus prose, and prose between or after findings, are never accepted.
 - The native test suite must fail when zero tests run or a file exits early (M4, T1-tooling).
 - Codex ChatGPT-credential rotation is an org-level prerequisite. Authentication failures name `CODEX_AUTH_DOT_JSON` explicitly.
+
+## D-015 Required checks and credential follow-ups (2026-10-03)
+
+- The user added the six checks to the `protect main` ruleset (id 24398919) as required status checks from GitHub Actions (integration 15368): `test`, `lint`, `build-verify`, `browser-smoke`, `Claude review gate` and `Codex review gate`, with the strict policy off.
+- Finding: the ruleset's `conditions.ref_name.include` is empty, and `GET /repos/…/rules/branches/main` returns no rules. So no rule in that ruleset (required checks, signed commits, PR requirement, deletion and non-fast-forward protection) is in effect on `main`. This corrects D-002's kickoff note, which read the rules from the ruleset definition rather than from their effective application. Enforcement needs the target set to `~DEFAULT_BRANCH` (or `refs/heads/main`); that is the user's ruleset change.
+- The user acknowledged the Codex ChatGPT-credential rotation risk and the Dependabot policy (AI review gates fail on Dependabot PRs without Dependabot secrets). No change is planned. Both remain documented in `.github/scripts/README.md`.
+- Update (2026-10-03): the user retargeted the ruleset to `~DEFAULT_BRANCH`. `GET /rules/branches/main` now returns `deletion`, `non_fast_forward`, `required_signatures`, `pull_request` and `required_status_checks` (`test`, `lint`, `build-verify`, `browser-smoke`, `Claude review gate`, `Codex review gate`). Enforcement on `main` is verified. `improve/integration` has no rules, as intended.
+
+## D-016 NOTICE and source-header policy (2026-10-03)
+
+The T2 independent review (F6) and both of PR #32's AI reviews flagged that NOTICE and the source header's modification list were not updated for the parser change. The contract (contracts.md) requires NOTICE updates per modification set. The source header is kept in the minified build (T1, +347 B), so a header that enumerates changes grows the onchain artifact with every task.
+
+Decision:
+- `NOTICE` gets one bullet per modification set, added by the implementing task. NOTICE is not part of the minified build.
+- The source header becomes a fixed attribution: the upstream author and URL, the Apache-2.0 line, and "Modified by Provable Games (fork URL); see NOTICE for the changes". This satisfies Apache-2.0 §4(b) ("prominent notices stating that You changed the files") without growing per task. T2 makes the change. Later tasks only add NOTICE bullets and do not touch the header.
+- T9 reviews the final NOTICE and README wording (#20).
+
+## D-017 T6 phase A as an integrated increment; upstream observations kept (2026-10-03)
+
+- T6 phase A (the browser and rendered-audio infrastructure, plus baseline characterization; no runtime changes) is integrated once its PR passes CI, the arm64 browser matrix, and the AI review gates. T3–T5 then get browser and audio coverage as they land. Full T6 acceptance remains at G1, after the phase-B assertions (T6.md §13) are added on top of the integrated T2–T5. The G1 independent review covers all of T6.
+- **Bend-range unit.** The engine converts the stored bend range with `brange*100/127` cents. MIDI's RPN 0 value is `semitones*128 + cents`, so the default 2-semitone range plays as 201.57 cents, not 200. This is upstream behavior that the differential tests assert, and no registered issue covers it. It is kept unchanged and listed as a future recommendation, since any change would be an unscoped sound change.
+- **Drum peaks.** In quality 1, drums 49 and 55 peak at 1.16–1.29 at the default volume. These are upstream timbre levels, kept unchanged (no timbre redesign). The consumer's suggested `master_vol` of 40 % leaves headroom. This is listed as an observation for the consumer and in the final recommendations.
+- **Offline renders.** The library's 60 ms timer prunes voices during `OfflineAudioContext` renders, so T6 tests stop it as a test control. T4 (#12: "Define supported suspended, closed, and OfflineAudioContext behavior") must define the real behavior.
+
+## D-018 Lifecycle API contract for T4 (#11, #12) (2026-10-03)
+
+The additions are opt-in. Default construction (`new WebAudioTinySynth()` or `new WebAudioTinySynth({quality, useReverb, voices})`) keeps today's behavior: an internally created context is installed immediately, and `ready()` works as before.
+
+- **Constructor options:**
+  - `context`: a caller-owned `BaseAudioContext`, either an `AudioContext` or an `OfflineAudioContext`. When given, no internal context is created.
+  - `destination`: an `AudioNode` in that context. It defaults to `context.destination`.
+  - `lazy: true`: defer creating the internal context until the first `resume()` or the first call that needs audio. This lets a tap-to-start page create the context inside the gesture.
+
+  Invalid values throw `TypeError` before any side effect (D-013 style).
+- **Ownership.** Contexts passed through `context` or `setAudioContext()` are caller-owned and are never closed by the synth. Contexts the synth creates, eagerly or lazily, are synth-owned.
+- **`resume()` returns a promise.** It creates the lazy context if needed, calls `context.resume()` when the context is suspended, and resolves once the context is running.
+  - It rejects observably: with the underlying error, or with an `Error` whose `code` is `AUDIO_CONTEXT_CLOSED` for a closed context.
+  - For an `OfflineAudioContext` it resolves without action.
+  - The internal `resume()` call in `send()` must never produce an unhandled rejection.
+- **`dispose()` returns a promise and is idempotent.** Repeated calls return the same promise. It:
+  - clears every instance timer (the scheduler interval, and `ready()` polling)
+  - stops every owned source: melodic voices, percussion voices, the LFO and the warm-up note
+  - detaches `onended` callbacks, disconnects graph and modulation routes, and releases references
+  - aborts or invalidates pending work; T5's `loadMIDIUrl` promise must reject or settle on dispose
+  - closes the context only if the synth owns it, and resolves after that close
+
+  After `dispose()` the instance is terminal. Public methods are documented, safe no-ops that never throw from a timer, and `ready()` resolves. T4 documents the exact behavior of each method.
+- **`setAudioContext(ctx, dest)`.** Tear down the previous graph before installing the new one, closing the previous context only if the synth owns it. The new context is caller-owned.
+- **OfflineAudioContext.** Direct note scheduling with explicit times is supported and must not be pruned prematurely by the realtime timer (T6 observation, D-017). Realtime MIDI sequencing (`playMIDI`) on an offline context is defined and documented by T4: either a supported mode or an explicit `Error`, chosen with evidence.
+- **Cleanup evidence** comes from T6's browser instrumentation (`tests/browser/page/instrument.js`), not from the mock alone. The mock's `stop()` does not simulate node completion.
+
+## D-019 T3 transport refinements (2026-10-03)
+
+- #8: a pass wraps only if `loopEnd > 0` or the last retained event's tick is later than the first's. A song whose events all share one tick T > 0 with 0 < `loopEnd` ≤ T keeps looping, because each pass advances T ticks of leading time. Otherwise a non-advancing song plays once and stops with `{play:0, curTick:maxTick}`. Each timer callback handles at most 1000 events, and the rest continue in order on later callbacks.
+- #9: if a song has no retained events other than tempo, `playMIDI()` does nothing: no node is created and the status is unchanged.
+- Deliberate extension within the D-005 seek baseline: scale tuning is cleared on every load and seek.
+- A seek cancels queued channel-controller automation from the current time on every seek except the internal `locateMIDI(0)` inside `loadMIDI`, and then applies the reconstructed state. This covers caller-scheduled `send(msg, futureTime)` and timed setters, as D-005 requires, because manual overrides do not survive a seek. The `queued` bookkeeping is dropped (T3 review F3). Loads stay trace-identical to upstream, which the differential test pins. Seeks are deliberately not trace-identical to upstream (#21), so the earlier wording claiming so was wrong.
+- Replay of a completed song (#10) reconstructs tempo and channel state, and cancels queued automation, exactly as `locateMIDI(0)` does. It does **not** silence notes still sounding or already scheduled from the previous pass, matching upstream audio continuity. Before this change, a replay right after the status flipped to stopped dropped the previous pass's last notes (T3 review F4). This supersedes the earlier "replay cuts release tails" extension.
+- Accepted residuals (documented in T3.md): channel automation queued before a load can still fire into the new song. This is upstream behavior on the load path (F5), and changing it would break load-trace identity. Untrusted looping MIDI with sub-microsecond passes causes sustained CPU and garbage audio, but each callback is bounded and the page stays responsive (F6).
+- Deferred: validation of negative and non-finite `loopEnd` goes to T5 (#13, F8). One `resume()` call per seek event through `send()` goes to T4 (F9).
+- Known, for T4: percussion hits already scheduled in the lookahead window are not in `notetab`, so `stopMIDI` and seek do not stop them. T4's percussion voice tracking must stop scheduled percussion on stop, seek and dispose.
+
+## D-020 Agents respond to their own PR comments (2026-10-03)
+
+At the user's request ("instruct all subagents responsible for an open PR to review comments and respond appropriately"), task agents may now push fast-forward commits to their own task branch and post replies on their own PR. They decide accept or reject for every review comment on the evidence, fix the accepted findings with tests, and reply to each with "fixed" plus the commit SHA and how it was verified, or "not changed" plus the reason. They handle at most one more round after the re-run, then report to the supervisor. Still excluded: force-pushes, pushes to other branches, merging, closing, approving, editing PR metadata, and touching other PRs. Integration into `improve/integration` stays with the supervisor. Owners: #33 is T6, #34 is T3, and #31's findings (umbrella, supervisor-owned) go to the T1-tooling agent via `fix/umbrella-review`.
+- Addendum (2026-10-03), from the review of umbrella PR #31: a task that changes public behavior also adds one concise bullet to the README's "What behaves differently" list, alongside its NOTICE bullet (D-016). The README loadMIDI note landed in #35, together with replacing `engines` by a warn-only `devEngines` so consumer installs are not restricted. T3's branch predates that README section, so the supervisor adds the T3 bullet at integration. T9 does the full documentation pass.
+- Final T3 acceptance (2026-10-03, review 0cf4495): F3 and F4 are fixed. F11 (no test for a later seek stopping the old notes after a replay) goes to T6 phase B. F12 is accepted as a residual: on replay, a song whose last note is fading out has its channel volume reset at replay time, so that note briefly sounds at full volume. Future recommendation: apply the reconstructed state at the new pass's start time.

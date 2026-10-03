@@ -311,3 +311,25 @@ Resolved at about 2026-10-03T02:01Z with `gh api repos/<repo>/releases/latest`, 
 
 After the fix, `npm run lint` and `npm test` pass: unit 30, node 33, 3 of 3 scripts, and the differential compares 8 files.
 
+## 13. Addendum: consumer `engines` removed (umbrella PR #31 review)
+
+**Finding.** The Codex review on #31 (comment 5965582467, MEDIUM, `package.json:45`) noted that the published `engines` field (`node >=24.11.0 <25`, `npm >=11 <12`) restricted consumer installs of a dependency-free browser library. Reproduced on `8646d13`: the packed tarball, installed with `npm install --engine-strict` under Node 22.23.3 / npm 10.9.9, fails with `EBADENGINE`, exit 1.
+
+**Change (branch `fix/umbrella-review`).**
+- `engines` is removed, so the published manifest makes no Node or npm demand.
+- The development expectation moves to `devEngines` with `onFail: "warn"`: runtime node `>=24.11.0 <25`, packageManager npm `>=11 <12`.
+- `.nvmrc` (24.21.0) and CI are unchanged.
+- `npm install --package-lock-only` with npm 11.19.0 only removed the root entry's `engines` copy from the lockfile; no dependency entry changed.
+- §2.1's `engines` decision is superseded.
+
+**Verification** (`_evidence/fix-umbrella/scratch/`; Node 22.23.3 from the nodejs.org tarball, SHASUMS256 checked):
+
+| Check | Node 24.21.0 / npm 11.19.0 (CI) | Node 24.19.0 / npm 11.17.0 (local) | Node 22.23.3 / npm 10.9.9 |
+| --- | --- | --- | --- |
+| `npm ci` in the repository | exit 0, no warning | exit 0, no warning | exit 0, `EBADDEVENGINES` warnings only |
+| `npm run` in the repository | no warning | no warning | exit 0, warnings only |
+| Consumer `npm install --engine-strict --offline <packed tarball>` | exit 0, no warning | | exit 0, no warning (was `EBADENGINE`, exit 1) |
+| `require()` of the package and of `webaudio-tinysynth.min.js` in that consumer | `WebAudioTinySynth`, no global | | `WebAudioTinySynth`, no global |
+
+So `devEngines` is honored only for commands run in this repository, and only as a warning. It does not reach consumers. The packed `package.json` has no `engines` field.
+

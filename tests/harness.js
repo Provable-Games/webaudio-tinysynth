@@ -215,7 +215,14 @@ function createEnvironment(trace) {
     }
   }
 
-  return { sandbox, clock, step };
+  // Let `ms` pass with no interval firing, as in a throttled background tab: every
+  // overdue interval then fires once, at the new time, on the next step().
+  function skip(ms) {
+    clock.ms += ms;
+    for (const t of timers.values()) t.due = Math.max(t.due, clock.ms);
+  }
+
+  return { sandbox, clock, step, skip };
 }
 
 /*
@@ -288,9 +295,72 @@ const midi = {
   noteOff: (tick, ch, n) => ({ tick, bytes: [0x80 | ch, n, 0] }),
 };
 
+/* ---------- raw Standard MIDI File pieces, for the parser tests ---------- */
+
+/* A variable-length quantity. There is no length limit, so over-long values can be written on purpose. */
+function vlq(v) {
+  const out = [v % 128];
+  while ((v = Math.floor(v / 128))) out.unshift((v % 128) | 0x80);
+  return out;
+}
+
+/* Track data from [{tick, bytes}] (stable-sorted by tick, delta-encoded), ending with End-of-Track unless eot === false. */
+function trackBytes(events, eot) {
+  const sorted = events.map((e, i) => ({ e, i })).sort((a, b) => a.e.tick - b.e.tick || a.i - b.i).map((x) => x.e);
+  const out = [];
+  let last = 0;
+  for (const ev of sorted) {
+    out.push(...vlq(ev.tick - last), ...ev.bytes);
+    last = ev.tick;
+  }
+  if (eot !== false) out.push(0, 0xff, 0x2f, 0x00);
+  return out;
+}
+
+const be32 = (v) => [(v >>> 24) & 0xff, (v >>> 16) & 0xff, (v >>> 8) & 0xff, v & 0xff];
+
+/* A chunk as a byte array: a 4-character id, a length (`declared`, default the real one) and the data. */
+function chunk(id, bytes, declared) {
+  return [...Buffer.from(id, "latin1"), ...be32(declared === undefined ? bytes.length : declared), ...bytes];
+}
+
+/*
+ * A file: an MThd chunk, then `chunks`. A byte array becomes an MTrk chunk;
+ * {raw: [...]} is copied as is (build it with chunk()). ntrks counts the byte
+ * arrays unless opts.ntrks is given; opts.headerExtra appends bytes to the
+ * header chunk and its length.
+ */
+function smf(format, division, chunks, opts = {}) {
+  const extra = opts.headerExtra || [];
+  const ntrks = opts.ntrks === undefined ? chunks.filter((c) => Array.isArray(c)).length : opts.ntrks;
+  const out = chunk("MThd", [format >> 8, format & 0xff, ntrks >> 8, ntrks & 0xff, division >> 8, division & 0xff, ...extra]);
+  for (const c of chunks) out.push(...(Array.isArray(c) ? chunk("MTrk", c) : c.raw));
+  return Buffer.from(out);
+}
+
+/*
+ * Everything a failed loadMIDI must leave unchanged, as plain JSON: the song,
+ * the sequencer position and timing, the voice count, the channel and tuning
+ * state, and the timbre tables (program, drummap). Undefined and non-finite
+ * numbers are kept as strings.
+ */
+function playbackState(synth) {
+  const keep = (k, v) => (v === undefined ? "undefined" : typeof v === "number" && !Number.isFinite(v) ? String(v) : v);
+  return JSON.parse(JSON.stringify({
+    song: synth.song, maxTick: synth.maxTick, playTick: synth.playTick, playIndex: synth.playIndex,
+    playing: synth.playing, playTime: synth.playTime, tick2Time: synth.tick2Time, status: synth.getPlayStatus(),
+    loop: synth.loop, loopEnd: synth.loopEnd, voices: synth.notetab.length,
+    pg: synth.pg, vol: synth.vol, ex: synth.ex, bend: synth.bend, brange: synth.brange, rpnidx: synth.rpnidx,
+    sustain: synth.sustain, rhythm: synth.rhythm, tuningC: synth.tuningC, tuningF: synth.tuningF,
+    scaleTuning: synth.scaleTuning, masterTuningC: synth.masterTuningC, masterTuningF: synth.masterTuningF,
+    program: synth.program, drummap: synth.drummap,
+  }, keep));
+}
+
 module.exports = {
   ROOT, UPSTREAM_COMMIT, UPSTREAM_SHA256,
   FORK_PATCHES, fail, sha256, upstreamSource, applyPatches, referenceSource, forkVariants,
   createEnvironment, createSynth, toArrayBuffer, runUntil,
   makeMidi, midi,
+  vlq, trackBytes, chunk, smf, playbackState,
 };

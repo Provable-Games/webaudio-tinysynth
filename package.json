@@ -27,8 +27,8 @@
     "pack:check": "node scripts/check-pack.js",
     "lint": "eslint .",
     "test": "npm run test:unit && npm run test:node && npm run test:regression",
-    "test:unit": "node scripts/run-unit-tests.js --min-files=3 --min-tests=30",
-    "test:node": "node scripts/run-node-tests.js --min-files=3 --min-tests=33",
+    "test:unit": "node scripts/run-unit-tests.js --min-files=5 --min-tests=280",
+    "test:node": "node scripts/run-node-tests.js --min-files=6 --min-tests=105",
     "test:regression": "node scripts/run-regressions.js",
     "test:browser": "node scripts/run-regressions.js --deadline=180 tests/browser-smoke.js \"tests/browser-smoke.js test-midi/all-gm-sounds.mid\"",
     "test:browser:matrix": "node scripts/browser-matrix.js",
@@ -48,9 +48,17 @@
     "url": "https://github.com/g200kg/webaudio-tinysynth/issues"
   },
   "homepage": "https://github.com/g200kg/webaudio-tinysynth#readme",
-  "engines": {
-    "node": ">=24.11.0 <25",
-    "npm": ">=11 <12"
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": ">=24.11.0 <25",
+      "onFail": "warn"
+    },
+    "packageManager": {
+      "name": "npm",
+      "version": ">=11 <12",
+      "onFail": "warn"
+    }
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
