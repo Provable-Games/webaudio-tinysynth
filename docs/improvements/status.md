@@ -10,13 +10,23 @@ Supervisor-owned. After a context reset, read this file, then [contracts.md](con
 - Evidence root (not in the repo): `/workspace/webaudio-tinysynth-worktrees/_evidence/`.
 - Remote actions: task branches may be pushed and PRs opened; no GitHub merges, releases, tags, or ruleset/secret changes (D-002).
 
+## Baseline artifact (T0)
+
+| File | sha256 | Raw / gzip -9 bytes |
+| --- | --- | --- |
+| `webaudio-tinysynth.js` | `abb2d0fb828ada86…` | 54,000 / 11,765 |
+| `webaudio-tinysynth.min.js` | `5aa3edbc13371694…` | 37,060 / 9,444 |
+| `webaudio-tinysynth.min.js.map` | `fd7f64190db21526…` | 59,637 / 11,423 |
+
+The rebuild with Terser 5.51.2 and the current flags is byte-identical. The minified file has no `sourceMappingURL` and no trailing newline, and contains no `</script`, `<script` or `<!--` sequence and no non-ASCII bytes. `npm test` passes in 44 s. Full hashes are in `evidence/T0/baseline.json`.
+
 ## Task state
 
 States: `pending`, `running`, `review`, `accepted`, `blocked`.
 
 | Task | Issues | Branch / worktree | Base | State | Accepted commit | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| T0 | #16 (baseline), #7/#21/#26/#27 contracts | `t0/baseline` | b70ba90 | running | | Policy decisions D-004 to D-007 written by the supervisor |
+| T0 | #16 (baseline), #7/#21/#26/#27 contracts | `t0/baseline` | b70ba90 | accepted | c2252bc | Policy decisions D-004 to D-007 and D-010; evidence in tasks/T0.md |
 | T1 | #5 #15 #16 #22 #23 #24 #25 | tooling: `t1/tooling`; AI review: `t1/ai-review` | after T0 | pending | | Initial CI gate G0 |
 | T9A | #19 #20 (read-only audit) | `t9/audit` | after T0 | pending | | Optional, parallel with T1 |
 | T2 | #4 #6 | `t2/parser` | after G0 | pending | | |
@@ -48,6 +58,6 @@ States: `pending`, `running`, `review`, `accepted`, `blocked`.
 
 ## Next actions
 
-1. Review T0's report and evidence; accept it, then merge `t0/baseline` into `improve/integration`.
+1. (done) T0 accepted and merged.
 2. Dispatch T1 tooling and T1 AI review in parallel worktrees; optionally dispatch the T9A audit.
 3. Push `improve/integration` and open the umbrella draft PR once T1 workflows exist.
