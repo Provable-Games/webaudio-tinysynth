@@ -31,6 +31,7 @@ const MATRIX = {
     dispose: { kind: "assert", dims: ["build"], about: "T4 (#11): dispose() and setAudioContext() cleanup on real nodes: timers, sources, connections, ownership, pending loads, cycles; stopMIDI() silence (D-023)" },
     start: { kind: "assert", dims: ["build"], about: "T4 (#12): default autoplay policy, real input: lazy and injected contexts start from resume(), the README path, observable rejections" },
     offline: { kind: "assert", dims: ["build"], about: "T4 (#12): OfflineAudioContext contract: repeatable renders with the timer running, playMIDI() throws, injected destination routing" },
+    waves: { kind: "assert", dims: ["build", "quality", "sampleRate"], about: "T11 (#26): setSampleWave/setHarmonicWave offline renders: held tables, pitch, steps and edges, pitch envelope, FM, harmonics, registry lifecycle, consumer fixture" },
     hang: { kind: "observe", dims: ["build"], about: "external deadlines on real hangs (#4 truncated file, #8 zero-duration loop)" },
     variation: { kind: "observe", dims: [], about: "source build: run-to-run variation across launches and seeds, scheduler effect, generated buffer hashes (tolerance evidence)" },
   },
