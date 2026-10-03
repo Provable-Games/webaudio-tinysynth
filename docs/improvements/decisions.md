@@ -286,7 +286,7 @@ The consumer reported that TinyChip's Tier 2 (Casey's chip pack: 20 presets and 
 - T12 (#27) and T8 (#7) keep their plan positions unless the user re-prioritizes them.
 - The later T7 refactor must carry the registry code.
 
-## D-027 Sample-wave storage: one cycle held to a home pitch near 440 Hz (2026-10-03)
+## D-027 Sample-wave storage: one cycle held to a home pitch near 440 Hz (2026-10-03; posted to #26 as a refinement comment)
 
 This refines D-021, with the user's choice made after the supervisor showed the fidelity trade-off. Under D-021 as written, a table of N samples is stored as N frames and played at rate `f·N/sampleRate`, for example about 0.07 for an 8-sample pulse at A4. Browsers interpolate between frames (Chromium linearly, Firefox with a band-limited resampler). At such low rates each step edge is smeared across a whole step, so pulse and saw tables lose their stepped character. TinyChip avoids this by playing 440 Hz-based buffers near rate 1.
 
