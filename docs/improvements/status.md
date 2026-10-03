@@ -27,7 +27,7 @@ States: `pending`, `running`, `review`, `accepted`, `blocked`.
 | Task | Issues | Branch / worktree | Base | State | Accepted commit | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
 | T0 | #16 (baseline), #7/#21/#26/#27 contracts | `t0/baseline` | b70ba90 | accepted | c2252bc | Policy decisions D-004 to D-007 and D-010; evidence in tasks/T0.md |
-| T1 | #5 #15 #16 #22 #23 #24 #25 | tooling: `t1/tooling`; AI review: `t1/ai-review` | 1e6184c | review | 5457966, 866f6a1 | Integrated at f01ca19 after two independent reviews (`tasks/G0-review.md`). Awaiting the trusted-path real run on the verification PR. |
+| T1 | #5 #15 #16 #22 #23 #24 #25 | tooling: `t1/tooling`; AI review: `t1/ai-review` | 1e6184c | accepted | 5457966, 866f6a1 | Integrated at f01ca19. Independent review accepted every criterion (`tasks/G0-review.md`, 0b980fa). |
 | T9A | #19 #20 (read-only audit) | `t9/audit` | 1e6184c | accepted | 3e9d013 | Findings and T9 plan in tasks/T9A.md; D-011 |
 | T2 | #4 #6 | `t2/parser` | after G0 | pending | | |
 | T3 | #8 #9 #10 #21 | `t3/transport` | after T2 | pending | | D-005 |
@@ -46,7 +46,7 @@ States: `pending`, `running`, `review`, `accepted`, `blocked`.
 
 | Gate | Requirement | State |
 | --- | --- | --- |
-| G0 initial CI | Lint, Vitest, native Node tests, retained regressions, build verification, offline Playwright smoke, AI review workflows with central model/effort; a real Actions run | review. The independent review (`03003e9`) accepts #15, #16-initial, #22 and #23. It accepts #5 and #24 with M4, and rejects #25 at 1eff7ba (H1). Fixes are in progress (D-014). Afterwards: re-review, a real run, and a trusted-path (non-bootstrap) run. |
+| G0 initial CI | Lint, Vitest, native Node tests, retained regressions, build verification, offline Playwright smoke, AI review workflows with central model/effort; a real Actions run | **accepted** 2026-10-03. The trusted path was verified on PR #30: CI 37095012463, Claude 37095012532 and Codex 37095012496, both `lgtm`. A title-only edit produced skipped runs with non-required names. Limitations are recorded in validation.md. |
 | G1 reliability | T1 foundation plus T2–T6 accepted; source and minified validation pass | pending |
 | G2 delivery | All registered criteria verified; T10 independent review; consumer artifact/hash handoff | pending |
 
@@ -64,8 +64,13 @@ Local checks at f01ca19 all exit 0: `npm ci`, lint, verify, `pack:check`, `npm t
 - The ruleset has no required status checks. Making the new gates required is a ruleset change that needs user authorization (D-002).
 - The org variable `CODEX_CLI_VERSION=latest` is ignored in favor of an in-repo pin (D-009).
 
+## Remote PRs
+
+- #28 (`t1/ai-review`) and #29 (`t1/tooling`) were marked merged by GitHub when their commits reached `improve/integration` through the supervisor's push. No GitHub merge was performed.
+- #30 (`g0/verify`) is the trusted-path verification.
+
 ## Next actions
 
-1. (done) T0 accepted and merged.
-2. (running) T1 tooling, T1 AI review and the T9A audit.
-3. Push `improve/integration` and open the umbrella draft PR once T1 workflows exist.
+1. Dispatch T2 (parser, #4/#6) and T6 phase A (browser/audio infrastructure, #16) in parallel.
+2. Open the umbrella draft PR `improve/integration → main`.
+3. User decision pending: whether to make `CI` jobs and the `Codex review gate`/`Claude review gate` required checks (a ruleset change, D-002), and whether the org wants Dependabot secrets or an API-key Codex credential (D-014).
