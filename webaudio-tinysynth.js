@@ -561,14 +561,18 @@ function WebAudioTinySynthCore(target) {
          scale tuning 0, 120 BPM), then apply the tempo and channel-state events before
          tick, in order, through send() and without notes. Playback resumes at the first
          event at or after tick; with none left, curTick is maxTick and play restarts.
-         Without a song this does nothing. */
+         Without a song this does nothing. While playing, the channel volume, pan and
+         modulation changes already queued ahead from the old position are cancelled
+         first, so they cannot override the rebuilt state. */
       const s=this.song,p=this.playing;
       let i=0,e;
       if(!s)
         return;
       this.stopMIDI();
+      for(;p && i<16;++i)
+        [this.chvol[i].gain,this.chmod[i].gain,(this.chpan[i]||0).pan].forEach(a=>a && a.cancelScheduledValues(this.actx.currentTime));
       this.reset();
-      while(i<16)
+      for(i=0;i<16;)
         this.scaleTuning[i++].fill(0);
       for(s.tempo=120,i=0;(e=s.ev[i]) && e.t<tick;++i){
         if(e.m[0]==0xff51)
