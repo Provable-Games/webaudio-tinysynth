@@ -128,6 +128,13 @@ async function worker(o) {
         results.cases.push(r);
         if (r.status === "fail") ++failed;
         save();
+        if (session.fatal) break;
+      }
+      if (session.fatal) {
+        results.fatal = session.fatal;
+        ++failed;
+        console.log("FAIL: " + session.fatal + "; no further case runs in this worker");
+        break;
       }
     }
   } finally {

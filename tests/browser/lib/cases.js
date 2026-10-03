@@ -43,6 +43,9 @@ class EngineSession {
     this.browser = null;
     this.version = null;
     this.relaunches = 0;
+    // Set when a browser could not be confirmed closed: the worker must stop
+    // (its exit closes the Playwright pipe, which ends every browser it started).
+    this.fatal = null;
   }
 
   async launch() {
@@ -81,13 +84,18 @@ class EngineSession {
      */
     const pending = new Set();
     let lateClosed = 0, lateCloseFailed = 0;
-    const create = (make, close) => {
+    const lateBrowsers = []; // late browsers whose close failed: kept for another attempt
+    const create = (make, close, kind) => {
       if (abandoned) return Promise.reject(new Error(ENDED));
       const p = (async () => {
         const x = await make();
         if (abandoned) {
           const cr = await withTimeout(close(x), CLOSE_TIMEOUT_MS);
-          if (cr.ok) ++lateClosed; else ++lateCloseFailed;
+          if (cr.ok) ++lateClosed;
+          else {
+            ++lateCloseFailed;
+            if (kind === "browser") lateBrowsers.push(x);
+          }
           throw new Error(ENDED);
         }
         return x;
@@ -150,7 +158,7 @@ class EngineSession {
       },
       /* A separate browser instance of the same engine, closed when the case ends. */
       launchBrowser: async () => {
-        const b = await create(() => this.playwright[this.engine].launch(Object.assign({ headless: true, timeout: 60000 }, this.launchOptions)), (x) => x.close());
+        const b = await create(() => this.playwright[this.engine].launch(Object.assign({ headless: true, timeout: 60000 }, this.launchOptions)), (x) => x.close(), "browser");
         extraBrowsers.push(b);
         return b;
       },
@@ -193,12 +201,24 @@ class EngineSession {
       const cr = await withTimeout(rec.context.close(), CLOSE_TIMEOUT_MS);
       if (!cr.ok && !cr.error) wedged = true;
     }
-    for (const b of extraBrowsers) await withTimeout(b.close(), 15000);
+    // Extra browsers, including late ones whose first close failed. A browser
+    // that is still connected after another attempt cannot be relaunched like
+    // the session browser: the worker must stop.
+    for (const b of [...extraBrowsers, ...lateBrowsers]) {
+      const cr = await withTimeout(b.close(), 15000);
+      if (!cr.ok && b.isConnected()) this.fatal = "an extra " + this.engine + " browser could not be closed";
+    }
+    if (this.fatal) record.check("every browser the case started was closed", false, this.fatal + "; the worker stops");
     if (r.timedOut) record.observe("cleanup", wedged ? "context did not close; browser relaunched" : "pages and contexts closed");
-    if (wedged) {
-      await this.closeBrowser();
-      await this.launch();
-      ++this.relaunches;
+    if (wedged && !this.fatal) {
+      const old = this.browser;
+      if (!(await this.closeBrowser()) && old && old.isConnected()) {
+        this.fatal = "the " + this.engine + " browser could not be closed for a relaunch";
+        record.check("the wedged browser was closed", false, this.fatal + "; the worker stops");
+      } else {
+        await this.launch();
+        ++this.relaunches;
+      }
     }
     if (!result.status) {
       const failed = result.checks.filter((k) => !k.ok).length;
