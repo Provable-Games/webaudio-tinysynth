@@ -29,11 +29,11 @@ States: `pending`, `running`, `review`, `accepted`, `blocked`.
 | T0 | #16 (baseline), #7/#21/#26/#27 contracts | `t0/baseline` | b70ba90 | accepted | c2252bc | Policy decisions D-004 to D-007 and D-010; evidence in tasks/T0.md |
 | T1 | #5 #15 #16 #22 #23 #24 #25 | tooling: `t1/tooling`; AI review: `t1/ai-review` | 1e6184c | accepted | 5457966, 866f6a1 | Integrated at f01ca19. Independent review accepted every criterion (`tasks/G0-review.md`, 0b980fa). |
 | T9A | #19 #20 (read-only audit) | `t9/audit` | 1e6184c | accepted | 3e9d013 | Findings and T9 plan in tasks/T9A.md; D-011 |
-| T2 | #4 #6 | `t2/parser` | after G0 | pending | | |
+| T2 | #4 #6 | `t2/parser` | 25d2a3d | running | | Assignment: `_evidence/assignments/T2.md`; D-013 |
 | T3 | #8 #9 #10 #21 | `t3/transport` | after T2 | pending | | D-005 |
 | T4 | #11 #12 | `t4/lifecycle` | after T3 | pending | | |
 | T5 | #13 #14 | `t5/api` | after T4 | pending | | |
-| T6 | #16 #7 (validation) | `t6/validation` | after T1–T5 | pending | | Gate G1 |
+| T6 | #16 #7 (validation) | `t6/validation` | 25d2a3d | running (phase A) | | Infrastructure and baseline characterization now; phase B assertions after T5. Assignment: `_evidence/assignments/T6A.md` |
 | T7 | #17 | `t7/architecture` | after G1 | pending | | |
 | T8 | #7 #18 | `t8/performance` | after T7 | pending | | D-004 |
 | T11 | #26 | `t11/waveforms` | after T8 | pending | | D-006 |
@@ -71,6 +71,6 @@ Local checks at f01ca19 all exit 0: `npm ci`, lint, verify, `pack:check`, `npm t
 
 ## Next actions
 
-1. Dispatch T2 (parser, #4/#6) and T6 phase A (browser/audio infrastructure, #16) in parallel.
-2. Open the umbrella draft PR `improve/integration → main`.
+1. (running) T2 parser and T6 phase A.
+2. (done) Umbrella draft PR #31 `improve/integration → main`.
 3. User decision pending: whether to make `CI` jobs and the `Codex review gate`/`Claude review gate` required checks (a ruleset change, D-002), and whether the org wants Dependabot secrets or an API-key Codex credential (D-014).
