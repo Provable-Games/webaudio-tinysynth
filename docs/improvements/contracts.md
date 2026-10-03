@@ -48,7 +48,7 @@ The table is generated from `_evidence/issues/revisions.md`; T0 copies it into `
 
 ## Deployment contract (all tasks)
 
-- **Classic script.** `webaudio-tinysynth.js` and its minified build are self-contained classic scripts with no runtime dependencies, module fetches, network access or audio downloads. They must remain inline-embeddable in an HTML `<script>` inside a base64 `data:` URI (the consumer's `animation_url`). The minified output must not contain `</script`, `<script` or `<!--` in any letter case. T0 records the current results and T1's verify step enforces them.
+- **Classic script.** `webaudio-tinysynth.js` and its minified build are self-contained classic scripts with no runtime dependencies, module fetches, network access or audio downloads. They must remain inline-embeddable in an HTML `<script>` inside a base64 `data:` URI (the consumer's `animation_url`). The minified output must not contain `</script`, `<script` or `<!--` in any letter case. T0 found none at baseline, and an inline `data:` URI page played both builds with zero requests; T1's verify step enforces this.
 - **Exports.** CommonJS `module.exports`, AMD `define`, and the global `window.WebAudioTinySynth`, with the `(function(window){…})(this)` wrapper semantics. Optional ESM or types are additive only (#17).
 - **Public API.** Method and property names, documented defaults, and constructor options are preserved. Methods remain detached-safe: they are instance-bound arrow functions, so `const {noteOn} = synth` works. Both quality modes, the GM program and drum tables, controllers and tuning (RPN, master and scale tuning SysEx), fractional tempo, and the corrected `loopEnd` behavior are preserved.
 - **Artifact identity.** The consumer embeds the exact minified bytes and publishes their SHA-256. Builds are reproducible from the pinned toolchain (#5). Raw and gzip size changes are recorded against T0. Growth over 5% triggers supervisor review; there is no invented hard limit, and none has been established from the consumer.
@@ -69,7 +69,7 @@ The table is generated from `_evidence/issues/revisions.md`; T0 copies it into `
 
 ## Consumer setup contract (#26/#27)
 
-The consumer passes `SynthSettings`. Its page sets the quality, then registers waves, then installs custom timbres with `setTimbre` (after `setQuality`, because that resets the tables). Units are fixed-point with a scale of 10,000. The conversions are in D-006 and D-007; T0 records the full field mapping and open discrepancies. A pinned representative consumer setup fixture lives in this repository; T11/T12 add it and T10 validates it against the exact generated min.js. It covers a 64-sample 4-bit stepped triangle lead, LFSR-style noise drums, 12.5% and 25% pulse waves, and a high-passed metallic hat. Consumer page and contract implementation stay in `onchain-tinysynth`.
+The consumer passes `SynthSettings`. Its page sets the quality, then registers waves, then installs custom timbres with `setTimbre` (after `setQuality`, because that resets the tables). Units are fixed-point with a scale of 10,000. The conversions are in D-006 and D-007; T0 records the full field mapping (`tasks/T0.md` §7, `evidence/T0/consumer-mapping.json`), and D-010 resolves its questions; consumer follow-ups are listed there. A pinned representative consumer setup fixture lives in this repository; T11/T12 add it and T10 validates it against the exact generated min.js. It covers a 64-sample 4-bit stepped triangle lead, LFSR-style noise drums, 12.5% and 25% pulse waves, and a high-passed metallic hat. Consumer page and contract implementation stay in `onchain-tinysynth`.
 
 ## Determinism versus rendered audio (#7, #16, #26, #27)
 
@@ -83,7 +83,7 @@ The central control is the organization Actions variables (D-009). Values at kic
 
 ## Compatibility ledger
 
-Each intentional behavior change gets an entry. The status is `planned`, `implemented (task, commit)`, or `verified (evidence)`. Reproductions link to T0 evidence once it is accepted.
+Each intentional behavior change gets an entry. The status is `planned`, `implemented (task, commit)`, or `verified (evidence)`. Baseline reproductions are in [tasks/T0.md §5](tasks/T0.md) and `evidence/T0/probes/` (accepted; all confirmed on both builds).
 
 | ID | Issue | Change | Baseline behavior (reproduction) | Expected behavior | Tests | Affected callers | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- |

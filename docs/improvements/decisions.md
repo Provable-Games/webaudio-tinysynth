@@ -94,3 +94,28 @@ New optional fields on an operator whose output goes to audio (`g:0`). Implement
 - Credentials are the existing org secrets `CODEX_AUTH_DOT_JSON` and `CLAUDE_CODE_OAUTH_TOKEN`, used by name only.
 - The repository is public, so fork PRs receive no secrets. The aggregate gate must fail with an explicit "AI review unavailable for fork PRs" message rather than skip, because a skipped job satisfies a required check. Draft PRs skip review intentionally, and the gate states that. Missing variables or credentials, failed runs, incomplete or malformed output, and stale heads all fail the gate.
 - Structure references: Death Mountain client `ceff9d8` (primary, per #25), plus `game-token@a585c3d` and `super-death-mountain@b01b9a0`, which already consume the four variables. Every CLI flag (for example Claude `--effort` and Codex `model_reasoning_effort`) must be verified against official documentation for the pinned versions, not copied from those repositories.
+
+## D-010 Consumer schema reconciliation after T0 (2026-10-02)
+
+Inputs: the T0 consumer mapping (`tasks/T0.md` §7, Q1–Q16) and `onchain-tinysynth@71fce28`. Principle: the engine keeps the built-in timbre semantics. Where the consumer's documentation disagrees with measured engine behavior, the consumer corrects its documentation or validation, which is its scope. These items are listed as consumer follow-ups and appear in the T10 handoff. Engine changes happen only where an issue already requires them.
+
+| Q | Resolution | Owner |
+| --- | --- | --- |
+| Q1 Harmonics | Covered by D-006. The engine takes Web Audio `real`/`imag` arrays with index 0 = DC (ignored); its 257-entry limit covers 64 harmonics. The consumer maps element `i` to `imag[i+1]` (sine phase, as `_createWave` does) and sets `real` to zeros. u16 values are relative amplitudes: default normalization makes the scale irrelevant, so raw values and /10000 are equivalent. Unsigned values cannot express alternating-sign series. The engine accepts signed values; whether to use a signed type is a consumer follow-up. | consumer |
+| Q2 Samples | `s/128` (D-006). The consumer must qualify "exact sample-and-hold" to the #26 tolerance contract, because the browser interpolates buffer playback. | consumer |
+| Q3 Filter Q | Linear Q with the documented dB conversion for LP/HP (D-007). | engine T12 |
+| Q4 Key tracking | Tuned note-on frequency basis; explicit clamp to [10 Hz, 0.45·SR] (D-007). | engine T12 |
+| Q5 Reverb % | Engine unchanged: wet gain = `reverbLev × 8`. Recommended consumer mapping: `reverbLev = reverb/100`, so its default 30 equals the engine default 0.3. "0 = off" means `setReverbLev(0)`. The consumer may use `useReverb:0` at construction to avoid the convolver, and documents its choice. T8 may skip impulse generation when reverb is unused (#18), without shifting other streams (D-004). | consumer, T8 |
+| Q6 Master volume % | Engine unchanged. The consumer maps `masterVol = master_vol/100` (its default 40 → 0.4) and documents that 100 % is twice the engine default. | consumer |
+| Q7 Modulator frequency | Engine unchanged: an FM/AM operator's frequency is `target_frequency × t + f`. The consumer documentation must say so. | consumer |
+| Q8 Operator-0 lifetime | Engine unchanged (built-in compatibility): a melodic voice ends 3.5·r[0] after note-off, and a drum stops 3.5·d[0] after note-on. The consumer should require drum operator 0 to have `decay > 0` and document the operator-0 rule. T9 documents it in the engine README. #27 filters follow the same voice lifetime. | consumer, T9 |
+| Q9 Drum slots | Confirmed: drum notes 35–81, used only on rhythm channels (channel 10 by default; GS SysEx may change them). | contract |
+| Q10 Voice pruning | Engine unchanged: released notes are pruned first, and drum hits prune melodic voices. The consumer documentation must not say "the oldest note is cut". | consumer, T9 |
+| Q11 d/r cap | Consumer range scope. 32 built-in timbres use d or r up to 12; the consumer may widen its caps. | consumer |
+| Q12 Routes | `setTimbre` validation rejects FM/AM targets that are not earlier operators, with no partial state (#13, T5). Routes 9–10 being unreachable with at most 8 operators is a consumer range note. | engine T5, consumer |
+| Q13 Determinism | Resolved by D-004: the reverb impulse, `n0` and `n1` all become deterministic by default. | engine T8 |
+| Q14 Quality type | T5 defines the coercion contract under #13. Preferred: accept 0/1 and numeric strings via `Number()`, and reject anything else descriptively. T5 records the legacy `setQuality("0")` → quality 1 behavior as a ledger entry if it changes. | engine T5 |
+| Q15 setTimbre references | Ledger L-09: T5 copies and normalizes timbres; caller arrays are no longer mutated. | engine T5 |
+| Q16 Startup | #12 (T4): constructor context injection and an additive lazy/explicit start for tap-to-start pages. | engine T4 |
+
+T0 also measured mangling at 35,964 / 9,199 bytes (raw / gzip), against 37,060 / 9,444 at baseline: −3.0 % raw and −2.6 % gzip. T1 evaluates enabling it under #5.
