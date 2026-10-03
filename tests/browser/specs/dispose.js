@@ -21,9 +21,9 @@
  *   - a caller's stopMIDI() (D-023) leaves silence from 60 ms after the stop,
  *     with drum hits and controller changes queued ahead, starts no source,
  *     and the queued volume, pan and modulation changes never apply;
- *   - stop, then play (review F1): controller changes cancelled by the stop
- *     before they were due are sent again, so the resumed note has the level
- *     and pan of a straight play;
+ *   - stop, then play (review F1): controller changes the song had queued
+ *     before the stop (here just before a tempo event) take effect at the
+ *     stop, so the resumed note has the level and pan of a straight play;
  *   - a URL load still pending at dispose() installs nothing when its
  *     response arrives; construct, play, replace and dispose cycles with
  *     every ownership mode leave no timer, no live connection and no extra
@@ -169,7 +169,7 @@ const STOP = async ({ midi }) => {
 
 /*
  * Stop, then play (review F1): channel 0 gets CC7 20 and CC10 0 (hard left) 0.1 s after the
- * song's first event, then a 1 s note. Played straight, or stopped once the scheduler has
+ * song's first event, then a tempo event, then a 1 s note. Played straight, or stopped once the scheduler has
  * sent the controller changes ahead and before they are due, then played again. Returns the
  * note's peak per output channel.
  */
@@ -323,12 +323,13 @@ function cases(shared) {
 
         {
           const p = await open();
-          // CC7 100 on channel 2 at tick 0 (the first event), then channel 0: CC7 20 and CC10 0 at tick 96, a note from 480 to 1440.
+          // CC7 100 on channel 2 at tick 0 (the first event), then channel 0: CC7 20 and CC10 0 at tick 96, a tempo event
+          // at tick 120 (120 BPM, unchanged: it only marks a tempo boundary, PR #37 round 2), a note from 480 to 1440.
           const song = smf.write({ format: 0, division: 480, tracks: [[{ dt: 0, bytes: [0xb1, 7, 100] }, { dt: 96, bytes: [0xb0, 7, 20] }, { dt: 0, bytes: [0xb0, 10, 0] },
-            { dt: 384, bytes: [0x90, 69, 100] }, { dt: 960, bytes: [0x80, 69, 0] }]] }).toString("base64");
+            { dt: 24, bytes: [0xff, 0x51, 0x03, 0x07, 0xa1, 0x20] }, { dt: 360, bytes: [0x90, 69, 100] }, { dt: 960, bytes: [0x80, 69, 0] }]] }).toString("base64");
           const straight = await p.page.evaluate(PAUSE, { song, pause: false });
           const paused = await p.page.evaluate(PAUSE, { song, pause: true });
-          const label = "stop, then play, with CC7 and CC10 sent ahead and not yet due (review F1): ";
+          const label = "stop, then play, with CC7 and CC10 sent ahead and not yet due, before a tempo event (review F1): ";
           t.check(label + "the scenario holds: stopped before the changes were due (0.2 s after the start)", paused.stopAfter < 0.2, "stopped " + paused.stopAfter.toFixed(3) + " s after the start");
           t.check(label + "played straight, the note is audible and hard left", straight.l > 1e-3 && straight.r < 1e-4, "left " + straight.l.toExponential(2) + ", right " + straight.r.toExponential(2));
           t.check(label + "after stop and play, the note has the straight play's level (within 10 %)", Math.abs(paused.l / straight.l - 1) < 0.1,
