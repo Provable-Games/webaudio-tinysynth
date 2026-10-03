@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "policy_file": ".github/prompts/review-policy.md",
+  "blocking_severities": ["CRITICAL", "HIGH"],
+  "agents": [
+    {
+      "agent_id": "tinysynth",
+      "agent_name": "TinySynth reviewer",
+      "prompt_file": ".github/prompts/tinysynth-review.md",
+      "diff_paths": ["."]
+    }
+  ],
+  "providers": {
+    "codex": {
+      "display_name": "Codex",
+      "model_variable": "CODEX_REVIEW_MODEL",
+      "effort_variable": "CODEX_REVIEW_EFFORT",
+      "cli_pin": ".github/scripts/codex-cli/package-lock.json",
+      "accepted_effort_levels": null
+    },
+    "claude": {
+      "display_name": "Claude",
+      "model_variable": "CLAUDE_REVIEW_MODEL",
+      "effort_variable": "CLAUDE_REVIEW_EFFORT",
+      "cli_pin": ".github/workflows/claude-review.yml (anthropics/claude-code-action/base-action v1.0.240, which installs Claude Code 2.1.288)",
+      "accepted_effort_levels": ["low", "medium", "high", "xhigh", "max"]
+    }
+  }
+}
