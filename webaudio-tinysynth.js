@@ -15,6 +15,22 @@ function CodedError(code){
   return e;
 }
 
+/* Built-in buffers (#7, D-004), generation version 1 (bufferVersion): the reverb impulse
+   (convBuf), white noise (n0) and metallic noise (n1) are generated from the seed, never
+   from Math.random. Each buffer has its own mulberry32 stream: stream k (convBuf 0, n0 1,
+   n1 2) starts at state seed+k*2^30, which is the seed's sequence 2^30*k draws on, so
+   the streams never overlap and no buffer's samples depend on another's. The same seed,
+   version and sample rate give the same Float32 data. Any change to the generated data
+   must increment the version. */
+function mulberry32(a){
+  return ()=>{
+    a=a+0x6d2b79f5|0;
+    let t=Math.imul(a^a>>>15,1|a);
+    t=t+Math.imul(t^t>>>7,61|t)^t;
+    return ((t^t>>>14)>>>0)/4294967296;
+  };
+}
+
 function WebAudioTinySynthCore(target) {
   Object.assign(target,{
     properties:{
@@ -1537,16 +1553,21 @@ function WebAudioTinySynthCore(target) {
       var d2=this.convBuf.getChannelData(1);
       var dn=this.noiseBuf.n0.getChannelData(0);
       var dr=this.noiseBuf.n1.getChannelData(0);
+      const rnd=k=>mulberry32(this.seed+k*0x40000000); // stream k (see mulberry32)
+      let g=rnd(0);
       for(let i=0;i<blen;++i){
-        if(i/blen<Math.random()){
-          d1[i]=Math.exp(-3*i/blen)*(Math.random()-.5)*.5;
-          d2[i]=Math.exp(-3*i/blen)*(Math.random()-.5)*.5;
+        if(i/blen<g()){
+          d1[i]=Math.exp(-3*i/blen)*(g()-.5)*.5;
+          d2[i]=Math.exp(-3*i/blen)*(g()-.5)*.5;
         }
-        dn[i]=Math.random()*2-1;
       }
+      g=rnd(1);
+      for(let i=0;i<blen;++i)
+        dn[i]=g()*2-1;
+      g=rnd(2);
       for(let jj=0;jj<64;++jj){
-        const r1=Math.random()*10+1;
-        const r2=Math.random()*10+1;
+        const r1=g()*10+1;
+        const r2=g()*10+1;
         for(let i=0;i<blen;++i){
           var dd=Math.sin((i/blen)*2*Math.PI*440*r1)*Math.sin((i/blen)*2*Math.PI*440*r2);
           dr[i]+=dd/8;
@@ -1607,6 +1628,14 @@ class WebAudioTinySynth {
       throw new TypeError("lazy");
     if(c!=undefined || d!=undefined) // a destination without a context fails as "context"
       this._check(c,d);
+    /* The buffer seed (#7, D-004), also checked first: an integer from 0 to 2^32-1, default
+       0. The seed and the buffer generation version are read-only properties. */
+    const {seed:s=0}=opt||{};
+    if(typeof s!="number")
+      throw new TypeError("seed must be a number");
+    if(!(s>=0 && s<=4294967295 && s%1==0))
+      throw new RangeError("seed must be an integer from 0 to 4294967295");
+    Object.defineProperties(this,{seed:{value:s>>>0,enumerable:true},bufferVersion:{value:1,enumerable:true}});
     this._lazy=l;
     this.setQuality(1);
     if(opt){
