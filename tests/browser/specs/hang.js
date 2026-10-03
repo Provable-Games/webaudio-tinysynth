@@ -1,11 +1,11 @@
 /*
  * Hang cases under an external deadline (observe only; run with --observe).
  *
- * Each case drives the page into a known baseline hang and lets the
- * Node-side case deadline (HANG_DEADLINE seconds) expire. The runner then
- * closes the page from Node; the observation records whether the page hung,
- * returned or threw (with page errors), and a final case asserts that the
- * engine still runs a page afterwards. Only allocation-free hangs are used, so a hung page cannot
+ * Each case sets up its page, then drives it into a known baseline hang
+ * under a Node-side hang deadline (HANG_DEADLINE seconds) armed around that
+ * operation only. The observation records whether the page hung, returned or
+ * threw (with page errors); a hung page is closed from Node, and a final case
+ * asserts that the engine still runs a page afterwards. Only allocation-free hangs are used, so a hung page cannot
  * exhaust memory before the deadline (T0 §5):
  *   #4  ws.mid truncated to 40 bytes, via loadMIDI() and via loadMIDIUrl()
  *       (the parser loops without producing events);
@@ -19,6 +19,7 @@ const fs = require("fs");
 const path = require("path");
 const pages = require("../lib/pages");
 const smf = require("../lib/smf");
+const { withTimeout, short } = require("../lib/cases");
 
 const HANG_DEADLINE = 6;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -59,41 +60,59 @@ function cases(shared) {
   const out = [];
   for (const build of matrix.builds) {
     const pageId = "hang-" + build;
-    const page = () => pages.inlinePage({ library: pages.readLibrary(build, options.overrides), seed: options.seed });
-    // Records how the call ended: a hang (the case deadline fires), a return,
-    // or an exception thrown in the page (for example SMF_TRUNCATED once
-    // T2's parser is in). All three are observations, not failures.
+    const page = () => pages.inlinePage({ library: pages.readLibrary(build, options.overrides), seed: options.seed, after: [pages.pageScript("xhr.js")] });
+    /*
+     * Setup (page and navigation) runs under the ordinary case deadline, so a
+     * slow start fails the case instead of passing as a hang. The hang
+     * deadline is armed only around the operation itself, which is not
+     * started if the case was already abandoned. The outcome is a hang, a
+     * return or an exception thrown in the page (for example SMF_TRUNCATED once
+     * T2's parser is in); all three are observations, not failures. A hung
+     * page is closed from Node when the case ends.
+     */
     const timed = async (t, fn) => {
       server.registerPage(pageId, page());
       const p = await t.newPage();
       await p.page.goto(server.origin + "/html/" + pageId);
+      if (t.isAbandoned()) return;
       const started = Date.now();
-      let outcome;
-      try {
-        outcome = { returned: await fn(p) };
-      } catch (e) {
-        outcome = { threw: String(e && e.message ? e.message : e).split("\n")[0] };
-      }
+      const r = await withTimeout(Promise.resolve().then(() => fn(p)), HANG_DEADLINE * 1000);
+      const outcome = r.timedOut ? { hang: "no return within the " + HANG_DEADLINE + " s hang deadline; the page is closed from Node" }
+        : r.ok ? { returned: r.value } : { threw: short(r.error) };
       t.observe("outcome", Object.assign({ ms: Date.now() - started, pageErrors: p.pageErrors.slice(0, 3) }, outcome));
     };
+    // Waits for the page to record the request's loadend (page/xhr.js), which
+    // follows the library's onload; a hang inside onload blocks this poll.
+    const xhrDone = async (p, url) => {
+      for (;;) {
+        const d = await p.page.evaluate((u) => window.__t6.xhr.done(u), url); // eslint-disable-line no-undef -- runs in the page
+        if (d) return d;
+        await sleep(25);
+      }
+    };
     out.push({
-      id: "hang " + build + " #4 loadMIDI(ws.mid cut at 40 bytes)", dims: { build }, deadline: HANG_DEADLINE, expectHang: true,
+      id: "hang " + build + " #4 loadMIDI(ws.mid cut at 40 bytes)", dims: { build },
       run: (t) => timed(t, (p) => p.page.evaluate(loadBytes, truncated)),
     });
     out.push({
-      id: "hang " + build + " #4 loadMIDIUrl(ws.mid cut at 40 bytes)", dims: { build }, deadline: HANG_DEADLINE, expectHang: true,
+      id: "hang " + build + " #4 loadMIDIUrl(ws.mid cut at 40 bytes)", dims: { build },
       run: (t) => timed(t, async (p) => {
-        await p.page.evaluate(loadUrl, "/midi/truncated/40/ws.mid?hang=" + build);
-        await sleep(500);
-        return p.page.evaluate(() => "page still responsive after the response");
+        const url = "/midi/truncated/40/ws.mid?hang=" + build;
+        await p.page.evaluate(loadUrl, url);
+        return { xhr: await xhrDone(p, url) };
       }),
     });
     out.push({
-      id: "hang " + build + " #8 tick-0 tempo-only song with setLoop(1)", dims: { build }, deadline: HANG_DEADLINE, expectHang: true,
+      id: "hang " + build + " #8 tick-0 tempo-only song with setLoop(1)", dims: { build },
       run: (t) => timed(t, async (p) => {
         const st = await p.page.evaluate(loopSong, tempoOnly);
-        await sleep(500);
-        return { afterPlay: st, ping: await p.page.evaluate(() => "page still responsive 0.5 s after playMIDI()") };
+        // Poll for 2 s (more than 30 scheduler ticks); a hang in a tick blocks the poll.
+        const seen = [];
+        for (const end = Date.now() + 2000; Date.now() < end;) {
+          seen.push(await p.page.evaluate(() => window.__t6.hangSynth.getPlayStatus())); // eslint-disable-line no-undef -- runs in the page
+          await sleep(100);
+        }
+        return { afterPlay: st, afterTwoSeconds: seen[seen.length - 1], polls: seen.length };
       }),
     });
     out.push({

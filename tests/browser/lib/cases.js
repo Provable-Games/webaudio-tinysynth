@@ -1,13 +1,14 @@
 /*
  * Case execution for one engine (the worker half of scripts/browser-matrix.js).
  *
- * A case is {id, spec, kind, dims, deadline, expectHang, run(t)}. run() gets a
+ * A case is {id, spec, kind, dims, deadline, run(t)}. run() gets a
  * context `t` with check(), observe(), newPage(), the browser and the shared
  * server. Every case runs under an external deadline enforced from Node: a
  * page stuck in a synchronous loop cannot stop Node's timer. At the deadline
- * the case fails (or, for an observe case with expectHang, the hang is the
- * observation), its pages and contexts are closed, and if the browser does not
- * respond it is closed and relaunched for the next case.
+ * the case fails, its pages and contexts are closed, and if the browser does
+ * not respond it is closed and relaunched for the next case. Results recorded
+ * by the abandoned run() after that are ignored. (Hang observations arm their
+ * own deadline around the hanging operation: specs/hang.js.)
  */
 "use strict";
 const fs = require("fs");
@@ -92,6 +93,8 @@ class EngineSession {
         if (!abandoned) record.observe(name, value);
       },
       note: (text) => { if (!abandoned) { result.notes.push(text); this.log("  note " + c.id + ": " + text); } },
+      /* True once the case has reached its deadline: long operations check it before starting. */
+      isAbandoned: () => abandoned,
 
       /*
        * A new context and page. offline: abort every request (and count it).
@@ -131,13 +134,8 @@ class EngineSession {
     const r = await withTimeout(Promise.resolve().then(() => c.run(t)), deadline);
     if (r.timedOut) {
       abandoned = true;
-      if (c.expectHang) {
-        result.status = "observed";
-        record.observe("hang", "page did not return within the " + c.deadline + " s deadline; page closed from Node");
-      } else {
-        result.status = "fail";
-        record.check("finished before the " + c.deadline + " s deadline", false, "deadline exceeded; page closed from Node");
-      }
+      result.status = "fail";
+      record.check("finished before the " + c.deadline + " s deadline", false, "deadline exceeded; page closed from Node");
     } else if (!r.ok) {
       result.status = "fail";
       record.check("ran without an exception", false, short(r.error));

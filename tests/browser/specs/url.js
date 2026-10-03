@@ -58,7 +58,7 @@ function cases(shared) {
       deadline: 120,
       run: async (t) => {
         const pageId = "url-" + build;
-        server.registerPage(pageId, pages.inlinePage({ library: pages.readLibrary(build, options.overrides), seed: options.seed, after: [pages.pageScript("url.js")] }));
+        server.registerPage(pageId, pages.inlinePage({ library: pages.readLibrary(build, options.overrides), seed: options.seed, after: [pages.pageScript("xhr.js"), pages.pageScript("url.js")] }));
         let n = 0;
         const open = async () => {
           const p = await t.newPage();
