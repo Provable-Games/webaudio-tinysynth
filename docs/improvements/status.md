@@ -33,7 +33,7 @@ States: `pending`, `running`, `review`, `accepted`, `blocked`.
 | T3 | #8 #9 #10 #21 | `t3/transport` | 09922b9 | accepted | 99177f4 | The independent review accepted after two rounds (`tasks/T3-review.md`, 0cf4495). PR #34 green, Codex and Claude `lgtm`. min.js `b49e8ceb…`, 36,960 / 9,948 B. D-005, D-019. F11 is a T6-B test; F12 is a documented residual. |
 | T4 | #11 #12 | `t4/lifecycle` | e5866e1 | running | | D-018. Source, unit and node tests first; browser specs after T6 phase A lands (staging note in dispatch). |
 | T5 | #13 #14 | `t5/api` | after T4 | pending | | |
-| T6 | #16 #7 (validation) | `t6/validation` | 25d2a3d | review (phase A, PR #33: matrix green on arm64; three Codex MEDIUM test-strength fixes in progress) | | Infrastructure and baseline characterization now; phase B assertions after T5. Assignment: `_evidence/assignments/T6A.md` |
+| T6 | #16 #7 (validation) | `t6/validation` | 25d2a3d | phase A integrated (merge 346b782, head 0de038f); phase A.1 follow-up running; phase B after T5 | | PR #33 green, including the arm64 matrix in 3 engines. The integrated tree passes `test:browser:matrix` locally (42 cases). Two deferred Codex MEDIUM test-strength fixes are in A.1. Full acceptance at G1. |
 | T7 | #17 | `t7/architecture` | after G1 | pending | | |
 | T8 | #7 #18 | `t8/performance` | after T7 | pending | | D-004 |
 | T11 | #26 | `t11/waveforms` | after T8 | pending | | D-006 |
