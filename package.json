@@ -29,7 +29,8 @@
     "test": "npm run test:unit && npm run test:node && npm run test:regression",
     "test:unit": "vitest run",
     "test:node": "node scripts/run-with-deadline.js 600 node --test --test-timeout=120000 \"tests/node/**/*.test.cjs\"",
-    "test:regression": "node scripts/run-regressions.js"
+    "test:regression": "node scripts/run-regressions.js",
+    "test:browser": "node scripts/run-with-deadline.js 180 node tests/browser-smoke.js && node scripts/run-with-deadline.js 180 node tests/browser-smoke.js test-midi/all-gm-sounds.mid"
   },
   "repository": {
     "type": "git",
@@ -49,6 +50,7 @@
     "@eslint/js": "10.0.1",
     "eslint": "10.12.0",
     "globals": "17.13.0",
+    "playwright-core": "1.63.0",
     "terser": "5.51.2",
     "vitest": "5.0.3"
   }
