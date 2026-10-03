@@ -26,7 +26,8 @@
     "size": "node scripts/size.js",
     "pack:check": "node scripts/check-pack.js",
     "lint": "eslint .",
-    "test": "node tests/differential.js && node tests/tempo.js && node tests/loop-end.js"
+    "test": "node tests/differential.js && node tests/tempo.js && node tests/loop-end.js",
+    "test:unit": "vitest run"
   },
   "repository": {
     "type": "git",
@@ -46,6 +47,7 @@
     "@eslint/js": "10.0.1",
     "eslint": "10.12.0",
     "globals": "17.13.0",
-    "terser": "5.51.2"
+    "terser": "5.51.2",
+    "vitest": "5.0.3"
   }
 }
