@@ -478,12 +478,13 @@ function WebAudioTinySynthCore(target) {
       this.relcnt=0;
       /* Lifecycle (#11, #12): the installed context, whether the synth created it (_own), the
          one-shot sources (percussion hits and playMIDI's start-up oscillator, kept until they
-         end), and pending work that dispose() cancels: functions it calls once (ready() polls;
-         a hook for URL loads). */
+         end), the voices stopped but not yet ended (_gone), and pending work that dispose()
+         cancels: functions it calls once (ready() polls; a hook for URL loads). */
       this.actx=this.audioContext=null;
       this.chvol=[]; this.chmod=[]; this.chpan=[];
       this._own=0;
       this._src=[];
+      this._gone=new Set();
       this._pend=new Set();
       this._tid=setInterval(
         function(){
@@ -619,21 +620,24 @@ function WebAudioTinySynthCore(target) {
         throw new TypeError("destination must be a node of the context");
     },
     _drop:(close)=>{
-      /* Tear down the installed graph (#11): stop every voice and one-shot source, detach
+      /* Tear down the installed graph (#11): stop every voice and one-shot source, replace
          their callbacks, disconnect them and every graph node, and release them. Returns a
-         promise that settles after the context is closed, when `close` is set. */
+         promise that settles after the context is closed, when `close` is set. On a context
+         that stays open, a source and its gain are disconnected when the source ends
+         (Chromium can keep an oscillator disconnected right after stop() from ever ending). */
       const c=this.actx,n=x=>x && x.disconnect();
       if(c){
-        this.notetab.concat(this._src,{o:[this.lfo],g:[]}).forEach(v=>{
-          v.o.forEach(s=>{
-            s.onended=null;
+        this.notetab.concat(this._src,Array.from(this._gone),{o:[this.lfo],g:[]}).forEach(v=>{
+          v.o.forEach((s,i)=>{
+            const off=()=>{ n(s); n(v.g[i]); };
+            s.onended=close ? null : off;
             try{ s.stop(); }catch(e){ /* stop() again: some engines throw */ }
-            n(s);
+            if(close)
+              off();
           });
-          v.g.forEach(n);
         });
         [this.out,this.comp,this.conv,this.rev].concat(this.chvol,this.chmod,this.chpan).forEach(n);
-        this.notetab=[]; this._src=[]; this.chvol=[]; this.chmod=[]; this.chpan=[];
+        this.notetab=[]; this._src=[]; this._gone.clear(); this.chvol=[]; this.chmod=[]; this.chpan=[];
         this.actx=this.audioContext=this.dest=this.out=this.comp=this.conv=this.rev=this.lfo=this.wave=this.noiseBuf=this.convBuf=null;
       }
       return new Promise(r=>r(c && close && c.state!="closed" && c.close())).then(()=>{},()=>{});
@@ -944,8 +948,13 @@ function WebAudioTinySynthCore(target) {
           } catch (e) { /* the detune input is not connected: nothing to disconnect */ }
         }
         nt.g[k].gain.value = 0;
-        nt.o[k].disconnect(); nt.g[k].disconnect(); // release the voice's routes (#11)
+        /* Release the voice's routes once it has ended (#11). Disconnecting earlier can keep
+           Chromium from ever ending (and releasing) a stopped oscillator. Until then the
+           voice stays in _gone, so a teardown still reaches it. */
+        const o=nt.o[k],g=nt.g[k];
+        o.onended=()=>{ o.disconnect(); g.disconnect(); this._gone.delete(nt); };
       }
+      this._gone.add(nt);
     },
     _limitVoices:(ch,n)=>{ // eslint-disable-line no-unused-vars -- callers pass the new note; the limit is global
       this.notetab.sort(function(n1,n2){

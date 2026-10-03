@@ -68,11 +68,6 @@ const FORK_PATCHES = [
     to: "var val = 60000000 / Get3(s, i + 3);",
   },
   {
-    name: "a pruned voice is disconnected (#11, T4)",
-    from: "nt.g[k].gain.value = 0;",
-    to: "nt.g[k].gain.value = 0; nt.o[k].disconnect(); nt.g[k].disconnect();",
-  },
-  {
     name: "percussion hits are tracked (#11, D-019, T4)",
     from: "this.notetab.push({t:t,e:99999,ch:ch,n:n,o:o,g:g,t2:t+pn.a,v:vp,r:r,f:0});",
     to: "this.notetab.push({t:t,e:99999,ch:ch,n:n,o:o,g:g,t2:t+pn.a,v:vp,r:r,f:0});\n" +

@@ -482,6 +482,7 @@ describe.each(variants)("$name: dispose() (#11)", (variant) => {
     synth.noteOn(0, 60, 100);
     synth.noteOn(9, 38, 100, 0.5);
     await synth.dispose();
+    l.ended(); // on a context that stays open, each source is disconnected when it ends
     expect(ctx.state).toBe("running");
     expect(calls(l.trace).filter(([op, id]) => op === "close" || op !== "create" && id === ctx.destination._id)).toEqual([]);
     expect(liveEdges(l.trace)).toEqual([]);
@@ -494,6 +495,7 @@ describe.each(variants)("$name: dispose() (#11)", (variant) => {
     s.synth.playMIDI();
     const [startup] = s.synth._src;
     expect(liveEdges(s.trace)).toContainEqual([startup.o[0]._id, s.synth.getAudioContext().destination._id]);
+    s.ended(); // the warm-up voice, stopped by the load, has ended
     await s.synth.dispose();
     expect(liveEdges(s.trace)).toEqual([]);
     expect(playing(s.trace, s.env.clock.ms / 1000)).toEqual([]);
@@ -507,6 +509,30 @@ describe.each(variants)("$name: dispose() (#11)", (variant) => {
     H.runUntil(s.env, () => !s.synth._src.includes(startup), 1000);
     s.ended();
     expect(liveEdges(s.trace).filter(([from]) => from === startup.o[0]._id)).toEqual([]);
+  });
+
+  test("a voice stopped earlier that has not ended yet is torn down too", async () => {
+    const s = make(variant);
+    s.synth.noteOn(0, 60, 100);
+    const voice = s.synth.notetab.at(-1);
+    s.synth.noteOff(0, 60);
+    H.runUntil(s.env, () => !s.synth.notetab.includes(voice), 10000); // pruned: stopped, ended not yet reported
+    expect(s.synth._gone.has(voice)).toBe(true);
+    const mine = (e) => ids(voice).includes(e[0]);
+    expect(liveEdges(s.trace).filter(mine).length).toBeGreaterThan(0);
+    await s.synth.dispose();
+    expect(liveEdges(s.trace).filter(mine)).toEqual([]);
+    expect(s.synth._gone.size).toBe(0);
+  });
+
+  test("an ended voice leaves the stopped set", () => {
+    const s = make(variant);
+    s.synth.noteOn(0, 60, 100);
+    const voice = s.synth.notetab.at(-1);
+    s.synth.allSoundOff(0);
+    expect(s.synth._gone.has(voice)).toBe(true);
+    s.ended();
+    expect(s.synth._gone.has(voice)).toBe(false);
   });
 
   test("cancels pending work: ready() resolves and each hook runs once, even after a failing one", async () => {
@@ -590,8 +616,10 @@ describe.each(variants)("$name: setAudioContext() replacement (#11)", (variant) 
     const s = make(variant);
     const next = new s.Base();
     s.synth.setAudioContext(next);
+    s.synth.noteOn(0, 60, 100);
     await s.synth.dispose();
     expect(next.state).toBe("running");
+    s.ended();
     expect(liveEdges(s.trace)).toEqual([]);
   });
 
@@ -651,6 +679,7 @@ describe.each(variants)("$name: scheduled percussion (D-019)", (variant) => {
     act(s.synth);
     const after = calls(s.trace, from);
     for (const id of ahead.filter((x) => /^(osc|src)#/.test(x))) expect(after).toContainEqual(["stop", id, null]);
+    s.ended(); // each stopped source is disconnected when it ends
     expect(liveEdges(s.trace).filter(([f]) => ahead.includes(f))).toEqual([]);
     const t = touched(s.trace, from);
     expect(sounding.filter((id) => t.has(id))).toEqual([]);
@@ -703,6 +732,7 @@ describe.each(variants)("$name: scheduled percussion (D-019)", (variant) => {
     const voice = s.synth.notetab.at(-1);
     s.synth.noteOff(0, 60);
     H.runUntil(s.env, () => !s.synth.notetab.includes(voice), 10000);
+    s.ended(); // its routes are released when its sources end
     expect(liveEdges(s.trace).filter(([f, to]) => ids(voice).includes(f) || ids(voice).some((x) => to.startsWith(x + ".")))).toEqual([]);
   });
 });
@@ -747,6 +777,8 @@ describe.each(variants)("$name: OfflineAudioContext (#12)", (variant) => {
     synth.noteOn(9, 38, 100, 1);
     await synth.dispose();
     expect(ctx.state).toBe("suspended");
+    l.env.skip(2000);
+    l.ended();
     expect(liveEdges(l.trace)).toEqual([]);
   });
 });
