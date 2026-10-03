@@ -8,6 +8,13 @@
 ( function(window){
 "use strict";
 
+/* An Error with a stable code, in the "CODE: message" form of loadMIDI's errors (D-013). */
+function CodedError(code,msg){
+  const e=new Error(code+": "+msg);
+  e.code=code;
+  return e;
+}
+
 function WebAudioTinySynthCore(target) {
   Object.assign(target,{
     properties:{
@@ -436,22 +443,25 @@ function WebAudioTinySynthCore(target) {
 
     ],
     ready:()=>{
+      /* The poll is pending work: dispose() clears it and resolves the promise. */
       return new Promise((resolv)=>{
-        const timerid=setInterval(()=>{
-/*
-          if(this.debug)
-            console.log("Initialize checking.");
-*/
+        const done=()=>{
+          clearInterval(timerid);
+          this._pend.delete(done);
+          resolv();
+        },timerid=setInterval(()=>{
           if(this.isReady){
-            clearInterval(timerid);
             if(this.debug)
               console.log("Initialized.");
-            resolv();
+            done();
           }
         },100);
+        this._dead ? done() : this._pend.add(done);
       });
     },
-    init:()=>{
+    init:(ctx,dest)=>{
+      if(this._dead) // the constructor's step; nothing after dispose()
+        return;
       this.pg=[]; this.vol=[]; this.ex=[]; this.bend=[]; this.rpnidx=[]; this.brange=[];
       this.sustain=[]; this.notetab=[]; this.rhythm=[];
       this.masterTuningC=0; this.masterTuningF=0; this.tuningC=[]; this.tuningF=[]; this.scaleTuning=[];
@@ -466,8 +476,22 @@ function WebAudioTinySynthCore(target) {
       this.rhythm[9]=1;
       this.preroll=0.2;
       this.relcnt=0;
-      setInterval(
+      /* Lifecycle (#11, #12): the installed context, whether the synth created it (_own), the
+         one-shot sources (percussion hits and playMIDI's start-up oscillator, kept until they
+         end), and pending work that dispose() cancels: functions it calls once (ready() polls;
+         a hook for URL loads). */
+      this.actx=this.audioContext=null;
+      this.chvol=[]; this.chmod=[]; this.chpan=[];
+      this._own=0;
+      this._src=[];
+      this._pend=new Set();
+      this._tid=setInterval(
         function(){
+          const c=this.actx;
+          /* Nothing to do without a realtime context: a lazy synth before first use, a disposed
+             one, or an OfflineAudioContext, whose notes end at their own times (#12). */
+          if(!c || this._off)
+            return;
           if(++this.relcnt>=3){
             this.relcnt=0;
             for(let i=this.notetab.length-1;i>=0;--i){
@@ -477,6 +501,7 @@ function WebAudioTinySynthCore(target) {
                 this.notetab.splice(i,1);
               }
             }
+            this._src=this._src.filter(v=>v.e>=c.currentTime);
           }
           /* playMIDI only starts songs with events. At most 1000 events per callback
              (#8): the rest follow on the next callbacks, in order, at their own times. */
@@ -525,11 +550,93 @@ function WebAudioTinySynthCore(target) {
       );
       if(this.debug)
         console.log("internalcontext:"+this.internalcontext)
-      if(this.internalcontext){
-        window.AudioContext = window.AudioContext || window.webkitAudioContext;
-        this.setAudioContext(new AudioContext());
-      }
+      if(ctx)
+        this.setAudioContext(ctx,dest);
+      else if(this.internalcontext && !this._lazy)
+        this._create();
       this.isReady=1;
+    },
+    _create:()=>{
+      /* Create and install the synth-owned context. */
+      window.AudioContext = window.AudioContext || window.webkitAudioContext;
+      this.setAudioContext(new AudioContext());
+      this._own=1;
+      return this.actx;
+    },
+    _live:()=>{
+      /* For the methods the constructor guards: false once disposed; otherwise there is a
+         context, created now if the synth is lazy. */
+      return !this._dead && !!(this.actx || this._lazy && this._create());
+    },
+    _wake:()=>{
+      /* send()'s resume: at most one context.resume() per task, so a seek that replays many
+         events asks once (T3 review F9). Its rejection is handled, and an OfflineAudioContext
+         (resume() rejects before rendering) or a closed context is never asked. */
+      const c=this.actx,s=c&&c.state;
+      if(!this._rq && !this._off && (s=="suspended" || s=="interrupted")){
+        this._rq=Promise.resolve().then(()=>{ this._rq=0; });
+        Promise.resolve(c.resume()).catch(()=>{});
+      }
+    },
+    resume:()=>{
+      /* Resolves once the context runs: creates a lazy context, and calls context.resume()
+         at once, so it works inside a click, key or pointer handler. Rejects with the
+         context's error, or with code AUDIO_CONTEXT_CLOSED or SYNTH_DISPOSED. Resolves
+         without action on an OfflineAudioContext. */
+      return new Promise((resolv,reject)=>{
+        if(this._dead)
+          throw CodedError("SYNTH_DISPOSED","the synth is disposed");
+        const c=this.actx || this._create();
+        if(c.state=="closed")
+          throw CodedError("AUDIO_CONTEXT_CLOSED","the AudioContext is closed");
+        if(this._off || c.state=="running")
+          return resolv();
+        c.resume().then(resolv,reject);
+      });
+    },
+    dispose:()=>{
+      /* Idempotent and terminal; returns the same promise on every call. Clears the timers,
+         cancels pending work, stops every owned source, disconnects every owned node and
+         releases them. Closes the context only if the synth created it, and resolves after
+         that close. Afterwards the guarded methods do nothing (see the constructor). */
+      if(!this._dp){
+        this._dead=1;
+        clearInterval(this._tid);
+        this.playing=0;
+        this._pend.forEach(f=>{
+          try{ f(); }catch(e){ /* a canceller must not stop the disposal */ }
+        });
+        this._pend.clear();
+        this.song=null;
+        this._dp=this._drop(this._own);
+      }
+      return this._dp;
+    },
+    _check:(c,d)=>{
+      if(!c || typeof c.createGain!="function" || !c.destination)
+        throw new TypeError("context must be a BaseAudioContext");
+      if(d!=undefined && (typeof d.connect!="function" || d.context && d.context!=c))
+        throw new TypeError("destination must be a node of the context");
+    },
+    _drop:(close)=>{
+      /* Tear down the installed graph (#11): stop every voice and one-shot source, detach
+         their callbacks, disconnect them and every graph node, and release them. Returns a
+         promise that settles after the context is closed, when `close` is set. */
+      const c=this.actx,n=x=>x && x.disconnect();
+      if(c){
+        this.notetab.concat(this._src,{o:[this.lfo],g:[]}).forEach(v=>{
+          v.o.forEach(s=>{
+            s.onended=null;
+            try{ s.stop(); }catch(e){ /* stop() again: some engines throw */ }
+            n(s);
+          });
+          v.g.forEach(n);
+        });
+        [this.out,this.comp,this.conv,this.rev].concat(this.chvol,this.chmod,this.chpan).forEach(n);
+        this.notetab=[]; this._src=[]; this.chvol=[]; this.chmod=[]; this.chpan=[];
+        this.actx=this.audioContext=this.dest=this.out=this.comp=this.conv=this.rev=this.lfo=this.wave=this.noiseBuf=this.convBuf=null;
+      }
+      return new Promise(r=>r(c && close && c.state!="closed" && c.close())).then(()=>{},()=>{});
     },
     setMasterVol:(v)=>{
       if(v!=undefined)
@@ -637,16 +744,22 @@ function WebAudioTinySynthCore(target) {
          new pass with the state of locateMIDI(0) (#10, D-005), but the previous pass's
          sounding and already scheduled notes play on, as upstream (D-019): its voices are
          kept out of the seek's reach. A song stopped before its end resumes as it is. */
-      const s=this.song,n=this.notetab;
+      const s=this.song,n=this.notetab,d=this._src;
+      /* The sequencer runs on the realtime timer, which cannot follow an offline render's
+         clock (#12, tasks/T4.md): schedule notes with explicit times instead. */
+      if(this._off)
+        throw CodedError("AUDIO_CONTEXT_OFFLINE","playMIDI() needs a realtime AudioContext");
       if(!s || !s.ev.some(e=>e.m[0]!=0xff51))
         return;
       if(this.playIndex && this.playTick>=this.maxTick)
-        this.notetab=[], this.playing=0, this.locateMIDI(0), this.notetab=n;
+        this.notetab=[], this._src=[], this.playing=0, this.locateMIDI(0), this.notetab=n, this._src=d;
       const dummy=this.actx.createOscillator();
       dummy.connect(this.actx.destination);
       dummy.frequency.value=0;
       dummy.start(0);
       dummy.stop(this.actx.currentTime+0.001);
+      dummy.onended=()=>dummy.disconnect();
+      this._src.push({o:[dummy],g:[],e:this.actx.currentTime+0.001});
       this.playTime=this.actx.currentTime+.1;
       this.tick2Time=4*60/s.tempo/s.timebase;
       this.playing=1;
@@ -822,13 +935,16 @@ function WebAudioTinySynthCore(target) {
         }
         nt.g[k].gain.cancelScheduledValues(0);
 
-        nt.o[k].stop();
+        try {
+          nt.o[k].stop();
+        } catch (e) { /* a percussion hit is already stopped: some engines throw */ }
         if(nt.o[k].detune) {
           try {
             this.chmod[nt.ch].disconnect(nt.o[k].detune);
           } catch (e) { /* the detune input is not connected: nothing to disconnect */ }
         }
         nt.g[k].gain.value = 0;
+        nt.o[k].disconnect(); nt.g[k].disconnect(); // release the voice's routes (#11)
       }
     },
     _limitVoices:(ch,n)=>{ // eslint-disable-line no-unused-vars -- callers pass the new note; the limit is global
@@ -907,6 +1023,7 @@ function WebAudioTinySynthCore(target) {
         if(this.rhythm[ch]){
 
           o[i].onended = ()=>{
+            o[i].disconnect(); g[i].disconnect(); // release the hit's routes (#11)
             try {
               if (o[i].detune) this.chmod[ch].disconnect(o[i].detune);
             }
@@ -917,6 +1034,8 @@ function WebAudioTinySynthCore(target) {
       }
       if(!this.rhythm[ch])
         this.notetab.push({t:t,e:99999,ch:ch,n:n,o:o,g:g,t2:t+pn.a,v:vp,r:r,f:0});
+      else // tracked until it ends, so stops, seeks and dispose() reach it (#11, D-019)
+        this._src.push({t:t,e:t+p[0].d*this.releaseRatio,ch:ch,o:o,g:g});
     },
     _setParamTarget:(p,v,t,d)=>{
       if(d!=0)
@@ -970,6 +1089,16 @@ function WebAudioTinySynthCore(target) {
         if(nt.ch==ch){
           this._pruneNote(nt);
           this.notetab.splice(i,1);
+        }
+      }
+      /* Percussion hits that have not started yet (playMIDI schedules up to 0.2 s ahead) are
+         stopped too, so none sounds after a stop or a seek (D-019). Hits already sounding
+         ring out, as upstream. */
+      for(let i=this._src.length-1;i>=0;--i){
+        const v=this._src[i];
+        if(v.ch==ch && v.t>this.actx.currentTime){
+          this._pruneNote(v);
+          this._src.splice(i,1);
         }
       }
     },
@@ -1049,9 +1178,7 @@ function WebAudioTinySynthCore(target) {
       const cmd=msg[0]&~0xf;
       if(cmd<0x80||cmd>=0x100)
         return;
-      if(this.audioContext.state=="suspended"){
-        this.audioContext.resume();
-      }
+      this._wake();
       switch(cmd){
       case 0xb0:  /* ctl change */
         switch(msg[1]){
@@ -1152,6 +1279,18 @@ function WebAudioTinySynthCore(target) {
       return this.actx;
     },
     setAudioContext:(actx,dest)=>{
+      /* Invalid arguments throw a TypeError before anything changes. The previous graph is
+         torn down first, and its context closed if the synth created it (#11). The new
+         context belongs to the caller and is never closed by the synth. On an
+         OfflineAudioContext, MIDI playback stops (playMIDI needs a realtime context). */
+      if(this._dead)
+        return;
+      this._check(actx,dest);
+      const own=this._own && actx==this.actx;
+      this._drop(this._own && !own);
+      this._own=own;
+      if((this._off=typeof actx.startRendering=="function"))
+        this.playing=0;
       this.audioContext=this.actx=actx;
       this.dest=dest;
       if(!dest)
@@ -1232,6 +1371,16 @@ class WebAudioTinySynth {
     for(let k in this.properties){
       this[k]=this.properties[k].value;
     }
+    /* Lifecycle options (#12), checked before anything is created: a caller-owned context
+       and destination, or lazy: true to create the internal context on first use. */
+    const c=opt && opt.context, d=opt && opt.destination, l=opt && opt.lazy;
+    if(l!=undefined && typeof l!="boolean" || l && c!=undefined)
+      throw new TypeError("lazy must be a boolean, without context");
+    if(c!=undefined)
+      this._check(c,d);
+    else if(d!=undefined)
+      throw new TypeError("destination needs a context");
+    this._lazy=l;
     this.setQuality(1);
     if(opt){
       if(opt.useReverb!=undefined)
@@ -1241,7 +1390,15 @@ class WebAudioTinySynth {
       if(opt.voices!=undefined)
         this.setVoices(opt.voices);
     }
-    this.init();
+    /* Methods that make sound or change channel state need the audio graph. Each is wrapped
+       on the instance, so detached references are guarded too: on a lazy synth the first
+       call creates the context (before any state is set that installing the graph would
+       reset), and after dispose() each call does nothing and returns undefined. */
+    "send noteOn setProgram setBendRange setBend setSustain setModulation setChVol setPan setExpression loadMIDI locateMIDI playMIDI".split(" ").forEach(k=>{
+      const f=this[k];
+      this[k]=(...a)=>this._live() ? f(...a) : undefined;
+    });
+    this.init(c,d);
   }
 }
 
