@@ -186,3 +186,30 @@ Decision:
 - **Bend-range unit.** The engine converts the stored bend range with `brange*100/127` cents. MIDI's RPN 0 value is `semitones*128 + cents`, so the default 2-semitone range plays as 201.57 cents, not 200. This is upstream behavior that the differential tests assert, and no registered issue covers it. It is kept unchanged and listed as a future recommendation, since any change would be an unscoped sound change.
 - **Drum peaks.** In quality 1, drums 49 and 55 peak at 1.16–1.29 at the default volume. These are upstream timbre levels, kept unchanged (no timbre redesign). The consumer's suggested `master_vol` of 40 % leaves headroom. This is listed as an observation for the consumer and in the final recommendations.
 - **Offline renders.** The library's 60 ms timer prunes voices during `OfflineAudioContext` renders, so T6 tests stop it as a test control. T4 (#12: "Define supported suspended, closed, and OfflineAudioContext behavior") must define the real behavior.
+
+## D-018 Lifecycle API contract for T4 (#11, #12) (2026-10-03)
+
+The additions are opt-in. Default construction (`new WebAudioTinySynth()` or `new WebAudioTinySynth({quality, useReverb, voices})`) keeps today's behavior: an internally created context is installed immediately, and `ready()` works as before.
+
+- **Constructor options:**
+  - `context`: a caller-owned `BaseAudioContext`, either an `AudioContext` or an `OfflineAudioContext`. When given, no internal context is created.
+  - `destination`: an `AudioNode` in that context. It defaults to `context.destination`.
+  - `lazy: true`: defer creating the internal context until the first `resume()` or the first call that needs audio. This lets a tap-to-start page create the context inside the gesture.
+
+  Invalid values throw `TypeError` before any side effect (D-013 style).
+- **Ownership.** Contexts passed through `context` or `setAudioContext()` are caller-owned and are never closed by the synth. Contexts the synth creates, eagerly or lazily, are synth-owned.
+- **`resume()` returns a promise.** It creates the lazy context if needed, calls `context.resume()` when the context is suspended, and resolves once the context is running.
+  - It rejects observably: with the underlying error, or with an `Error` whose `code` is `AUDIO_CONTEXT_CLOSED` for a closed context.
+  - For an `OfflineAudioContext` it resolves without action.
+  - The internal `resume()` call in `send()` must never produce an unhandled rejection.
+- **`dispose()` returns a promise and is idempotent.** Repeated calls return the same promise. It:
+  - clears every instance timer (the scheduler interval, and `ready()` polling)
+  - stops every owned source: melodic voices, percussion voices, the LFO and the warm-up note
+  - detaches `onended` callbacks, disconnects graph and modulation routes, and releases references
+  - aborts or invalidates pending work; T5's `loadMIDIUrl` promise must reject or settle on dispose
+  - closes the context only if the synth owns it, and resolves after that close
+
+  After `dispose()` the instance is terminal. Public methods are documented, safe no-ops that never throw from a timer, and `ready()` resolves. T4 documents the exact behavior of each method.
+- **`setAudioContext(ctx, dest)`.** Tear down the previous graph before installing the new one, closing the previous context only if the synth owns it. The new context is caller-owned.
+- **OfflineAudioContext.** Direct note scheduling with explicit times is supported and must not be pruned prematurely by the realtime timer (T6 observation, D-017). Realtime MIDI sequencing (`playMIDI`) on an offline context is defined and documented by T4: either a supported mode or an explicit `Error`, chosen with evidence.
+- **Cleanup evidence** comes from T6's browser instrumentation (`tests/browser/page/instrument.js`), not from the mock alone. The mock's `stop()` does not simulate node completion.
