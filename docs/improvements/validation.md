@@ -172,8 +172,8 @@ Phase A of T6 on `t6/validation` (base `25d2a3d`). Record: [tasks/T6.md](tasks/T
 
 | Command | Result |
 | --- | --- |
-| `npm run test:browser:matrix` | PASS: 42 cases, 1,554 checks; Chromium 153.0.8010.12, Firefox 155.0 and WebKit 26.6 each pass 518 of 518; the cross-engine comparison passes |
-| `npm run test:browser:observe` | PASS: 36 cases (hangs detected and recovered; variation evidence) |
+| `npm run test:browser:matrix` | PASS: 42 cases, 1,590 checks; Chromium 153.0.8010.12, Firefox 155.0 and WebKit 26.6 each pass 530 of 530; the cross-engine comparison passes (after the review round) |
+| `npm run test:browser:observe` | PASS: 39 cases (hangs detected and recovered; variation evidence) |
 | `npm run lint`, `npm test`, `npm run test:browser`, `npm run verify` | exit 0 |
 | actionlint 1.7.12 with shellcheck 0.11.0 on `browser-matrix.yml` | exit 0 |
 | Failure demonstrations | an empty browser path, and a path without WebKit, both exit 1 ("NOT LAUNCHED"); a mutant source with a +3.93-cent pitch error, and one with `releaseRatio` 2.5, both exit 1 |
@@ -186,7 +186,18 @@ Phase A of T6 on `t6/validation` (base `25d2a3d`). Record: [tasks/T6.md](tasks/T
 - Same-engine renders are bit-identical in Firefox. In Chromium they differ by up to 5.45e-5 because input summation order varies (engine behavior). In WebKit they differ by up to 9.3e-8 in percussion renders.
 - Across engines, at the default master volume, Firefox's compressor makes loud drums up to 5.5 dB quieter.
 
+### CI and review (PR #33)
+
+- **arm64 CI.** The first Browser matrix run (37101462236, `e8f1d7c`) passed on `ubuntu-24.04-arm` for Chromium, Firefox and WebKit. Its same-engine differences fit the declared tolerances.
+- **Review fixes.** The six Codex findings were accepted and fixed, each with an old-versus-fixed demonstration ([tasks/T6.md §15](tasks/T6.md#15-review-round-1-pr-33)):
+  - lifecycle tracking now counts buffer sources;
+  - each GM program and drum is rendered alone;
+  - the reverb tail needs measured energy;
+  - empty `--engines`/`--specs` selections fail;
+  - workers get normalized paths;
+  - URL readings wait for the page's `loadend`.
+- **New baseline finding.** With a 0.3 s note, GM 119 (and 125 in quality 1) are silent: the release cancels the pending attack ramp.
+
 ### Pending
 
-- **CI is pending.** `.github/workflows/browser-matrix.yml` (one `ubuntu-24.04-arm` job per engine) has not run yet. The arm64 builds of all three engines are available (HTTP 200), but none has been executed on arm64.
 - **Manual listening is pending.** The steps are in [tasks/T6.md §12](tasks/T6.md#12-manual-listening). No automated listening is claimed.
