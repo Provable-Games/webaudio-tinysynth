@@ -315,15 +315,24 @@ for (const useReverb of [0, 1]) {
     spec,
     variants: [{ options: { useReverb: 0 } }, { reverbLev: 0 }],
     analyze: ([wl, wr], sr, [dl, dr], [zl, zr]) => {
-      const tail = (l, r) => Math.hypot(A.rms(l, Math.round(0.9 * sr), Math.round(1.25 * sr)), A.rms(r, Math.round(0.9 * sr), Math.round(1.25 * sr)));
-      const body = (l) => A.rms(l, Math.round(0.6 * sr), Math.round(0.75 * sr));
-      return { wetTail: tail(wl, wr), dryTail: tail(dl, dr), levZeroTail: tail(zl, zr), wetBody: body(wl), dryBody: body(dl), stereoWet: A.sha256(wl) !== A.sha256(wr) };
+      const a = Math.round(0.9 * sr), b = Math.round(1.25 * sr);
+      const tail = (l, r) => Math.hypot(A.rms(l, a, b), A.rms(r, a, b));
+      const side = new Float32Array(b - a);
+      for (let i = a; i < b; ++i) side[i - a] = wl[i] - wr[i];
+      const wetTail = tail(wl, wr);
+      return {
+        wetTail, dryTail: tail(dl, dr), levZeroTail: tail(zl, zr),
+        wetBody: A.rms(wl, Math.round(0.6 * sr), Math.round(0.75 * sr)), dryBody: A.rms(dl, Math.round(0.6 * sr), Math.round(0.75 * sr)),
+        tailSideRatio: wetTail > 0 ? A.rms(side) / wetTail : 0,
+      };
     },
     verify: (m, tol, check) => {
-      const ratioDb = m.dryTail > 0 ? A.db(m.wetTail / m.dryTail) : Infinity;
-      check("reverb tail at least " + tol.reverbTailDb + " dB above the dry tail", ratioDb >= tol.reverbTailDb, (m.dryTail > 0 ? ratioDb.toFixed(1) + " dB" : "dry tail exactly 0") + " (wet " + m.wetTail.toExponential(3) + ", dry " + m.dryTail.toExponential(3) + ")");
-      check("reverbLev 0 tail matches useReverb 0", m.levZeroTail <= Math.max(m.dryTail * 10, tol.idlePeak), m.levZeroTail.toExponential(3));
-      check("the impulse response is stereo (L and R differ)", m.stereoWet, String(m.stereoWet));
+      check("reverb on: tail energy >= " + tol.reverbTailMin, m.wetTail >= tol.reverbTailMin, "wet tail " + m.wetTail.toExponential(3));
+      check("useReverb 0: tail <= " + tol.dryTailMax, m.dryTail <= tol.dryTailMax, "dry tail " + m.dryTail.toExponential(3));
+      check("reverbLev 0: tail <= " + tol.dryTailMax, m.levZeroTail <= tol.dryTailMax, m.levZeroTail.toExponential(3));
+      const ratioDb = A.db(m.wetTail / Math.max(m.dryTail, tol.dryTailMax));
+      check("wet tail >= " + tol.reverbTailDb + " dB above the dry tail (or the dry ceiling)", ratioDb >= tol.reverbTailDb, ratioDb.toFixed(1) + " dB");
+      check("the reverb tail is stereo (rms(L-R) >= " + tol.reverbTailSide + " of the tail)", m.tailSideRatio >= tol.reverbTailSide, m.tailSideRatio.toFixed(4));
     },
   });
 }

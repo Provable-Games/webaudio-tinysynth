@@ -42,7 +42,10 @@ const DEFAULT = {
   drumEndMs: 2.5, // bounded by half a 300 Hz period (1.67 ms) by construction; max 0.31 ms
   silenceRelative: 1e-9, // after a drum stop, relative to the note level; max 1.5e-15
   idlePeak: 1e-8, // after 1 s with no notes; max 3e-12 (Firefox does not snap setTargetAtTime to 0)
-  reverbTailDb: 40, // wet over dry tail; min 76 dB (Firefox), dry tail exactly 0 elsewhere
+  reverbTailMin: 2e-4, // wet tail RMS 0.1-0.45 s after the note; min 1.93e-3 (48 kHz), across seeds within 4 dB
+  dryTailMax: 1e-5, // useReverb 0 and reverbLev 0 tails; max 3.1e-7 (Firefox), exactly 0 elsewhere
+  reverbTailDb: 26, // wet tail over max(dry tail, dryTailMax) = 20*log10(reverbTailMin/dryTailMax); min 45.7 dB
+  reverbTailSide: 0.3, // rms(L-R)/tail in the tail window (a stereo impulse); min 0.697
   audiblePeak: 2e-4, // every GM program and drum rendered alone; min 0.080 (drum 53, Firefox q1 48 kHz); a silent program measures <= 2.3e-7
   sameEngineSample: 1e-6, // source vs min and repeat renders, max |sample diff|
   seedEffect: 1e-2, // a different seed must change noise-based renders by more than this; min 0.0295
