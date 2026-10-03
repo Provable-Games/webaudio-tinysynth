@@ -20,3 +20,12 @@ updates:
         dependency-type: development
         patterns: ["*"]
         exclude-patterns: ["terser"]
+
+  # The Codex CLI pin used by the AI-review workflows, a separate package.
+  - package-ecosystem: npm
+    directory: /.github/scripts/codex-cli
+    schedule:
+      interval: monthly
+    groups:
+      codex-cli:
+        patterns: ["*"]
