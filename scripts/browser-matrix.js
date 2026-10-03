@@ -42,12 +42,22 @@ const SPEC_DIR = path.join(ROOT, "tests", "browser", "specs");
 
 function parseArgs(argv) {
   const o = { engines: null, specs: null, observe: false, seed: MATRIX.seed, overrides: {}, out: null, list: false, engine: null, results: null };
+  // A list option must name at least one entry: "--engines=," or "--specs=" would
+  // otherwise select nothing and pass without running a browser.
+  const list = (name, value) => {
+    const items = value.split(",").map((x) => x.trim()).filter(Boolean);
+    if (!items.length) throw new Error("--" + name + "= selects nothing; name at least one, or omit the option");
+    return items;
+  };
   for (const a of argv) {
     let m;
-    if ((m = /^--engines=(.+)$/.exec(a))) o.engines = m[1].split(",").filter(Boolean);
-    else if ((m = /^--specs=(.+)$/.exec(a))) o.specs = m[1].split(",").filter(Boolean);
+    if ((m = /^--engines=(.*)$/.exec(a))) o.engines = list("engines", m[1]);
+    else if ((m = /^--specs=(.*)$/.exec(a))) o.specs = list("specs", m[1]);
     else if (a === "--observe") o.observe = true;
-    else if ((m = /^--seed=(.+)$/.exec(a))) o.seed = Number(m[1]) >>> 0;
+    else if ((m = /^--seed=(.*)$/.exec(a))) {
+      if (!/^\d+$/.test(m[1]) || Number(m[1]) > 0xffffffff) throw new Error("--seed must be an integer from 0 to 4294967295");
+      o.seed = Number(m[1]);
+    }
     else if ((m = /^--source=(.+)$/.exec(a))) o.overrides.source = path.resolve(m[1]);
     else if ((m = /^--min=(.+)$/.exec(a))) o.overrides.min = path.resolve(m[1]);
     else if ((m = /^--out=(.+)$/.exec(a))) o.out = path.resolve(m[1]);
@@ -56,7 +66,7 @@ function parseArgs(argv) {
     else if ((m = /^--results=(.+)$/.exec(a))) o.results = path.resolve(m[1]);
     else throw new Error("unknown argument " + a);
   }
-  for (const e of o.engines || []) if (!MATRIX.engines.includes(e)) throw new Error("engine " + e + " is not declared in tests/browser/matrix.js");
+  for (const e of [...(o.engines || []), ...(o.engine ? [o.engine] : [])]) if (!MATRIX.engines.includes(e)) throw new Error("engine " + e + " is not declared in tests/browser/matrix.js");
   for (const s of o.specs || []) if (!MATRIX.specs[s]) throw new Error("spec " + s + " is not declared in tests/browser/matrix.js");
   return o;
 }
@@ -128,6 +138,10 @@ async function worker(o) {
     if (!(await session.closeBrowser())) console.log("note: " + engine + " did not close within 15 s (a hung page process); the worker exits anyway");
   }
   const n = results.cases.length;
+  if (!n) {
+    console.log("FAIL: " + engine + " " + session.version + ": no case ran");
+    return 1;
+  }
   console.log((failed ? "FAIL: " : "PASS: ") + engine + " " + session.version + ": " + (n - failed) + " of " + n + " cases passed");
   return failed ? 1 : 0;
 }
@@ -216,7 +230,7 @@ function stepSummary(all, cross, o, status) {
   fs.appendFileSync(file, lines.join("\n") + "\n");
 }
 
-async function orchestrate(o, argv) {
+async function orchestrate(o) {
   printMatrix(o);
   if (o.list) return 0;
   console.log("\n== Analysis self-test");
@@ -229,7 +243,14 @@ async function orchestrate(o, argv) {
   const engines = o.engines || MATRIX.engines;
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tinysynth-matrix-"));
   if (o.out) fs.mkdirSync(o.out, { recursive: true });
-  const forward = argv.filter((a) => !/^--(engines|results)=/.test(a));
+  // Workers run with cwd = repository root, so pass them the values already
+  // normalized here (absolute paths), never the caller's raw arguments.
+  const forward = ["--seed=" + o.seed];
+  if (o.specs) forward.push("--specs=" + o.specs.join(","));
+  if (o.observe) forward.push("--observe");
+  if (o.overrides.source) forward.push("--source=" + o.overrides.source);
+  if (o.overrides.min) forward.push("--min=" + o.overrides.min);
+  if (o.out) forward.push("--out=" + o.out);
   const all = {};
   let failed = 0;
   for (const engine of engines) {
@@ -257,7 +278,7 @@ async function orchestrate(o, argv) {
   const cases = Object.values(all).reduce((a, r) => a + r.cases.length, 0);
   const failedCases = Object.values(all).reduce((a, r) => a + r.cases.filter((c) => c.status === "fail").length, 0);
   if (o.out) console.log("results: " + path.join(o.out, "results.json"));
-  if (failed || launched !== engines.length) {
+  if (failed || launched !== engines.length || !engines.length || !cases) {
     const msg = "browser matrix: " + launched + " of " + engines.length + " engines launched, " + failedCases + " of " + cases + " cases failed";
     stepSummary(all, cross, o, "FAIL (" + msg + ")");
     console.log("FAIL: " + msg);
@@ -277,7 +298,7 @@ if (require.main === module) {
     console.log("FAIL: " + e.message);
     process.exit(2);
   }
-  (o.engine ? worker(o) : orchestrate(o, argv)).then((status) => process.exit(status), (e) => {
+  (o.engine ? worker(o) : orchestrate(o)).then((status) => process.exit(status), (e) => {
     console.log("FAIL: " + (e && e.stack ? e.stack : e));
     process.exit(1);
   });
