@@ -154,6 +154,14 @@ describe.each(variants)("$name: constructor options (#12)", (variant) => {
     expect(calls(s.trace).filter(([op]) => ["disconnect", "close", "resume"].includes(op))).toEqual([]);
   });
 
+  test("the guarded methods keep their names and declared arity (review F4)", () => {
+    const { synth } = make(variant);
+    const ARITY = { send: 2, noteOn: 4, setProgram: 2, setBendRange: 2, setBend: 3, setSustain: 3, setModulation: 3, setChVol: 3, setPan: 3,
+      setExpression: 3, loadMIDI: 1, locateMIDI: 2, playMIDI: 0, stopMIDI: 0, resume: 0, dispose: 0 };
+    expect(Object.fromEntries(Object.keys(ARITY).map((k) => [k, [synth[k].name, synth[k].length]])))
+      .toEqual(Object.fromEntries(Object.entries(ARITY).map(([k, n]) => [k, [k, n]])));
+  });
+
   test("context: null or undefined, and destination: undefined, keep the default", () => {
     for (const opts of [{ context: null }, { context: undefined, destination: undefined }, { lazy: false }]) {
       const s = make(variant, opts);
@@ -250,7 +258,7 @@ describe.each(variants)("$name: lazy start (#12)", (variant) => {
   });
 
   test.each(["send", "noteOn", "setProgram", "setBendRange", "setBend", "setSustain", "setModulation", "setChVol", "setPan",
-    "setExpression", "loadMIDI", "locateMIDI", "playMIDI"])("%s() is a first use: it creates the context once", (name) => {
+    "setExpression", "loadMIDI", "locateMIDI", "playMIDI", "reset"])("%s() is a first use: it creates the context once", (name) => {
     const s = make(variant, { lazy: true });
     const args = { send: [[0x90, 60, 100]], noteOn: [0, 60, 100], loadMIDI: [MIXED] }[name] || [0, 64, 0];
     s.synth[name](...args);
@@ -334,7 +342,7 @@ describe.each(variants)("$name: resume() (#12)", (variant) => {
     s.synth.getAudioContext().state = "closed";
     const from = s.trace.length;
     const [state, e] = await settle(s.synth.resume());
-    expect([state, e.code, e.message]).toEqual(["rejected", "AUDIO_CONTEXT_CLOSED", "AUDIO_CONTEXT_CLOSED: the AudioContext is closed"]);
+    expect([state, e.code, e.message]).toEqual(["rejected", "AUDIO_CONTEXT_CLOSED", "AUDIO_CONTEXT_CLOSED"]);
     expect(s.trace.slice(from)).toEqual([]);
   });
 
@@ -421,6 +429,18 @@ describe.each(variants)("$name: send()'s resume (#12, T3 review F9)", (variant) 
     synth.send([0x90, 60, 100], 1);
     synth.loadMIDI(STATEFUL);
     synth.locateMIDI(960);
+  });
+});
+
+describe.each(variants)("$name: resume per context (review F2)", (variant) => {
+  test("a context installed in the same task is still asked to resume", () => {
+    const l = load(variant);
+    const asked = [];
+    const suspended = (name) => Object.assign(new l.Base(), { state: "suspended", resume: () => { asked.push(name); return Promise.resolve(); } });
+    const synth = new l.Synth({ context: suspended("A") });
+    synth.setAudioContext(suspended("B"));
+    synth.send([0x90, 60, 100]);
+    expect(asked).toEqual(["A", "B"]);
   });
 });
 
@@ -533,6 +553,40 @@ describe.each(variants)("$name: dispose() (#11)", (variant) => {
     expect(s.synth._gone.has(voice)).toBe(true);
     s.ended();
     expect(s.synth._gone.has(voice)).toBe(false);
+  });
+
+  test("a voice with two sources stays tracked until both have ended (PR #37)", async () => {
+    const s = make(variant);
+    s.synth.setTimbre(0, 0, [{ w: "sine", v: 0.5 }, { w: "square", v: 0.3 }]);
+    s.synth.noteOn(0, 60, 100);
+    const voice = s.synth.notetab.at(-1);
+    s.synth.allSoundOff(0);
+    voice.o[0].onended(); // one source has ended; the other has not reported yet
+    expect(s.synth._gone.has(voice)).toBe(true);
+    const mine = (e) => ids(voice).includes(e[0]);
+    s.synth.getAudioContext().close = () => new Promise(() => {}); // the context closes: no more ended events
+    s.synth.dispose();
+    expect(liveEdges(s.trace).filter(mine)).toEqual([]);
+  });
+
+  test("dispose() on a context its owner already closed disconnects at once (review F3)", async () => {
+    const l = load(variant);
+    const ctx = new l.Base();
+    const synth = new l.Synth({ context: ctx });
+    synth.noteOn(0, 60, 100);
+    synth.noteOn(9, 38, 100, 0.5);
+    await ctx.close(); // the caller closes its own context: no ended event will come
+    await synth.dispose();
+    expect(liveEdges(l.trace)).toEqual([]);
+  });
+
+  test("calling init() again does not add an interval or a context (review F9)", async () => {
+    const s = make(variant);
+    s.synth.init();
+    expect(synthIntervals(s.env)).toHaveLength(1);
+    expect(s.made).toHaveLength(1);
+    await s.synth.dispose();
+    expect(s.env.timers.size).toBe(0);
   });
 
   test("cancels pending work: ready() resolves and each hook runs once, even after a failing one", async () => {
@@ -763,6 +817,55 @@ describe.each(variants)("$name: stopMIDI() silences what the transport scheduled
     expect(s.synth.getPlayStatus().play).toBe(0);
   });
 
+  /* Volume and pan written to channel 0's nodes, in trace order, from trace line `from`. */
+  const writes = (s, from) => calls(s.trace, from).filter(([op, id]) => op === "setValueAtTime" && (id === s.synth.chvol[0].gain._id || id === s.synth.chpan[0].pan._id))
+    .map(([, id, v, t]) => [id === s.synth.chvol[0].gain._id ? "vol" : "pan", v, t]);
+  const PAUSE = song([cc(48, 0, 7, 20), cc(48, 0, 10, 0), noteOn(480, 0, 69, 100), noteOff(1440, 0, 69)]);
+
+  test("stop, then play: the controller changes the stop cancelled are sent again (review F1)", () => {
+    const straight = make(variant);
+    straight.synth.loadMIDI(PAUSE);
+    const t0 = straight.env.clock.ms / 1000;
+    let from = straight.trace.length;
+    straight.synth.playMIDI();
+    H.runUntil(straight.env, () => straight.synth.getPlayStatus().play === 0, 10000);
+    const want = writes(straight, from).map(([k, v, t]) => [k, v, t - t0]);
+    // The song's first event (tick 48) plays 0.1 s after playMIDI() (next-event positioning, D-005).
+    expect(want).toEqual([["vol", 3 * 20 * 20 / (127 * 127), expect.closeTo(0.1, 9)], ["pan", -1, expect.closeTo(0.1, 9)]]);
+
+    const s = make(variant);
+    s.synth.loadMIDI(PAUSE);
+    s.synth.playMIDI();
+    H.runUntil(s.env, () => s.synth.getPlayStatus().curTick >= 480, 1000); // the CCs were sent ahead
+    const stopAt = s.env.clock.ms / 1000;
+    expect(writes(s, 0).filter(([, , t]) => t > stopAt)).toHaveLength(2); // not due yet
+    s.synth.stopMIDI();
+    expect(s.synth.getPlayStatus().curTick).toBe(48); // the transport moved back to them
+    const t1 = s.env.clock.ms / 1000;
+    from = s.trace.length;
+    s.synth.playMIDI();
+    H.runUntil(s.env, () => s.synth.getPlayStatus().play === 0, 10000);
+    expect(writes(s, from).map(([k, v, t]) => [k, v, t - t1])).toEqual([["vol", want[0][1], expect.closeTo(0.1, 9)], ["pan", -1, expect.closeTo(0.1, 9)]]);
+    // and the note sounds after them, at the song's spacing (432 ticks at 120 BPM)
+    const start = s.notes.at(-1)[0];
+    expect(start - t1).toBeCloseTo(0.1 + 432 / 960, 9);
+  });
+
+  test("a stop does not move the transport back across a tempo event or when nothing is queued", () => {
+    const s = make(variant);
+    s.synth.loadMIDI(song([H.midi.tempo(48, 400000), cc(96, 0, 7, 20), noteOn(960, 0, 69, 100), noteOff(1440, 0, 69)]));
+    s.synth.playMIDI();
+    H.runUntil(s.env, () => s.synth.getPlayStatus().curTick >= 960, 1000);
+    s.synth.stopMIDI();
+    expect(s.synth.getPlayStatus().curTick).toBe(96); // back to the CC, not past the tempo event at 48
+    s.synth.playMIDI();
+    H.runUntil(s.env, () => false, 2000);
+    const tick = s.synth.getPlayStatus().curTick;
+    s.synth.stopMIDI();
+    s.synth.stopMIDI();
+    expect(s.synth.getPlayStatus().curTick).toBe(tick);
+  });
+
   test("loadMIDI's internal stop keeps the upstream calls: no cancel and no drum stop", () => {
     const s = make(variant);
     playUntilDrumAhead(s);
@@ -837,8 +940,7 @@ describe.each(variants)("$name: OfflineAudioContext (#12)", (variant) => {
     const status = { ...synth.getPlayStatus() };
     const from = l.trace.length;
     const e = thrown(() => synth.playMIDI());
-    expect([e && e.code, e && e.message]).toEqual(["AUDIO_CONTEXT_OFFLINE",
-      "AUDIO_CONTEXT_OFFLINE: playMIDI() needs a realtime AudioContext"]);
+    expect([e && e.code, e && e.message]).toEqual(["AUDIO_CONTEXT_OFFLINE", "AUDIO_CONTEXT_OFFLINE"]);
     expect(l.trace.slice(from)).toEqual([]);
     expect({ ...synth.getPlayStatus() }).toEqual(status);
   });

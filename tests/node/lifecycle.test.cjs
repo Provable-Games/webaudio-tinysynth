@@ -37,7 +37,7 @@ function child(build, body, timeout = DEADLINE_MS) {
 
 for (const build of builds) {
   test.describe(build.name + " under Node", () => {
-    test("dispose() clears the interval and ready() polls: the process exits by itself", () => {
+    test("dispose() clears the interval: the process exits by itself", () => {
       const r = child(build, [
         "const synth = new Synth({ context: ctx });",
         "synth.noteOn(0, 60, 100); synth.noteOn(9, 38, 100, 0.5);",
