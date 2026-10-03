@@ -29,11 +29,11 @@ States: `pending`, `running`, `review`, `accepted`, `blocked`.
 | T0 | #16 (baseline), #7/#21/#26/#27 contracts | `t0/baseline` | b70ba90 | accepted | c2252bc | Policy decisions D-004 to D-007 and D-010; evidence in tasks/T0.md |
 | T1 | #5 #15 #16 #22 #23 #24 #25 | tooling: `t1/tooling`; AI review: `t1/ai-review` | 1e6184c | accepted | 5457966, 866f6a1 | Integrated at f01ca19. Independent review accepted every criterion (`tasks/G0-review.md`, 0b980fa). |
 | T9A | #19 #20 (read-only audit) | `t9/audit` | 1e6184c | accepted | 3e9d013 | Findings and T9 plan in tasks/T9A.md; D-011 |
-| T2 | #4 #6 | `t2/parser` | 25d2a3d | running | | Assignment: `_evidence/assignments/T2.md`; D-013 |
+| T2 | #4 #6 | `t2/parser` | 25d2a3d | accepted | cdb2228 (merge e128330) | The independent review accepted after fuzzing about 940k cases (`tasks/T2-review.md`). PR #32 was green at 4efcd64 with Codex and Claude `lgtm`. min.js is `45cc9778…`, 36,975 / 9,875 B (+1.66 % raw / +4.81 % gzip vs 782e9b92). D-013 and D-016. |
 | T3 | #8 #9 #10 #21 | `t3/transport` | after T2 | pending | | D-005 |
 | T4 | #11 #12 | `t4/lifecycle` | after T3 | pending | | |
 | T5 | #13 #14 | `t5/api` | after T4 | pending | | |
-| T6 | #16 #7 (validation) | `t6/validation` | 25d2a3d | running (phase A) | | Infrastructure and baseline characterization now; phase B assertions after T5. Assignment: `_evidence/assignments/T6A.md` |
+| T6 | #16 #7 (validation) | `t6/validation` | 25d2a3d | review (phase A, PR #33: matrix green on arm64; three Codex MEDIUM test-strength fixes in progress) | | Infrastructure and baseline characterization now; phase B assertions after T5. Assignment: `_evidence/assignments/T6A.md` |
 | T7 | #17 | `t7/architecture` | after G1 | pending | | |
 | T8 | #7 #18 | `t8/performance` | after T7 | pending | | D-004 |
 | T11 | #26 | `t11/waveforms` | after T8 | pending | | D-006 |
