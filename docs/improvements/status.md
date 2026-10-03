@@ -27,7 +27,7 @@ States: `pending`, `running`, `review`, `accepted`, `blocked`.
 | Task | Issues | Branch / worktree | Base | State | Accepted commit | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
 | T0 | #16 (baseline), #7/#21/#26/#27 contracts | `t0/baseline` | b70ba90 | accepted | c2252bc | Policy decisions D-004 to D-007 and D-010; evidence in tasks/T0.md |
-| T1 | #5 #15 #16 #22 #23 #24 #25 | tooling: `t1/tooling`; AI review: `t1/ai-review` | 1e6184c | running | | Tooling running. AI review in review: local work complete (1f17527), PR #28 bootstrap run pending. Initial CI gate G0 |
+| T1 | #5 #15 #16 #22 #23 #24 #25 | tooling: `t1/tooling`; AI review: `t1/ai-review` | 1e6184c | review | 5457966, 866f6a1 | Integrated at f01ca19 after two independent reviews (`tasks/G0-review.md`). Awaiting the trusted-path real run on the verification PR. |
 | T9A | #19 #20 (read-only audit) | `t9/audit` | 1e6184c | accepted | 3e9d013 | Findings and T9 plan in tasks/T9A.md; D-011 |
 | T2 | #4 #6 | `t2/parser` | after G0 | pending | | |
 | T3 | #8 #9 #10 #21 | `t3/transport` | after T2 | pending | | D-005 |
@@ -49,6 +49,10 @@ States: `pending`, `running`, `review`, `accepted`, `blocked`.
 | G0 initial CI | Lint, Vitest, native Node tests, retained regressions, build verification, offline Playwright smoke, AI review workflows with central model/effort; a real Actions run | review. The independent review (`03003e9`) accepts #15, #16-initial, #22 and #23. It accepts #5 and #24 with M4, and rejects #25 at 1eff7ba (H1). Fixes are in progress (D-014). Afterwards: re-review, a real run, and a trusted-path (non-bootstrap) run. |
 | G1 reliability | T1 foundation plus T2–T6 accepted; source and minified validation pass | pending |
 | G2 delivery | All registered criteria verified; T10 independent review; consumer artifact/hash handoff | pending |
+
+## G0 integration (f01ca19)
+
+Local checks at f01ca19 all exit 0: `npm ci`, lint, verify, `pack:check`, `npm test` (unit 30/30, node 33/33, regressions 3/3), `test:browser` (both builds, both fixtures), and 71 review-helper tests. A rebuild is drift-free. The min.js is `782e9b92…`, 36,372 / 9,422 B (ledger L-13).
 
 ## Risks and blockers
 
