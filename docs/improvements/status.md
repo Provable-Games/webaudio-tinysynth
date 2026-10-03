@@ -30,7 +30,7 @@ States: `pending`, `running`, `review`, `accepted`, `blocked`.
 | T1 | #5 #15 #16 #22 #23 #24 #25 | tooling: `t1/tooling`; AI review: `t1/ai-review` | 1e6184c | accepted | 5457966, 866f6a1 | Integrated at f01ca19. Independent review accepted every criterion (`tasks/G0-review.md`, 0b980fa). |
 | T9A | #19 #20 (read-only audit) | `t9/audit` | 1e6184c | accepted | 3e9d013 | Findings and T9 plan in tasks/T9A.md; D-011 |
 | T2 | #4 #6 | `t2/parser` | 25d2a3d | accepted | cdb2228 (merge e128330) | The independent review accepted after fuzzing about 940k cases (`tasks/T2-review.md`). PR #32 was green at 4efcd64 with Codex and Claude `lgtm`. min.js is `45cc9778…`, 36,975 / 9,875 B (+1.66 % raw / +4.81 % gzip vs 782e9b92). D-013 and D-016. |
-| T3 | #8 #9 #10 #21 | `t3/transport` | after T2 | pending | | D-005 |
+| T3 | #8 #9 #10 #21 | `t3/transport` | 09922b9 | accepted | 99177f4 | The independent review accepted after two rounds (`tasks/T3-review.md`, 0cf4495). PR #34 green, Codex and Claude `lgtm`. min.js `b49e8ceb…`, 36,960 / 9,948 B. D-005, D-019. F11 is a T6-B test; F12 is a documented residual. |
 | T4 | #11 #12 | `t4/lifecycle` | after T3 | pending | | |
 | T5 | #13 #14 | `t5/api` | after T4 | pending | | |
 | T6 | #16 #7 (validation) | `t6/validation` | 25d2a3d | review (phase A, PR #33: matrix green on arm64; three Codex MEDIUM test-strength fixes in progress) | | Infrastructure and baseline characterization now; phase B assertions after T5. Assignment: `_evidence/assignments/T6A.md` |
