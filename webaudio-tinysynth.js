@@ -471,6 +471,7 @@ function WebAudioTinySynthCore(target) {
       this.chvol=[]; this.chmod=[]; this.chpan=[];
       this._own=0;
       this._src=[];
+      this._p=[]; this._m=[]; // the latest pan and modulation values set, per channel
       this._gone=new Set();
       this._pend=new Set();
       this._tid=setInterval(
@@ -731,25 +732,25 @@ function WebAudioTinySynthCore(target) {
       this.rhythm[9]=1;
     },
     _halt:()=>{
-      /* The upstream stop, kept for loadMIDI's internal stops (D-023). */
-      this.playing=0;
+      /* The upstream stop, kept for loadMIDI's internal stops (D-023). A load sets every
+         channel again, so nothing is left to apply on the next playMIDI(). */
+      this.playing=this._rs=0;
       for(var i=0;i<16;++i)
         this.allSoundOff(i);
     },
     stopMIDI:()=>{
       /* A caller's stop silences everything the transport scheduled (D-023, #11): melodic
          voices, as upstream; every percussion hit, sounding or scheduled ahead (D-019); and
-         the queued channel volume, pan and modulation automation, cancelled from now on. A
-         seek stops the same way. Nodes a caller swapped into chvol are handled (not a
+         the queued channel volume, pan and modulation automation, cancelled from now on, so
+         nothing changes after the stop. The next playMIDI() first applies each channel's
+         latest volume, expression, pan and modulation (_rs), the state at the resume position,
+         since the cancelled changes the song had sent ahead are not sent again (review F1).
+         A seek stops the same way. Nodes a caller swapped into chvol are handled (not a
          supported API). */
-      const c=this.actx,p=this.playing,s=this.song;
+      const c=this.actx;
       let i,v;
       this._halt();
       if(c){
-        /* Rewind over the song events sent ahead and not due yet (a tempo event is not crossed):
-           their automation is cancelled below, so a resume sends them again. */
-        for(;p && (v=s.ev[this.playIndex-1]) && v.m[0]!=0xff51 && (i=this.playTime-(this.playTick-v.t)*this.tick2Time)>c.currentTime;--this.playIndex)
-          this.playTime=i, this.playTick=v.t;
         for(i=this._src.length-1;i>=0;--i){
           if((v=this._src[i]).ch!=undefined){
             this._src.splice(i,1);
@@ -759,6 +760,7 @@ function WebAudioTinySynthCore(target) {
         }
         for(i=0;i<16;++i)
           [(this.chvol[i]||0).gain,(this.chmod[i]||0).gain,(this.chpan[i]||0).pan].forEach(a=>a && a.cancelScheduledValues(c.currentTime));
+        this._rs=1;
       }
     },
     playMIDI:()=>{
@@ -778,6 +780,9 @@ function WebAudioTinySynthCore(target) {
         return;
       if(this.playIndex && this.playTick>=this.maxTick)
         this.notetab=[], this._src=[], this.playing=0, this.locateMIDI(0), this.notetab=n, this._src=d;
+      if(this._rs) // after a caller's stop: the channels' latest values, now (review F1)
+        for(let i=this._rs=0;i<16;++i)
+          [[this.chvol[i],"gain",this.vol[i]*this.ex[i]],[this.chmod[i],"gain",this._m[i]],[this.chpan[i],"pan",this._p[i]]].forEach(([n,k,x])=>n && n[k].setValueAtTime(x||0,this.actx.currentTime));
       const dummy=this.actx.createOscillator();
       dummy.connect(this.actx.destination);
       dummy.frequency.value=0;
@@ -1093,7 +1098,7 @@ function WebAudioTinySynthCore(target) {
     setModulation:(ch,v,t)=>{
       if(!this._live())
         return;
-      this.chmod[ch].gain.setValueAtTime(v*100/127,this._tsConv(t));
+      this.chmod[ch].gain.setValueAtTime(this._m[ch]=v*100/127,this._tsConv(t));
     },
     setChVol:(ch,v,t)=>{
       if(!this._live())
@@ -1105,7 +1110,7 @@ function WebAudioTinySynthCore(target) {
       if(!this._live())
         return;
       if(this.chpan[ch])
-        this.chpan[ch].pan.setValueAtTime((v-64)/64,this._tsConv(t));
+        this.chpan[ch].pan.setValueAtTime(this._p[ch]=(v-64)/64,this._tsConv(t));
     },
     setExpression:(ch,v,t)=>{
       if(!this._live())
@@ -1140,7 +1145,7 @@ function WebAudioTinySynthCore(target) {
       this.rpnidx[ch]=0x3fff; this.sustain[ch]=0;
       if(this.chvol[ch]){
         this.chvol[ch].gain.value=this.vol[ch]*this.ex[ch];
-        this.chmod[ch].gain.value=0;
+        this.chmod[ch].gain.value=this._m[ch]=0;
       }
     },
     setBendRange:(ch,v)=>{
