@@ -147,19 +147,32 @@ def resolve_settings(provider, config, env):
 
 
 def codex_argv(settings, workdir, output_file):
-    """Arguments for `codex exec`. The prompt is read from stdin ('-')."""
+    """Arguments for `codex exec`. The prompt is read from stdin ('-').
+
+    project_doc_max_bytes=0 stops Codex loading AGENTS.md and AGENTS.override.md
+    from the checkout as instructions, and skills.include_instructions=false keeps
+    repository skills out of the prompt. The files stay readable as review data.
+    """
     return [
         "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
         "--sandbox", "read-only", "--color", "never",
         "-m", settings["model"],
         "-c", f'model_reasoning_effort="{settings["effort"]}"',
         "-c", 'approval_policy="never"',
+        "-c", "project_doc_max_bytes=0",
+        "-c", "skills.include_instructions=false",
         "-C", str(workdir), "-o", str(output_file), "-",
     ]
 
 
 def claude_args(settings, add_dirs):
-    """The claude_args input for the pinned base action (parsed with shell quoting)."""
+    """The claude_args input for the pinned base action (parsed with shell quoting).
+
+    --setting-sources user (and, independently, --restricted) stops Claude Code
+    loading the checkout's CLAUDE.md, CLAUDE.local.md, .claude/ settings, hooks,
+    rules, skills, commands and agents. The value must not be empty: the base
+    action treats an empty --setting-sources as absent and loads every source.
+    """
     parts = [
         "--model", settings["model"], "--effort", settings["effort"],
         "--restricted", "--setting-sources", "user", "--strict-mcp-config",
@@ -333,6 +346,17 @@ def contains_credential(text, values):
 
 def marker(provider, agent_id):
     return f"<!-- {MARKER_PREFIX}:{provider}:{agent_id} -->"
+
+
+def owns_comment(comment, mark):
+    """A comment is ours only if the bot wrote it and its first line is exactly the marker.
+
+    Both providers post as the same bot, so a substring match would let one
+    provider's comment that quotes another marker be updated or deleted.
+    """
+    user = comment.get("user") or {}
+    lines = (comment.get("body") or "").splitlines()
+    return user.get("login") == BOT_LOGIN and user.get("type") == "Bot" and bool(lines) and lines[0] == mark
 
 
 def _metadata(result):

@@ -274,6 +274,9 @@ class SettingsTests(Workspace):
                 self.assertIn(f'model_reasoning_effort="{effort}"', argv)
                 self.assertEqual(argv[argv.index("--sandbox") + 1], "read-only")
                 self.assertTrue({"--ephemeral", "--ignore-user-config", "--ignore-rules"} <= set(argv))
+                # Repository AGENTS.md, AGENTS.override.md and skills are data, not instructions.
+                for override in ("project_doc_max_bytes=0", "skills.include_instructions=false"):
+                    self.assertEqual(argv[argv.index(override) - 1], "-c")
                 self.assertEqual(call["stdin"], "PROMPT")
                 self.assertNotIn("CODEX_AUTH_DOT_JSON", call["env"])
                 self.assertEqual((out / "exit-code").read_text().strip(), "0")
@@ -289,6 +292,20 @@ class SettingsTests(Workspace):
             capture_output=True, text=True)
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("must not contain configuration", completed.stderr)
+
+    def test_repository_instruction_files_are_not_loaded(self):
+        settings = lib.resolve_settings("codex", CONFIG, SETTINGS_ENV)
+        argv = lib.codex_argv(settings, "/work/src", "/tmp/review.txt")
+        pairs = list(zip(argv, argv[1:]))
+        self.assertIn(("-c", "project_doc_max_bytes=0"), pairs)
+        self.assertIn(("-c", "skills.include_instructions=false"), pairs)
+        tokens = shlex.split(lib.claude_args(lib.resolve_settings("claude", CONFIG, SETTINGS_ENV), ["/ctx"]))
+        # "user" excludes the project and local sources (CLAUDE.md, CLAUDE.local.md, .claude/).
+        # An empty value would make the base action load every source.
+        self.assertEqual(tokens[tokens.index("--setting-sources") + 1], "user")
+        self.assertEqual(tokens.count("--setting-sources"), 1)
+        self.assertIn("--restricted", tokens)
+        self.assertIn("--strict-mcp-config", tokens)
 
     def test_settings_propagate_to_the_claude_arguments(self):
         for model, effort in (("fixture-claude-a", "low"), ("fixture-claude-b[1m]", "max")):
@@ -724,6 +741,34 @@ class PublishTests(Workspace):
         self.assertIn("### [HIGH]", body)
         meta = json.loads(re.search(r"<!-- tinysynth-ai-review-meta (.*) -->", body).group(1))
         self.assertEqual((meta["base_sha"], meta["head_sha"]), ("a" * 40, "b" * 40))
+
+    def test_a_comment_quoting_another_marker_is_not_owned(self):
+        bot = {"login": "github-actions[bot]", "type": "Bot"}
+        codex_mark, claude_mark = lib.marker("codex", "tinysynth"), lib.marker("claude", "tinysynth")
+        claude_quoting = {"id": 20, "user": bot,
+                          "body": f"{claude_mark}\n**Claude review**\n\n```\n{codex_mark}\n```\n"}
+        genuine = {"id": 21, "user": bot, "body": f"{codex_mark}\nold codex review\n"}
+        self.set_state("b" * 40, [claude_quoting, genuine])
+        completed = self.publish(self.write_results(self.result_record()))
+        self.assertEqual(completed.returncode, 0, completed.stdout)
+        state = self.state_now()
+        self.assertEqual([call[0] for call in state["calls"]], ["GET", "GET", "PATCH"])
+        self.assertEqual(state["calls"][-1][1], f"repos/{REPO}/issues/comments/21")
+        by_id = {c["id"]: c for c in state["comments"]}
+        self.assertEqual(sorted(by_id), [20, 21])
+        self.assertEqual(by_id[20], claude_quoting)
+        self.assertTrue(by_id[21]["body"].startswith(codex_mark + "\n"))
+
+    def test_ownership_requires_the_exact_first_line(self):
+        mark = lib.marker("codex", "tinysynth")
+        bot = {"login": "github-actions[bot]", "type": "Bot"}
+        self.assertTrue(lib.owns_comment({"user": bot, "body": f"{mark}\r\nedited in the UI"}, mark))
+        for body in (f"text {mark}", f"\n{mark}", f"{mark} extra", "", None,
+                     lib.marker("codex", "tinysynth-2"), lib.marker("claude", "tinysynth")):
+            with self.subTest(body=body):
+                self.assertFalse(lib.owns_comment({"user": bot, "body": body}, mark))
+        self.assertFalse(lib.owns_comment({"user": {"login": "github-actions[bot]", "type": "User"},
+                                           "body": mark}, mark))
 
     def test_duplicate_bot_comments_collapse_to_one(self):
         mark = lib.marker("codex", "tinysynth")

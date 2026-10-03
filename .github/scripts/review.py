@@ -474,9 +474,7 @@ def failure_record(facts, provider, agent_id, reason):
 def upsert_comment(repository, number, mark, body):
     pages = gh_api("--paginate", "--slurp", f"repos/{repository}/issues/{number}/comments?per_page=100") or []
     comments = [c for page in pages for c in (page if isinstance(page, list) else [page])]
-    mine = [c for c in comments if mark in (c.get("body") or "")
-            and (c.get("user") or {}).get("login") == lib.BOT_LOGIN
-            and (c.get("user") or {}).get("type") == "Bot"]
+    mine = [c for c in comments if lib.owns_comment(c, mark)]
     if mine:
         gh_api("-X", "PATCH", f"repos/{repository}/issues/comments/{mine[0]['id']}", payload={"body": body})
         for duplicate in mine[1:]:

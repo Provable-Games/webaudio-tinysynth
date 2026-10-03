@@ -23,7 +23,7 @@ the pull request; section 6 lists what that run must confirm.
 | `.github/scripts/review_lib.py`, `review.py` | Configuration and settings validation, change detection, prompt building, result parsing, credential guard, comment rendering, upsert and gate |
 | `.github/scripts/run-codex-review.sh` | Runs the pinned Codex CLI with a minimal environment |
 | `.github/scripts/codex-cli/package.json`, `package-lock.json` | Codex CLI pin `@openai/codex` 0.160.0 with integrity hashes. The root `.gitignore` matches `package-lock.json`, so the lockfile was added with `git add -f`; once T1 tooling removes that entry, nothing changes. |
-| `.github/scripts/test_review.py` | 49 `unittest` tests |
+| `.github/scripts/test_review.py` | 52 `unittest` tests |
 | `.github/scripts/.gitignore` | Ignores `__pycache__/` |
 | `.github/workflows/codex-review.yml`, `claude-review.yml` | Jobs `prepare` → `review` (matrix) → `publish` → `gate` per provider |
 | `.github/workflows/review-helpers.yml` | Runs the tests, shellcheck and a pinned, checksum-verified actionlint on the review workflows |
@@ -54,7 +54,7 @@ No file outside `.github/` and this record changed.
 
 | Command | Result |
 | --- | --- |
-| `python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v` (Python 3.12.3) | 49 tests OK after the heading follow-up (`_evidence/t1-ai-review/unittest.log`) |
+| `python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v` (Python 3.12.3) | 52 tests OK after the follow-ups (`_evidence/t1-ai-review/unittest.log`) |
 | `actionlint` 1.7.12 linux_amd64 (sha256 `8aca8db9…` verified against the release `checksums.txt`) on `.github/workflows/*review*.yml`, with shellcheck on PATH | exit 0 |
 | `shellcheck` 0.11.0 (asset digest `sha256:8c3be12b…` verified against the GitHub release) on `.github/scripts/*.sh` | exit 0 |
 | Mutation checks on a scratch copy: removing fence tracking, the bot identity match, the Claude `--effort` flag, the stale check, the partial-output rule, the fork failure, the Codex header check, the credential guard or the Claude tool-set check | each made the suite fail |
@@ -198,6 +198,58 @@ comments; resolved suffix; unknown and hostile values),
 pairs per provider produce four distinct headings), and
 `GateTests.test_gate_reads_result_records_not_comment_text` ("HIGH" in a model
 name, heading or review text does not change the gate).
+
+## 6b. Follow-up: PR-controlled instruction files and comment ownership
+
+PR #28's first real run passed end to end in bootstrap mode. Codex raised two
+MEDIUM findings, both fixed here.
+
+**Instruction files.** Evidence is in
+`_evidence/t1-ai-review/instruction-loading/`. The probe repository holds
+`AGENTS.md`, `AGENTS.override.md`, `sub/AGENTS.md`, `.agents/skills/…`,
+`.codex/skills/…`, `CLAUDE.md`, `CLAUDE.local.md` and `.claude/` rules,
+commands, skills and agents, each carrying a marker.
+
+- Codex 0.160.0: `codex-rs/core/src/agents_md.rs` at `rust-v0.160.0`
+  (`load_project_instructions`) returns early only for an explicitly untrusted
+  project; otherwise it reads `AGENTS.override.md`, `AGENTS.md` and configured
+  fallbacks until `config.project_doc_max_bytes` is used up, and stops at `0`.
+  The key is `project_doc_max_bytes` in `codex-rs/config/src/config_toml.rs`
+  (default 32768 in `codex-rs/config/defaults.toml`). Skills are a separate
+  channel: `SkillsConfig.include_instructions` in
+  `codex-rs/config/src/skills_config.rs` ("Whether turns receive the automatic
+  skills instructions block"). Measured by capturing the real `codex exec`
+  request with a local stub API (`openai_base_url`, `CODEX_API_KEY`): with a
+  fresh `CODEX_HOME` and the old arguments, the request contained
+  `AGENTS.override.md` and both repository skills; with
+  `-c project_doc_max_bytes=0 -c skills.include_instructions=false` it contained
+  only the prompt. `codex debug prompt-input` agrees, including nested
+  `sub/AGENTS.md`. `codex exec` accepts both overrides
+  (`codex-exec-accepts-overrides.txt`).
+- Claude Code 2.1.288: https://code.claude.com/docs/en/agent-sdk/claude-code-features
+  states that `"project"` loads project `settings.json`, hooks, `CLAUDE.md`,
+  `.claude/rules/*.md`, skills, commands and subagents, `"local"` loads
+  `CLAUDE.local.md`, and omitting `settingSources` means all three. The pinned
+  base action's `parse-sdk-options.ts` sets `settingSources` from
+  `--setting-sources`, and an empty value parses as a valueless flag, which falls
+  back to all three. Measured by capturing the real CLI's API request
+  (`ANTHROPIC_BASE_URL` stub): a control run sent `CLAUDE.md`,
+  `CLAUDE.local.md`, the rule, command, skill and agent; the generated
+  arguments sent only the prompt, and so did `--setting-sources user` alone
+  and `--restricted` alone. The existing arguments were already safe, so the
+  change is documentation and tests that pin `--setting-sources user`.
+- Tests: `SettingsTests.test_repository_instruction_files_are_not_loaded` and
+  the extended `test_settings_propagate_to_the_codex_command_line`. Removing
+  either Codex override, or emptying `--setting-sources`, fails the suite.
+
+**Comment ownership.** `upsert_comment` matched the marker as a substring, so
+a Claude comment quoting the Codex marker could be patched or deleted as a
+Codex duplicate. `review_lib.owns_comment` now requires `github-actions[bot]`
+with type `Bot` and a first line exactly equal to the marker (CRLF tolerated).
+Tests: `PublishTests.test_a_comment_quoting_another_marker_is_not_owned` (only
+the genuine Codex comment is patched; nothing is deleted) and
+`test_ownership_requires_the_exact_first_line`. Reverting to a substring match
+fails four tests.
 
 ## 7. Recommendations (not performed)
 

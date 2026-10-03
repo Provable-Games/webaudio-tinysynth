@@ -117,10 +117,12 @@ in prose or in code examples are ignored.
 
 ## Comments
 
-Each provider keeps one bot comment per reviewer, found by the hidden marker
-`<!-- tinysynth-ai-review:<provider>:<agent> -->` and authored by
-`github-actions[bot]` (type `Bot`). Comments by other users or apps are never
-edited, even if they quote the marker. A second hidden comment records the
+Each provider keeps one bot comment per reviewer. A comment belongs to a
+provider and reviewer only if `github-actions[bot]` (type `Bot`) wrote it and
+its first line is exactly the hidden marker
+`<!-- tinysynth-ai-review:<provider>:<agent> -->`. Both providers post as the
+same bot, so a comment that merely quotes another marker, including the other
+provider's comment, is never edited or deleted. A second hidden comment records the
 base, head, merge base, configuration revision, model, effort and run.
 
 Every comment, clean or not, starts with one visible heading built from the
@@ -155,10 +157,17 @@ stays under a new head.
   minimal environment. Before the review, the sandbox must run `git`, refuse a
   write and refuse network access. A trusted Codex home would load the pull
   request's `.codex/` layer, including MCP server commands.
+  `-c project_doc_max_bytes=0` stops Codex loading the pull request's
+  `AGENTS.md` and `AGENTS.override.md` as instructions, and
+  `-c skills.include_instructions=false` keeps its `.agents/skills` and
+  `.codex/skills` out of the prompt. Codex can still read those files as data.
 - Claude runs through the base action, so no GitHub token or GitHub tools reach
   it. It uses `--restricted --setting-sources user --strict-mcp-config
-  --permission-mode dontAsk --tools Read,Glob,Grep`, so project settings, hooks
-  and `.mcp.json` servers from the pull request do not load. Its working
+  --permission-mode dontAsk --tools Read,Glob,Grep`, so project settings, hooks,
+  `CLAUDE.md`, `CLAUDE.local.md`, `.claude/` rules, skills, commands and agents,
+  and `.mcp.json` servers from the pull request do not load; Claude can still
+  read those files as data. `--setting-sources` must stay `user`: the base
+  action treats an empty value as absent and loads every source. Its working
   directory is `src/`, and the precomputed diff is added with `--add-dir`.
   Symlinks that leave the checkout are replaced first. The result step fails
   the review if Claude's init message reports a working directory other than
