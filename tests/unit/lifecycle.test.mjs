@@ -669,32 +669,31 @@ describe.each(variants)("$name: scheduled percussion (D-019)", (variant) => {
   }
   const touched = (trace, from) => new Set(calls(trace, from).map(([, id]) => id));
 
-  test.each([["stopMIDI()", (y) => y.stopMIDI()], ["a seek", (y) => y.locateMIDI(0)], ["allSoundOff(9)", (y) => y.allSoundOff(9)],
-    ["CC 120 on channel 10", (y) => y.send([0xb9, 120, 0])]])("%s stops the hits that have not started; sounding hits ring out", (name, act) => {
+  test.each([["stopMIDI()", (y) => y.stopMIDI()], ["a seek", (y) => y.locateMIDI(0)]])("%s stops every hit, sounding or scheduled ahead (D-019, D-023)", (name, act) => {
     const s = make(variant);
     playUntilDrumAhead(s);
     const { ahead, sounding } = drums(s);
     expect(ahead.length).toBeGreaterThan(0);
+    expect(sounding.length).toBeGreaterThan(0);
     const from = s.trace.length;
     act(s.synth);
     const after = calls(s.trace, from);
-    for (const id of ahead.filter((x) => /^(osc|src)#/.test(x))) expect(after).toContainEqual(["stop", id, null]);
+    for (const id of [...ahead, ...sounding].filter((x) => /^(osc|src)#/.test(x))) expect(after).toContainEqual(["stop", id, null]);
     s.ended(); // each stopped source is disconnected when it ends
-    expect(liveEdges(s.trace).filter(([f]) => ahead.includes(f))).toEqual([]);
-    const t = touched(s.trace, from);
-    expect(sounding.filter((id) => t.has(id))).toEqual([]);
-    expect(drums(s).ahead).toEqual([]);
+    expect(liveEdges(s.trace).filter(([f]) => ahead.includes(f) || sounding.includes(f))).toEqual([]);
+    expect(s.synth._src.filter((v) => v.ch === 9)).toEqual([]);
   });
 
-  test("allSoundOff on another channel leaves the drums alone", () => {
-    const s = make(variant);
-    playUntilDrumAhead(s);
-    const { ahead } = drums(s);
-    const from = s.trace.length;
-    s.synth.allSoundOff(0);
-    const t = touched(s.trace, from);
-    expect(ahead.filter((id) => t.has(id))).toEqual([]);
-  });
+  test.each([["allSoundOff(9)", (y) => y.allSoundOff(9)], ["CC 120 on channel 10", (y) => y.send([0xb9, 120, 0])], ["allSoundOff(0)", (y) => y.allSoundOff(0)]])(
+    "%s leaves drum hits alone, as upstream", (name, act) => {
+      const s = make(variant);
+      playUntilDrumAhead(s);
+      const { ahead, sounding } = drums(s);
+      const from = s.trace.length;
+      act(s.synth);
+      const t = touched(s.trace, from);
+      expect([...ahead, ...sounding].filter((id) => t.has(id))).toEqual([]);
+    });
 
   test("replaying a completed song keeps the previous pass's scheduled hit (as upstream)", () => {
     const s = make(variant);
@@ -734,6 +733,71 @@ describe.each(variants)("$name: scheduled percussion (D-019)", (variant) => {
     H.runUntil(s.env, () => !s.synth.notetab.includes(voice), 10000);
     s.ended(); // its routes are released when its sources end
     expect(liveEdges(s.trace).filter(([f, to]) => ids(voice).includes(f) || ids(voice).some((x) => to.startsWith(x + ".")))).toEqual([]);
+  });
+});
+
+describe.each(variants)("$name: stopMIDI() silences what the transport scheduled (D-023)", (variant) => {
+  const PARAMS = /^(gain|pan)#\d+\.(gain|pan)$/;
+  /* Channel volume, modulation and pan params, by id. */
+  const channelParams = (synth) => new Set([...synth.chvol.map((n) => n.gain._id), ...synth.chmod.map((n) => n.gain._id), ...synth.chpan.filter(Boolean).map((n) => n.pan._id)]);
+
+  test("a stop right after queued controller changes and scheduled hits leaves nothing to sound or fire later", () => {
+    const s = make(variant);
+    playUntilDrumAhead(s);
+    const now = s.env.clock.ms / 1000;
+    s.synth.send([0xb0, 7, 30], now + 0.5); s.synth.send([0xb1, 10, 0], now + 0.5); s.synth.send([0xb2, 1, 90], now + 0.5);
+    const params = channelParams(s.synth);
+    const queued = calls(s.trace).filter(([op, id, , t]) => op === "setValueAtTime" && params.has(id) && t > now);
+    expect(queued.length).toBeGreaterThanOrEqual(3); // the timed sends, and the song's own lookahead
+    const from = s.trace.length;
+    s.synth.stopMIDI();
+    const after = calls(s.trace, from);
+    // Every channel's volume, modulation and pan automation is cancelled from now on.
+    for (const id of params) expect(after).toContainEqual(["cancel", id, now]);
+    // Nothing still plays, and stepping on starts nothing and schedules nothing new.
+    s.ended();
+    expect(playing(s.trace, now).filter((id) => id !== s.synth.lfo._id)).toEqual([]); // the LFO runs until dispose()
+    const later = s.trace.length;
+    H.runUntil(s.env, () => false, 3000);
+    expect(calls(s.trace, later).filter(([op, id]) => op === "start" || op === "create" || op === "setValueAtTime" && PARAMS.test(id))).toEqual([]);
+    expect(s.synth.getPlayStatus().play).toBe(0);
+  });
+
+  test("loadMIDI's internal stop keeps the upstream calls: no cancel and no drum stop", () => {
+    const s = make(variant);
+    playUntilDrumAhead(s);
+    const params = channelParams(s.synth);
+    const hits = s.synth._src.filter((v) => v.ch === 9).flatMap(ids);
+    const from = s.trace.length;
+    s.synth.loadMIDI(MIXED);
+    const after = calls(s.trace, from);
+    expect(after.filter(([op, id]) => op === "cancel" && params.has(id))).toEqual([]);
+    expect(after.filter(([, id]) => hits.includes(id))).toEqual([]);
+  });
+
+  test("a stop when nothing is playing, before first use or after dispose() does not throw", async () => {
+    const s = make(variant);
+    expect(() => s.synth.stopMIDI()).not.toThrow();
+    const lazy = make(variant, { lazy: true });
+    expect(() => lazy.synth.stopMIDI()).not.toThrow();
+    expect(lazy.made).toHaveLength(0);
+    await s.synth.dispose();
+    expect(() => s.synth.stopMIDI()).not.toThrow();
+  });
+
+  test("a caller's own gain node swapped into chvol: stop and dispose() still work (compatibility only)", async () => {
+    const s = make(variant);
+    playUntilDrumAhead(s);
+    const ctx = s.synth.getAudioContext();
+    const mine = ctx.createGain();
+    mine.connect(s.synth.chpan[0] || s.synth.out);
+    s.synth.chvol[0].disconnect();
+    s.synth.chvol[0] = mine;
+    const from = s.trace.length;
+    expect(() => s.synth.stopMIDI()).not.toThrow();
+    expect(calls(s.trace, from)).toContainEqual(["cancel", mine.gain._id, s.env.clock.ms / 1000]);
+    await s.synth.dispose();
+    expect(liveEdges(s.trace).filter(([f]) => f === mine._id)).toEqual([]);
   });
 });
 

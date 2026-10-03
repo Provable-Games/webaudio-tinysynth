@@ -674,16 +674,14 @@ function WebAudioTinySynthCore(target) {
          tick, in order, through send() and without notes. Playback resumes at the first
          event at or after tick; with none left, curTick is maxTick and play restarts.
          Without a song this does nothing. Queued channel volume, pan and modulation
-         changes (from the scheduler's lookahead or a timed send()) are cancelled first,
-         so they cannot override the rebuilt state. loadMIDI passes load, which skips the
-         cancel and keeps the upstream load calls (D-019). */
+         changes (from the scheduler's lookahead or a timed send()) are cancelled first, by
+         stopMIDI(), so they cannot override the rebuilt state. loadMIDI passes load, which
+         skips the cancel and keeps the upstream load calls (D-019, D-023). */
       const s=this.song,p=this.playing;
-      let i=0,e;
+      let i,e;
       if(!s)
         return;
-      this.stopMIDI();
-      for(;!load && i<16;++i)
-        [this.chvol[i].gain,this.chmod[i].gain,(this.chpan[i]||0).pan].forEach(a=>a && a.cancelScheduledValues(this.actx.currentTime));
+      this.stopMIDI(load);
       this.reset();
       for(i=0;i<16;)
         this.scaleTuning[i++].fill(0);
@@ -738,10 +736,23 @@ function WebAudioTinySynthCore(target) {
       this.masterTuningF=0;
       this.rhythm[9]=1;
     },
-    stopMIDI:()=>{
+    stopMIDI:(load)=>{
+      /* A caller's stop silences everything the transport scheduled (D-023, #11): melodic
+         voices, as upstream; every percussion hit, sounding or scheduled ahead (D-019); and
+         the queued channel volume, pan and modulation automation, cancelled from now on. A
+         seek stops the same way. loadMIDI's internal stops pass load and keep the upstream
+         calls. Nodes a caller swapped into chvol are handled (not a supported API). */
+      const c=this.actx;
       this.playing=0;
       for(var i=0;i<16;++i)
         this.allSoundOff(i);
+      if(!load && c){
+        for(i=this._src.length-1;i>=0;--i)
+          if(this._src[i].ch!=undefined)
+            this._pruneNote(this._src.splice(i,1)[0]);
+        for(i=0;i<16;++i)
+          [(this.chvol[i]||0).gain,(this.chmod[i]||0).gain,(this.chpan[i]||0).pan].forEach(a=>a && a.cancelScheduledValues(c.currentTime));
+      }
     },
     playMIDI:()=>{
       /* A song with no events other than tempo (empty, metadata-only or tempo-only)
@@ -890,7 +901,7 @@ function WebAudioTinySynthCore(target) {
         ++tr;
       }
       song.ev.sort(function(x,y){return x.t-y.t});
-      this.stopMIDI();
+      this.stopMIDI(1); // internal: the upstream calls (D-023)
       if(tr)
         this.notetab.length=0;
       this.maxTick=maxTick;
@@ -1099,16 +1110,6 @@ function WebAudioTinySynthCore(target) {
         if(nt.ch==ch){
           this._pruneNote(nt);
           this.notetab.splice(i,1);
-        }
-      }
-      /* Percussion hits that have not started yet (playMIDI schedules up to 0.2 s ahead) are
-         stopped too, so none sounds after a stop or a seek (D-019). Hits already sounding
-         ring out, as upstream. */
-      for(let i=this._src.length-1;i>=0;--i){
-        const v=this._src[i];
-        if(v.ch==ch && v.t>this.actx.currentTime){
-          this._pruneNote(v);
-          this._src.splice(i,1);
         }
       }
     },
