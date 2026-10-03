@@ -300,6 +300,36 @@ function seekState(s, from) {
   return st;
 }
 
+/*
+ * The automation timeline of one AudioParam, with Web Audio semantics: `value` takes effect at the current
+ * time, setValueAtTime at its time, cancelScheduledValues(t) removes the events at or after t, and at(t) is
+ * the value of the last event (in time, then insertion order) at or before t.
+ */
+function timeline(param, clock) {
+  const ev = [];
+  const value = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(param), "value");
+  Object.defineProperty(param, "value", {
+    get() { return value.get.call(this); },
+    set(v) { ev.push({ t: clock.ms / 1000, v }); value.set.call(this, v); },
+    configurable: true,
+  });
+  const set = param.setValueAtTime, cancel = param.cancelScheduledValues;
+  param.setValueAtTime = function (v, t) { ev.push({ t, v }); return set.call(this, v, t); };
+  param.cancelScheduledValues = function (t) {
+    for (let i = ev.length - 1; i >= 0; --i) if (ev[i].t >= t) ev.splice(i, 1);
+    return cancel.call(this, t);
+  };
+  return { at: (t) => ev.reduce((best, e) => (e.t <= t + 1e-12 && (!best || e.t >= best.t) ? e : best), null)?.v };
+}
+
+/* The ids of every channel's volume, pan and modulation params. */
+const channelParamIds = (synth) => new Set(Array.from({ length: 16 }, (_, i) => [synth.chvol[i].gain._id, synth.chpan[i].pan._id, synth.chmod[i].gain._id]).flat());
+/* cancelScheduledValues calls on channel params in trace lines, as [param id, time]. */
+const channelCancels = (synth, lines) => {
+  const ids = channelParamIds(synth);
+  return lines.map((l) => JSON.parse(l)).filter(([op, id]) => op === "cancel" && ids.has(id)).map(([, id, t]) => [id, t]);
+};
+
 /* Channel overrides of every kind the seek must undo. */
 function override(synth) {
   synth.setProgram(0, 99);
@@ -486,6 +516,79 @@ describe.each(MODES)("$name: seeking (#21)", ({ variant, quality }) => {
     expect(after.map(({ state, calls, timbre, ch, n }) => ({ state, calls, timbre, ch, n })))
       .toEqual(oracle.notes.slice(k).map(({ state, calls, timbre, ch, n }) => ({ state, calls, timbre, ch, n })));
     recs.forEach((r, i) => close(r.t - start, at(RICH_TEMPOS, RICH_NOTES[k + i]) - at(RICH_TEMPOS, 1440)));
+  });
+
+  /*
+   * Channel 1 settings and a bend at tick 0, other settings at 600 (0.725 s after playMIDI at time 0, and
+   * channel 2's volume) and at 960 (1.1 s), notes at 0, 480 and 1920.
+   */
+  const QUEUED = H.makeMidi(PPQ, [
+    cc(0, 0, 7, 90), cc(0, 0, 10, 30), cc(0, 0, 1, 10), { tick: 0, bytes: [0xe0, 0x00, 0x50] }, noteOn(0, 0, 60, 100), noteOff(240, 0, 60),
+    noteOn(480, 0, 62, 100), cc(600, 0, 7, 50), cc(600, 0, 10, 60), cc(600, 0, 1, 40), cc(600, 1, 7, 10), noteOff(720, 0, 62),
+    cc(960, 0, 7, 20), cc(960, 0, 10, 120), cc(960, 0, 1, 100), { tick: 960, bytes: [0xe0, 0x00, 0x30] },
+    noteOn(1920, 0, 64, 100), noteOff(2160, 0, 64),
+  ]);
+
+  test("a seek back while playing cancels the controller changes queued from the old position", () => {
+    const s = make();
+    s.synth.loadMIDI(H.toArrayBuffer(QUEUED));
+    s.synth.setLoop(0);
+    const params = [s.synth.chvol[0].gain, s.synth.chpan[0].pan, s.synth.chmod[0].gain];
+    const lines = params.map((p) => timeline(p, s.env.clock)), vol2 = timeline(s.synth.chvol[1].gain, s.env.clock);
+    // Effective volume gain (expression 1), pan and modulation depth for CC7, CC10 and CC1 values, by the engine's documented curves.
+    const expected = (v, p, m) => [3 * v * v / (127 * 127), (p - 64) / 64, m * 100 / 127].map(ROUND);
+    const values = (t) => lines.map((x) => ROUND(x.at(t)));
+    s.synth.playMIDI();
+    H.runUntil(s.env, () => s.env.clock.ms >= 960, 2000);
+    expect(s.env.clock.ms).toBe(960);
+    expect(values(0.96)).toEqual(expected(50, 60, 40));
+    expect(ROUND(vol2.at(0.96))).toBe(expected(10, 64, 0)[0]);
+    expect(values(1.1)).toEqual(expected(20, 120, 100)); // queued for 1.1 s, not yet reached
+
+    const from = s.trace.length, notesFrom = s.notes.length;
+    s.synth.locateMIDI(300); // rebuilds tick 0's settings; resumes at the note at 480 (1.06 s); tick 960 now plays at 1.56 s
+    expect(channelCancels(s.synth, s.trace.slice(from)).sort()).toEqual([...channelParamIds(s.synth)].map((id) => [id, 0.96]).sort());
+    H.runUntil(s.env, () => s.synth.getPlayStatus().play === 0, 10000);
+    for (const t of [0.96, 1.1, 1.18]) expect(values(t), "at " + t + " s").toEqual(expected(90, 30, 10));
+    expect(ROUND(vol2.at(1.18))).toBe(expected(100, 64, 0)[0]); // channel 2 back at the default volume until 600 replays
+    expect(ROUND(vol2.at(1.2))).toBe(expected(10, 64, 0)[0]);
+    expect(values(1.3)).toEqual(expected(50, 60, 40)); // the song's own changes at their new times: 600 at 1.185 s
+    expect(values(1.6)).toEqual(expected(20, 120, 100)); // and 960 at 1.56 s
+
+    // Bend needs no cancelling. Queued bends only reach voices that existed when they were queued, and the
+    // seek stops those. The note at 480 after the seek starts with the same detune as in an uninterrupted
+    // play, and its detune changes only with the replayed tick-960 bend.
+    const ref = make();
+    ref.synth.loadMIDI(H.toArrayBuffer(QUEUED));
+    const refFrom = ref.trace.length;
+    ref.synth.playMIDI();
+    H.runUntil(ref.env, () => ref.notes.length >= 2, 2000);
+    // The first oscillator started at a note's time, and the detune calls on it.
+    const firstOscAt = (trace, t) => trace.map((l) => JSON.parse(l)).find(([op, id, x]) => op === "start" && id.startsWith("osc#") && Math.abs(x - t) < 1e-9)[1];
+    const detune = (trace, id) => trace.map((l) => JSON.parse(l)).filter(([op, pid]) => pid === id + ".detune" && (op === "value" || op === "setValueAtTime"));
+    close(s.notes[notesFrom][0], 1.06);
+    const mine = detune(s.trace.slice(from), firstOscAt(s.trace.slice(from), 1.06));
+    const theirs = detune(ref.trace.slice(refFrom), firstOscAt(ref.trace.slice(refFrom), 0.6)); // the note at 480, 0.5 s after the start
+    expect(mine[0][0]).toBe("value");
+    expect(mine[0][2]).toBe(theirs[0][2]);
+    expect(mine[0][2]).not.toBe(0);
+    expect(mine.slice(1).map(([op, , , t]) => [op, ROUND(t)])).toEqual([["setValueAtTime", 1.56]]);
+  });
+
+  test("a stopped seek and a load cancel no channel automation", () => {
+    const s = make();
+    s.synth.loadMIDI(H.toArrayBuffer(RICH_BYTES));
+    s.synth.playMIDI();
+    H.runUntil(s.env, () => false, 1000);
+    s.synth.stopMIDI();
+    let from = s.trace.length;
+    s.synth.locateMIDI(700);
+    expect(channelCancels(s.synth, s.trace.slice(from))).toEqual([]);
+    s.synth.playMIDI();
+    H.runUntil(s.env, () => false, 500);
+    from = s.trace.length;
+    s.synth.loadMIDI(H.toArrayBuffer(RICH_BYTES)); // replaces a playing song; loadMIDI stops it first
+    expect(channelCancels(s.synth, s.trace.slice(from))).toEqual([]);
   });
 });
 
