@@ -75,17 +75,19 @@ class EngineSession {
      * if it ends while the creation is in flight, the new resource is closed
      * as soon as it exists. Either way the caller gets an error, so an
      * abandoned run() cannot continue with it. Cleanup waits for creations
-     * in flight (pending), so a late resource is closed before the next case.
+     * in flight (pending), so a late resource is closed before the next case;
+     * a late close that fails, or a creation that does not settle, counts as
+     * failed cleanup: the case fails and the browser is relaunched.
      */
     const pending = new Set();
-    let lateClosed = 0;
+    let lateClosed = 0, lateCloseFailed = 0;
     const create = (make, close) => {
       if (abandoned) return Promise.reject(new Error(ENDED));
       const p = (async () => {
         const x = await make();
         if (abandoned) {
-          ++lateClosed;
-          await withTimeout(close(x), CLOSE_TIMEOUT_MS);
+          const cr = await withTimeout(close(x), CLOSE_TIMEOUT_MS);
+          if (cr.ok) ++lateClosed; else ++lateCloseFailed;
           throw new Error(ENDED);
         }
         return x;
@@ -177,9 +179,15 @@ class EngineSession {
     // context that does not close in time means the browser is wedged: close
     // it and relaunch.
     const late = await withTimeout(Promise.allSettled([...pending]), LATE_WAIT_MS);
-    if (late.timedOut) record.observe("cleanup: resources still being created", pending.size + " creation(s) did not settle within " + LATE_WAIT_MS / 1000 + " s");
-    if (lateClosed) record.observe("cleanup: resources created after the case ended, closed", lateClosed);
     let wedged = false;
+    const cleanupFailures = [];
+    if (late.timedOut) cleanupFailures.push(pending.size + " resource creation(s) did not settle within " + LATE_WAIT_MS / 1000 + " s");
+    if (lateCloseFailed) cleanupFailures.push(lateCloseFailed + " resource(s) created after the case ended did not close");
+    if (lateClosed) record.observe("cleanup: resources created after the case ended, closed", lateClosed);
+    if (cleanupFailures.length) {
+      wedged = true;
+      record.check("every resource the case created was closed", false, cleanupFailures.join("; ") + "; browser relaunched");
+    }
     for (const rec of opened) {
       if (rec.page) await withTimeout(rec.page.close({ runBeforeUnload: false }), CLOSE_TIMEOUT_MS);
       const cr = await withTimeout(rec.context.close(), CLOSE_TIMEOUT_MS);
