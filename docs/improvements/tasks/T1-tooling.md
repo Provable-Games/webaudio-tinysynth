@@ -42,7 +42,10 @@ All commits are GPG-signed (no `--no-gpg-sign` fallback was needed).
 | `fec2e6c` | supervisor note | Exclude .github/scripts from lint and add its Dependabot entry | `eslint.config.mjs`, `.github/dependabot.yml` |
 | `c5f9ec1` | | Record T1 tooling execution | `docs/improvements/tasks/T1-tooling.md` |
 | `c76bb81` | #5 (D-003) | Rebuild webaudio-tinysynth.min.js and source map | `webaudio-tinysynth.min.js`, `webaudio-tinysynth.min.js.map` |
-| supervisor fixup | #5 | Relax engines, keep artifact line endings, note verify constraints | `package.json`, `.gitattributes` (assigned for this change), this record |
+| `95f7b9b` | #5 | Relax engines, keep artifact line endings, note verify constraints | `package.json`, `.gitattributes` (assigned for this change), this record |
+| `f40de89` | #5 | Sync the lockfile's root engines with package.json | `package-lock.json` (root entry only), this record |
+| `71425ca` | #24, G0 M4 | Make the test suites fail closed | `scripts/run-node-tests.js`, `scripts/node-test-events.mjs`, `scripts/run-unit-tests.js`, `scripts/run-regressions.js`, `scripts/run-with-deadline.js`, `tests/node/runner.test.cjs`, `tests/node/fixtures/**`, `package.json`, `README.md` |
+| M4 record | G0 M4 | Record the fail-closed test runners | this record (§11) |
 
 The source (`e0ff12c`) and the build options (`008f99a`) changed, so the branch ends with the regeneration commit made by the pinned `npm run build`, after this record (D-003). Between `e0ff12c` and that commit, `npm run verify` fails by design because the committed distribution is stale. The regenerated files must have the hashes in §4; they are the bytes two independent clean clones built (§7).
 
@@ -234,3 +237,57 @@ Resolved at about 2026-10-03T02:01Z with `gh api repos/<repo>/releases/latest`, 
    - `package.json` keeps upstream's name, version and URLs.
    - `/workspace/webaudio-tinysynth/AGENTS.md` still calls `npm test` a placeholder and describes the custom element.
 10. **Not done.** No release tags, no README release hashes, nothing published, nothing pushed. `.github/scripts/**`, the review workflows and the supervisor records were not touched.
+
+## 11. Fail-closed test suites (G0 review finding M4)
+
+**Finding.** `npm run test:node` exited 0 when its glob matched no files, and when a test file called `process.exit(0)` early. I reproduced both with `node --test` on Node 24.21.0 (`scratch/m4-probe`). An empty pattern reported `tests 0` with exit 0. `process.exit(0)` inside a test, at load, or in a callback between tests also exited 0. When the child process exits, its unreported test events are lost. The parent then reports the file as one passing file-level entry, or leaves the remaining tests enqueued but never finished.
+
+**Per-suite check of the same class of false pass:**
+
+| Suite | Empty or renamed set | One file or script renamed | `process.exit(0)` early | Fix |
+| --- | --- | --- | --- | --- |
+| `test:node` | passed (exit 0) | passed with fewer tests | passed | `scripts/run-node-tests.js` |
+| `test:unit` (Vitest 5.0.3) | already failed ("No test files found", exit 1) | **passed with fewer tests** (plain `vitest run` exit 0) | already failed: Vitest intercepts `process.exit` in tests, at load and in callbacks | `scripts/run-unit-tests.js` floors |
+| `test:regression` | not applicable (fixed script list) | already failed (`Cannot find module`) | **passed** | final `PASS:` line required |
+| `test:browser` | not applicable | already failed | **passed** | final `PASS:` line required |
+
+**Fix (`71425ca`):**
+- **`npm run test:node`** runs `node scripts/run-node-tests.js --min-files=3 --min-tests=33`.
+  - It globs the files itself and fails if none match.
+  - It runs `node --test` under the deadline wrapper with two reporters: the spec reporter on stdout, and `scripts/node-test-events.mjs`, which writes one JSON line per `test:enqueue`, `test:pass` and `test:fail` event to a temporary file.
+  - It skips each file's own file-level entry, then fails if `node --test` failed, if a file passed no test, or if a file enqueued more tests or suites than finished.
+  - It also fails below the floors.
+  - It removes `NODE_TEST_CONTEXT` from the child environment, so a nested run (as in its own tests) reports normally.
+- **`npm run test:unit`** runs `node scripts/run-unit-tests.js --min-files=3 --min-tests=30`. That runs `vitest run` with the default reporter plus the JSON reporter, and applies the same per-file and floor checks.
+- **`npm run test:regression` and `npm run test:browser`.** `scripts/run-regressions.js` now tees each script's stdout. A script passes only if it exits 0 and its last stdout line starts with `PASS:`; all three regression scripts and the browser smoke test already end that way. Entries may carry arguments, so `test:browser` runs both fixtures through the same runner with a 180 s deadline. The summary line is now "N of M scripts passed".
+- **Floors** are committed in `package.json` and equal today's counts: 3 node files with 33 tests, and 3 unit files with 30 tests. When tests are added, raise them to the new counts each run prints. Between such a raise and the next one, an early exit can hide at most the tests added since. The per-file checks still catch an exit that drops every test a file reported or leaves a test unfinished.
+- **New permanent tests** in `tests/node/runner.test.cjs` (node suite 24 → 33 tests):
+  - an empty pattern, and `process.exit(0)` inside a test, at load and between tests (fixtures in `tests/node/fixtures/suites/`, which neither runner discovers);
+  - both floors;
+  - a script that exits 0 before its `PASS:` line (`fixtures/exit-early.cjs`), a missing script, and script arguments.
+
+**Demonstrations** (fresh clone at `71425ca`, `scratch/m4-demo`; logs `logs/m4demo-*.log`; every change reverted):
+
+| Case | Command | Result |
+| --- | --- | --- |
+| Unfixed: empty glob | `node --test "tests/node/**/*.nomatch.cjs"` | exit 0 |
+| All node tests renamed `*.spec.cjs` | `npm run test:node` | exit 1, `no test files match tests/node/**/*.test.cjs` |
+| One node test renamed | `npm run test:node` | exit 1, 2 files < floor 3, 20 tests < floor 33 |
+| `process.exit(0)` at load, mid-file in `exports.test.cjs` | `npm run test:node` | exit 1, `exports.test.cjs passed no tests`, 20 < 33 |
+| `process.exit(0)` inside an `exports.test.cjs` test | `npm run test:node` | exit 1, same |
+| Empty glob | `node scripts/run-node-tests.js "tests/node/**/*.nomatch.cjs"` | exit 1, `no test files match` |
+| All unit tests renamed `*.spec.mjs` | `npm run test:unit` | exit 1, `No test files found` |
+| One unit test renamed | `npm run test:unit` (plain `npx vitest run`: exit 0) | exit 1, 2 files < floor 3, 12 tests < floor 30 |
+| `process.exit(0)` inside a unit test | `npm run test:unit` | exit 1, `process.exit unexpectedly called with "0"` |
+| `process.exit(0)` early in `tests/tempo.js` | `npm run test:regression` | exit 1, `exited 0 without a final "PASS:" line`, 2 of 3 |
+| `tests/tempo.js` renamed | `npm run test:regression` | exit 1, `exited with status 1` (module not found) |
+| `process.exit(0)` after the first build in `tests/browser-smoke.js` | `npm run test:browser` | exit 1, 0 of 2, no final `PASS:` line |
+| `tests/browser-smoke.js` renamed | `npm run test:browser` | exit 1, 0 of 2 |
+
+**Checks after the fix (worktree):** `lint`, `verify`, `pack:check`, `npm test` (unit 30 of floor 30, node 33 of floor 33, regressions 3 of 3), `test:browser` (2 of 2) and actionlint all pass, every exit status 0. CI needs no change, because its steps call the same npm scripts.
+
+**Residual risks.**
+- A file that exits 0 after all of its registered tests have finished cannot be told apart from a normal end. Neither can a run that loses tests yet stays at or above the floors.
+- The `PASS:` contract assumes a script prints its final line only after all its checks.
+- On Linux, pipe writes are synchronous, so a `PASS:` line printed just before `process.exit` is not lost. Other platforms were not checked.
+
