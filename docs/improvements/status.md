@@ -69,6 +69,11 @@ Local checks at f01ca19 all exit 0: `npm ci`, lint, verify, `pack:check`, `npm t
 - #28 (`t1/ai-review`) and #29 (`t1/tooling`) were marked merged by GitHub when their commits reached `improve/integration` through the supervisor's push. No GitHub merge was performed.
 - #30 (`g0/verify`) is the trusted-path verification.
 
+## Consumer coordination
+
+- 2026-10-03: interim pinning was offered to the onchain-tinysynth agent (session `webaudio-tinysynth-15`): pin an `improve/integration` SHA plus its min.js sha256, with no class declaration against interim pins. The current pin candidate is `4b29ff1` / min.js `b49e8ceb…`. A reply is pending.
+- Whenever #7, #26 or #27 integrates, send that session the new integration SHA and min.js sha256.
+
 ## Next actions
 
 1. (running) T2 parser and T6 phase A.
