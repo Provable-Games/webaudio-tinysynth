@@ -28,7 +28,8 @@ This is [g200kg/webaudio-tinysynth](https://github.com/g200kg/webaudio-tinysynth
   - A song with no playable events, only tempo or metadata, stays stopped: `playMIDI()` does nothing. Upstream reported `play: 1` forever.
   - `playMIDI()` on a finished song starts a new pass at the song's initial tempo and channel state, as `locateMIDI(0)` does. Upstream replayed the opening at the tempo the song ended on. Notes still sounding from the previous pass are not cut.
   - `locateMIDI(tick)` rebuilds tempo and channel state from the song up to `tick`: programs, controllers, bend and bend range, RPN and SysEx tuning. A seek gives the same result whatever happened before. Upstream kept earlier programs and tempo and replayed only some controllers. Channel changes you made with `setProgram`, `send()` and similar, and controller changes scheduled for later, are replaced. Engine settings (volume, reverb, quality, voices, loop, `loopEnd`, timbres) are kept. Seeking with no song loaded does nothing.
-- An instance can start from a user gesture and release everything it uses: the constructor options `context`, `destination` and `lazy`, `resume()` and `dispose()` are new (see [Functions](#functions)). `setAudioContext()` now stops and disconnects the previous graph, and closes the previous context if the synth created it. Ended voices are disconnected, `stopMIDI()` and `locateMIDI()` also stop drum hits scheduled ahead, `send()` no longer leaves unhandled promise rejections, and on an `OfflineAudioContext`, `playMIDI()` throws an `Error` with `code` `AUDIO_CONTEXT_OFFLINE` (schedule notes with explicit times instead). Upstream kept every context, graph and timer alive.
+- `stopMIDI()` now also stops drums and queued controller changes: every drum hit, sounding or already scheduled, stops, and channel volume, pan and modulation changes scheduled for later are cancelled. A seek (`locateMIDI()`) stops the same way. Upstream let drum hits scheduled up to 0.2 s ahead, and queued controller changes, play on after a stop.
+- An instance can start from a user gesture and release everything it uses: the constructor options `context`, `destination` and `lazy`, `resume()` and `dispose()` are new (see [Functions](#functions)). `setAudioContext()` now stops and disconnects the previous graph, and closes the previous context if the synth created it. Ended voices are disconnected, `send()` no longer leaves unhandled promise rejections, and on an `OfflineAudioContext`, `playMIDI()` throws an `Error` with `code` `AUDIO_CONTEXT_OFFLINE` (schedule notes with explicit times instead). Upstream kept every context, graph and timer alive.
 
 **What is added:** the `loopEnd` property and `setLoopEnd(ticks)`. When looping, each pass can start on a bar boundary instead of on the song's last event (see `setLoopEnd()` below). Unset, looping works exactly as upstream.
 
@@ -193,7 +194,7 @@ Settings are changed with the functions below (`setMasterVol()`, `setReverbLev()
 > play loaded MIDI data. On a finished song, starts again from the beginning at the song's initial tempo and channel state. Does nothing for a song with no playable events.
 
 **stopMIDI()**
-> stop playing MIDI data.
+> stop playing MIDI data. Every sounding or scheduled note and drum hit stops, and channel volume, pan and modulation changes scheduled for later are cancelled.
 
 **locateMIDI(tick)**
 > locate current playing position in tick. Playback resumes at the first event at or after `tick`. Tempo and channel state are rebuilt from the song up to `tick`, replacing manual channel changes (see [What behaves differently](#about-this-fork)).
