@@ -132,3 +132,7 @@ Inputs: `tasks/T9A.md` §7, and the T0 embedding evidence.
 6. **Editor scope.** No editor support for #26 waves, #27 filters or a patch-import path. Those features are documented only (#19/#20 do not require them).
 7. **AGENTS.md.** It is user-owned and untracked, so it stays unmodified. T9 may add tracked contribution guidance (T9-15), and the §5 proposals go to the user at delivery.
 8. **Firefox and WebKit gesture behavior** belongs to T6's matrix.
+
+## D-012 Visible provider heading on every review comment (2026-10-02)
+
+The user observed that PR #28's clean Claude comment showed a bare `lgtm`, with the provider and model only in hidden HTML metadata (`review_lib.render_comment`). Decision: every review comment, including a clean one, starts with a visible heading of the form "**Provider review** · model `…` · effort `…` · head `…`", rendered from the result record (no literals). This deliberately departs from the github-ci skill's "visible body only `lgtm`" convention for comments. The model-output contract is unchanged: a complete clean review's output is exactly `lgtm`, and the gate reads parsed result records, never comment text. Affects T1-ai-review (#25).
