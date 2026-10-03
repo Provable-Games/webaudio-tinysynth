@@ -71,7 +71,7 @@ jobs:
         if: matrix.engine == 'firefox'
         run: |
           sudo apt-get install -y --no-install-recommends pulseaudio pulseaudio-utils
-          pulseaudio --daemonize=yes --exit-idle-time=-1
+          pulseaudio --start --exit-idle-time=-1
           pactl load-module module-null-sink sink_name=t6null
           pactl set-default-sink t6null
           pactl info
