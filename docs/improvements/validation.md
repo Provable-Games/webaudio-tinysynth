@@ -127,3 +127,35 @@ Against T0 (37,060 / 9,444, `5aa3edbc…`), min.js is −688 bytes raw and −22
   The supervisor will verify these after integration.
 - **Claude probes were local.** They used the pinned CLI directly with the production arguments, not the base action's SDK path. On that CLI path, the configured effort now has independent evidence: requests carried `output_config.effort: "medium"` (`logs/c2-effort-probe.log`). Delivery through the SDK remains verified from code only.
 - **Unchanged limitations.** The gates are still not required checks (D-002), and the local host is x86_64.
+
+### Final remote verification (`f01ca19`, PR #30)
+
+Details: [tasks/G0-review.md, "Final remote verification"](tasks/G0-review.md#final-remote-verification-improveintegration-f01ca19-pr-30). Logs: `_evidence/g0-review/final/`.
+
+| Run | Workflow | Head | Event | Conclusion |
+| --- | --- | --- | --- | --- |
+| 37095012463 | CI | `4fd9218` (base `f01ca19`) | pull_request | success: lint, build-verify (`782e9b92…`), test (30/30, 33/33, 3/3), browser-smoke (2/2) on `ubuntu-24.04-arm` |
+| 37095012467 | Review Helpers | `4fd9218` | pull_request | success |
+| 37095012532 | Claude Review | `4fd9218` | pull_request | success: trusted base configuration (`bootstrap=false`), empty working directory, presets, fingerprint verified, `lgtm` |
+| 37095012496 | Codex Review | `4fd9218` | pull_request | success: trusted base configuration; network probe "unsandboxed curl exit 0, sandboxed curl exit 6"; `lgtm` |
+| 37095314202 | Claude Review | `4fd9218` | pull_request (title-only edit) | skipped; the skipped gate is named by the raw expression; `Claude review gate` keeps its earlier `success` |
+| 37095314174 | Codex Review | `4fd9218` | pull_request (title-only edit) | skipped; same, for `Codex review gate` |
+
+**Secrets.** Only masked values (`***`) appear. A token-pattern scan of all final run and job logs found 0 matches.
+
+**Local re-check at `f01ca19`.**
+- `npm ci`, `verify` and `test:regression`: exit 0.
+- Helper tests: 71 OK (1 opt-in skipped).
+- C2-L2 breakage (one fixture renamed): now exit 1.
+- C2-L1 probes: now `incomplete`, and the gate fails.
+
+**Artifact.** `webaudio-tinysynth.min.js` is 36,372 bytes / 9,422 gzip, sha256 `782e9b92a8f26f383fc0f8830a6a1e5d4e7dce2d0ab23bf29ab48e06814301b2`. Against T0 (37,060 / 9,444, `5aa3edbc…`) that is −688 bytes raw and −22 bytes gzip.
+
+**Remaining limitations after G0.**
+- **Base-change retarget not exercised live.** A real `edited` event with `changes.base` has not run, so the full re-review against a new base is verified from the workflow text and helper tests only.
+- **No live cancellation test.** The title edit happened after the reviews finished, so the guarantee that a metadata edit cannot cancel a running review rests on the separate `-metadata` concurrency group in the workflow text.
+- **Dependabot not exercised.** No Dependabot PR has run; the explicit gate failure is covered by helper tests only.
+- **Codex token rotation not tested.** Expiry or rotation of the ChatGPT-mode credential over time is untested. A failure is fail-closed, with an actionable message.
+- **Gates not required.** `Codex review gate`, `Claude review gate` and the CI jobs are not required checks yet. That ruleset change needs user authorization (D-002); until then a red gate does not block merging.
+- **M2 residual (accepted).** Codex's read-only sandbox can read `auth.json`. The output guard covers literal, escaped, reversed, hex and base64 forms, but not partial, base32 or split copies.
+- **Lightweight trusted-path review.** The trusted-path review was of a records-only diff (2 files). No trusted-path run has yet reviewed a code change.

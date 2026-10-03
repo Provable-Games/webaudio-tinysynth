@@ -403,3 +403,57 @@ Known limit, not a finding: the floors count tests, so swapping a real test file
 | 37093930878 | Review Helpers | `d5b9d95` | success, with actionlint now on all workflows |
 
 No remote run has exercised the integrated tree `5cdeb49`, the non-bootstrap path, the empty Claude working directory, the new Codex network probe, or an `edited` event. The supervisor has these after integration.
+
+## Final remote verification (`improve/integration` `f01ca19`, PR #30)
+
+| Item | Value |
+| --- | --- |
+| Integrated tip | `f01ca19e64be248777c1a9cd86e1734a6243fa6f` = T1 tooling up to `d463bc6` + T1 AI review up to `ebd30e9` + this record `3880f01`. Library, distribution, `package.json`, lockfile and workflows are byte-unchanged from candidate 2. |
+| Verification PR | #30, `g0/verify` head `4fd92186c2e139bd338888754274a4cabf627bb1`, base `f01ca19` (records only: `contracts.md`, `status.md`) |
+| Evidence | `_evidence/g0-review/final/`: run logs, matrix job logs, `check-runs.tsv`, `pr30-comments.json` |
+
+### F.1 The four items no earlier run had reached
+
+1. **Trusted configuration from the base, no bootstrap.** Both runs (Claude 37095012532, Codex 37095012496) chose `config_sha=$BASE_SHA` with `bootstrap=false`. Every trusted checkout used `ref: f01ca19…`. Setup logged "configuration from the base revision". The Codex prompt states "Review configuration: base revision f01ca19…". The comments carry no BOOTSTRAP notice.
+2. **Claude in an empty working directory, with `--add-dir`, the presets and the fingerprint** (job 111123086722):
+   - The action logged "Changing directory to CLAUDE_WORKING_DIR: /home/runner/work/_temp/claude-cwd".
+   - `INPUT_CLAUDE_ARGS` was `--model claude-opus-5-5 --effort medium --restricted --setting-sources user --strict-mcp-config --permission-mode dontAsk --tools Read,Glob,Grep --allowedTools Read,Glob,Grep --add-dir …/src --add-dir /home/runner/work/_temp/review/context`.
+   - The SDK options showed model `claude-opus-5-5`, `additionalDirectories` [checkout, context] and `settingSources: ["user"]`.
+   - The step environment carried `ANTHROPIC_MODEL: claude-opus-5-5`, `CLAUDE_CODE_EFFORT_LEVEL:` (empty), `CLAUDE_CONFIG_DIR: /home/runner/.claude`, `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: 0`, and empty `HTTPS_PROXY`, `NODE_OPTIONS` and `BUN_OPTIONS`. The init model was `claude-opus-5-5`.
+   - The fingerprint check passed: digest `c2143417…`, no integrity error.
+   - The result step passed `WORKDIR=/home/runner/work/_temp/claude-cwd`, the action's `EXECUTION_FILE` and `SESSION_ID`, and recorded `claude/tinysynth: complete`. The init `cwd`, session, tool set and model checks therefore all passed.
+   - Effort `medium` reached the action input. Its arrival at the API is shown on the CLI path by my stub probe (C2.3); the action hides it in its log.
+3. **Codex network control probe on ARM** (job 111123084798, `ubuntu-24.04-arm`, aarch64): "Network probe: unsandboxed curl exit 0, sandboxed curl exit 6". The control request reached the network and the sandboxed one could not resolve the host. The fingerprint check passed with the same digest. The CLI header showed `model: gpt-6.1-sol`, `reasoning effort: high`, `sandbox: read-only`.
+4. **Gate naming on an edited PR.** After a title-only edit, runs 37095314202 (Claude) and 37095314174 (Codex) completed as `skipped`.
+   - The skipped gates' check runs are named by the raw expression `github.event.action == 'edited' && … || 'Codex review gate'` (and the Claude equivalent), not by the required names.
+   - On head `4fd9218`, `Codex review gate` and `Claude review gate` remain the single `success` check runs from the real runs, at 04:00:46 and 04:00:28.
+   - The edit came after those runs had finished, so a cancellation of a running review was not exercised live. The separate `-metadata` concurrency group is verified from the workflow text only.
+
+**Outcomes.**
+- Both reviews published `lgtm` under the D-012 heading (`**Claude review** · model `claude-opus-5-5` · effort `medium` · head `4fd92186c2e1``; Codex equivalent with `gpt-6.1-sol`, `high`), and both gates passed.
+- CI 37095012463 passed on ARM: verify (`782e9b92…`), `pack:check`, unit 30/30, node 33/33, regressions 3 of 3, smoke 2 of 2. Review Helpers 37095012467 passed.
+
+**Secrets.** Secret values appear only as `***` (`CODEX_AUTH_DOT_JSON`, `CLAUDE_CODE_OAUTH_TOKEN`, `claude_code_oauth_token`, `GH_TOKEN`). A pattern scan of all six run logs and both matrix job logs (Anthropic keys, JWTs, `access_token`/`refresh_token` values, GitHub tokens, Basic and Bearer headers) found 0 matches.
+
+### F.2 Fix review
+
+- **C2-L1, fixed** (`t1/ai-review` `d5b9d95..ebd30e9`).
+  - A preamble that names a severity word, in any letter case, or a `path:line`-style location now makes the output malformed (`PREAMBLE_CONTENT_RE`). A discarded preamble is stored as `discarded_text` and published in a collapsed block after the findings.
+  - My earlier probes at `f01ca19`: "Severity HIGH: … (not formatted below)" + LOW and "HIGH severity: file:600" + LOW are now `incomplete`, and the gate fails. A benign three-line preamble with LOW still passes with a warning. A preamble before a HIGH finding still blocks. Every `lgtm`-with-prose case remains `incomplete`.
+  - Remaining by design: severity prose written as a lazy continuation of a field is accepted as field text. It is published, but not gated.
+- **C2-L2, fixed** (`t1/tooling` `8a127dd..d463bc6`). `differential.js` requires the eight baseline fixtures, and new `.mid` files are still compared. Re-running my breakage (renaming one fixture to `.bak`) now exits 1 with "missing MIDI fixture(s): test-midi/test-rpn-fine-tuning.mid".
+- **Local re-check at `f01ca19`.** `npm ci`, `verify` and `test:regression` (3 of 3) exit 0. Helper tests: 71 OK, 1 opt-in skipped.
+
+### F.3 Final verdicts
+
+| Issue | Verdict |
+| --- | --- |
+| #5 | **Accept** |
+| #15 | **Accept** |
+| #16, initial scope | **Accept** |
+| #22 | **Accept** |
+| #23 | **Accept** |
+| #24 | **Accept** (C2-L2 fixed) |
+| #25 | **Accept** (H1, M1, M3, L1–L7 and C2-L1 fixed and the trusted path verified remotely). Accepted residual: M2 (Codex can read `auth.json` in its sandbox; the leak guard misses partial, base32 and split copies), documented in T1 §8. |
+
+Nothing blocks G0. Operational items outside this review: making the gates required checks needs user authorization (D-002), and the open limitations are listed in validation.md.
