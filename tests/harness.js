@@ -34,7 +34,11 @@ function sha256(buf) {
 function upstreamSource() {
   let src;
   if (process.env.TINYSYNTH_REFERENCE) {
-    src = fs.readFileSync(process.env.TINYSYNTH_REFERENCE);
+    try {
+      src = fs.readFileSync(process.env.TINYSYNTH_REFERENCE);
+    } catch (e) {
+      fail("cannot read TINYSYNTH_REFERENCE=" + process.env.TINYSYNTH_REFERENCE + " (" + e.message + ")");
+    }
   } else {
     try {
       src = execFileSync("git", ["show", UPSTREAM_COMMIT + ":webaudio-tinysynth.js"],
