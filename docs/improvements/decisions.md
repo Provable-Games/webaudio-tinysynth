@@ -259,3 +259,9 @@ The T7 refactor will move these internals. The fork therefore provides public be
 3. **Pass start time (T3.1, additive).** `getPlayStatus()` gains `startTime`: the AudioContext time at which tick 0 of the current pass sounds. It updates at each wrap and is `null` when stopped or when nothing is loaded. This is a public replacement for reading `playTime`.
 
 T3.1 is dispatched after T4 integrates, in parallel with T5. Integration SHAs sent to the consumer must call out any change to these behaviors or to the internals they touch until the consumer has switched.
+
+## D-024 The consumer's size metric is gzip, with no engine size budget (2026-10-03)
+
+The consumer adopted `improve/integration` `4b29ff1` (min.js `b49e8ceb…`) as an interim pin on its main (onchain-tinysynth PR #24, page version `tinysynth-4b29ff1+page.6`), with no class declaration against it. Its player embeds the engine gzipped (fflate level 9), so the relevant onchain size metric is the min.js `gzip -9` size, not the raw size. This corrects the "onchain pays raw bytes" reasoning used at T2 (D-016 context).
+
+Measured by the consumer: gzip went from 9,444 B (T0) to 9,948 B (+5.3 %, just over the 5 % review trigger). That costs about 0.3M L2 gas on a full Beast `token_uri` (286.2M to 286.5M, against a 1B budget). The consumer states it has no engine size budget. The supervisor keeps reporting cumulative raw and gzip growth against T0 at each gate, treats the 5 % trigger as a review prompt rather than a limit, and prefers gzip-efficient choices when two options are otherwise equal.
