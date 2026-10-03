@@ -4,15 +4,13 @@
 <meta charset="utf-8">
 <script src="./webaudio-tinysynth.js"></script>
 <script src="./bower_components/webaudio-controls/webaudio-controls.js"></script>
-<link href="https://fonts.googleapis.com/css?family=Audiowide" rel="stylesheet">
-<link href="https://fonts.googleapis.com/css?family=Roboto+Condensed" rel="stylesheet">
 <style>
 #soundeditor{
   display:none;
 }
 body{
   background:#ddf;
-  font-family: 'Roboto Condensed', sans-serif;
+  font-family: 'Roboto Condensed', 'Arial Narrow', sans-serif;
 }
 a{
   color:#fff;
@@ -30,7 +28,7 @@ a{
 h1{
   margin:0px 0px;
   font-weight: 300;
-  font-family: 'Audiowide', cursive;
+  font-family: 'Audiowide', sans-serif;
 }
 #base {
     width:1000px;
@@ -362,7 +360,7 @@ The demo on this page is based on webauido-tinysynth, and you can do the followi
 <hr/>
 </div>
 <div id="container">
-<p style="font-family:AudioWide">WebAudio-TinySynth : GM Synth / MIDI Player</p>
+<p style="font-family:'Audiowide', sans-serif">WebAudio-TinySynth : GM Synth / MIDI Player</p>
 <table>
 <tr>
   <td><button onclick="synth.playMIDI()">Play</button> <button onclick="synth.stopMIDI()">Stop</button><br/><span id="status"></span></td>
