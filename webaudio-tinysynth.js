@@ -601,7 +601,7 @@ function WebAudioTinySynthCore(target) {
       xhr.open("GET",url,true);
       xhr.responseType="arraybuffer";
       xhr.loadMIDI=this.loadMIDI.bind(this);
-      xhr.onload=function(e){
+      xhr.onload=function(){
         if(this.status==200){
           this.loadMIDI(this.response);
         }
@@ -692,7 +692,7 @@ function WebAudioTinySynthCore(target) {
             datalen+=len+1;
             break;
           case 0xff:
-            var len = Delta(s, i + 2);
+            len = Delta(s, i + 2);
             datastart = 2+datalen;
             datalen = len+datalen+2;
             switch(s[i+1]) {
@@ -719,12 +719,12 @@ function WebAudioTinySynthCore(target) {
       this.stopMIDI();
       var s=new Uint8Array(data);
       var datalen = 0, datastart = 0, runst = 0x90;
-      var idx = 0;
+      var idx;
       var hd = s.slice(0,  4);
       if(hd.toString()!="77,84,104,100")  //MThd
         return;
       var len = Get4(s, 4);
-      var fmt = Get2(s, 8);
+      var fmt = Get2(s, 8); // eslint-disable-line no-unused-vars -- read but not yet validated (#4)
       var numtrk = Get2(s, 10);
       this.maxTick=0;
       var tb = Get2(s, 12)*4;
@@ -775,6 +775,7 @@ function WebAudioTinySynthCore(target) {
       function filldef(p){
         for(n=0;n<p.length;++n){
           for(let k in defp){
+            // eslint-disable-next-line no-prototype-builtins -- legacy timbre filling; validation is reworked in #13
             if(!p[n].hasOwnProperty(k) || typeof(p[n][k])=="undefined")
               p[n][k]=defp[k];
           }
@@ -800,12 +801,12 @@ function WebAudioTinySynthCore(target) {
         if(nt.o[k].detune) {
           try {
             this.chmod[nt.ch].disconnect(nt.o[k].detune);
-          } catch (e) {}
+          } catch (e) { /* the detune input is not connected: nothing to disconnect */ }
         }
         nt.g[k].gain.value = 0;
       }
     },
-    _limitVoices:(ch,n)=>{
+    _limitVoices:(ch,n)=>{ // eslint-disable-line no-unused-vars -- callers pass the new note; the limit is global
       this.notetab.sort(function(n1,n2){
         if(n1.f!=n2.f) return n1.f-n2.f;
         if(n1.e!=n2.e) return n2.e-n1.e;
@@ -884,7 +885,7 @@ function WebAudioTinySynthCore(target) {
             try {
               if (o[i].detune) this.chmod[ch].disconnect(o[i].detune);
             }
-            catch(e){}
+            catch(e){ /* the detune input is not connected: nothing to disconnect */ }
           };
           o[i].stop(t+p[0].d*this.releaseRatio);
         }

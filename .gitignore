@@ -1,5 +1,4 @@
 .vscode/
-package-lock.json
 
 # Windows image file caches
 Thumbs.db

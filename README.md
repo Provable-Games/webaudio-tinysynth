@@ -19,7 +19,7 @@ This is [g200kg/webaudio-tinysynth](https://github.com/g200kg/webaudio-tinysynth
 
 **What is unchanged:** `new WebAudioTinySynth(options)`, every upstream function documented below, and the CommonJS / AMD / `window.WebAudioTinySynth` exports.
 
-**Tests:** `npm test` plays every MIDI file in this repository through upstream's file (with the tempo change above applied, and nothing else) and through this one, against a mock WebAudio, and checks that both make exactly the same calls. It also checks note timing at fractional tempos (`tests/tempo.js`) and `loopEnd` looping (`tests/loop-end.js`).
+**Tests:** `npm test` runs the unit tests, the native Node tests and the regression scripts. The differential regression plays every MIDI file in this repository through upstream's file (with the tempo change above applied, and nothing else) and through this one, against a mock WebAudio, and checks that both make exactly the same calls. The others check note timing at fractional tempos (`tests/tempo.js`) and `loopEnd` looping (`tests/loop-end.js`). See [Development](#development) for every command.
 
 **Usage:**
 ```html
@@ -315,6 +315,38 @@ Each element of the array means a oscillator and object member means :
 * k: volume key tracking factor
 
 You can test how these parameter work with 'Timbre Editor' panel in 'soundedit.html'.  And the created timbre can be used with `setTimbre()` function.
+
+## Development
+
+Use Node 24.21.0 (`.nvmrc`), which comes with npm 11.19.0, and install the locked development tools with `npm ci`. The library itself has no dependencies.
+
+| Command | What it does |
+| --- | --- |
+| `npm run lint` | ESLint with the recommended rules (`eslint.config.mjs`). |
+| `npm run build` | Minifies `webaudio-tinysynth.js` into `webaudio-tinysynth.min.js` and its source map with the pinned Terser. Every option is in `scripts/build.js`. |
+| `npm run verify` | Rebuilds into a temporary directory and fails if the committed `webaudio-tinysynth.min.js` or its map differ. Also fails if the minified file or the source contains `</script`, `<script` or `<!--` in any letter case, or a non-ASCII byte. Prints sizes and SHA-256. |
+| `npm run size` | Raw size, gzip size and SHA-256 of the source, the minified file and the map. |
+| `npm run pack:check` | Checks the files `npm pack` would publish, installs the tarball in a scratch project outside the repository and `require()`s it there. |
+| `npm test` | `test:unit`, `test:node` and `test:regression`, in that order. It stops at the first failing suite. |
+| `npm run test:unit` | Vitest unit tests, `tests/unit/**/*.test.mjs`. |
+| `npm run test:node` | `node:test` tests, `tests/node/**/*.test.cjs`, killed after 600 s. |
+| `npm run test:regression` | `tests/differential.js`, `tests/tempo.js` and `tests/loop-end.js`, each killed after 300 s. |
+| `npm run test:browser` | Offline smoke test of both builds in headless Chromium. Install the browser first with `npx playwright-core install --with-deps --only-shell chromium`. A missing browser fails the test. Chromium runs with autoplay allowed, so the test does not show that audio starts after a user gesture. |
+
+- The regressions compare against upstream commit `3d75aee`, read from git history. Clone with full history (a shallow clone fails), or set `TINYSYNTH_REFERENCE` to upstream's `webaudio-tinysynth.js` at that commit.
+- Never edit `webaudio-tinysynth.min.js` or its map by hand. After changing the source, run `npm run build` and commit both files. CI fails if they differ from a fresh build.
+- The test commands use POSIX process groups to stop hung tests, so they run on Linux and macOS.
+- CI (`.github/workflows/ci.yml`) runs the `lint`, `build-verify`, `test` and `browser-smoke` jobs on pull requests and on pushes to `main`.
+
+## Verifying the minified build
+
+The onchain player embeds the exact bytes of `webaudio-tinysynth.min.js` and publishes their SHA-256. To check that a copy was built from this source:
+
+1. Check out the commit with full history and LF line endings (on Windows, `git clone -c core.autocrlf=false`), use the Node version in `.nvmrc`, and run `npm ci`.
+2. Run `npm run verify`. It rebuilds the minified file and its map with the pinned Terser, requires both to equal the committed files byte for byte, and prints their SHA-256.
+3. Hash your copy (`sha256sum webaudio-tinysynth.min.js`, or `shasum -a 256` on macOS) and compare.
+
+The minified file starts with the source's license header and has no `sourceMappingURL` comment; to debug it, load `webaudio-tinysynth.min.js.map` next to it. Minification renames local variables only: the class, its methods, options and properties keep their names.
 
 ## License
 
