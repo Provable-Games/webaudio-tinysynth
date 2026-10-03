@@ -119,3 +119,16 @@ Inputs: the T0 consumer mapping (`tasks/T0.md` §7, Q1–Q16) and `onchain-tinys
 | Q16 Startup | #12 (T4): constructor context injection and an additive lazy/explicit start for tap-to-start pages. | engine T4 |
 
 T0 also measured mangling at 35,964 / 9,199 bytes (raw / gzip), against 37,060 / 9,444 at baseline: −3.0 % raw and −2.6 % gzip. T1 evaluates enabling it under #5.
+
+## D-011 T9A audit outcomes (2026-10-02)
+
+Inputs: `tasks/T9A.md` §7, and the T0 embedding evidence.
+
+1. **Gesture reconciliation, accepted.** T0's offline embedding check (`setContent`/`data:` pages under the smoke's flags) shows that the script and MIDI load and run with zero requests. It does not show normal gesture startup. At an `http://127.0.0.1` origin under the default autoplay policy the context stays `suspended` until a real gesture, and `page.evaluate` itself confers user activation. T6's #12 gesture tests must deliver a real input event (`page.click`/keyboard) before any `evaluate` touches audio, and must assert the suspended state first. README usage (T9) must start audio from a gesture (#12's `resume()`).
+2. **Vendoring location: option A.** Keep the path `bower_components/webaudio-controls/webaudio-controls.js`, vendored at upstream `282610a` (byte-identical to what the demos load today, sha256 recorded in T9A), and delete the unused Polymer 1 files. This is #19 scope: the AGENTS.md "avoid unrelated edits" note does not apply to #19's own vendoring.
+3. **Editor and `setTimbre`.** T5's assignment must keep the soundedit round trip working (#13 acceptance). T5 states whether unknown keys (`b`, `c`) and placeholder operators are accepted or stripped, and how the editor re-applies patches after `setQuality()`. T9 adapts the editor to that contract.
+4. **Attribution in the minified build.** The user's kickoff requirement is to "preserve licensing, NOTICE, and upstream attribution", and the baseline min.js carries no attribution string. Lean: keep a short `/*! … */` attribution header in the minified output, about 150 bytes, a one-time hash change before any release. Final decision at G0 using T1's measurement.
+5. **Package name and version.** `webaudio-tinysynth@1.1.4` collides with upstream on npm. This is a release and publication decision for the user and is not blocking. P1 (the fork's repository, bugs and homepage URLs) can land through the package owner.
+6. **Editor scope.** No editor support for #26 waves, #27 filters or a patch-import path. Those features are documented only (#19/#20 do not require them).
+7. **AGENTS.md.** It is user-owned and untracked, so it stays unmodified. T9 may add tracked contribution guidance (T9-15), and the §5 proposals go to the user at delivery.
+8. **Firefox and WebKit gesture behavior** belongs to T6's matrix.
