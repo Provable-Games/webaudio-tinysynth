@@ -34,6 +34,7 @@ const MATRIX = {
     waves: { kind: "assert", dims: ["build", "quality", "sampleRate"], about: "T11 (#26): setSampleWave/setHarmonicWave offline renders: held tables, pitch, steps and edges, pitch envelope, FM, harmonics, registry lifecycle, consumer fixture" },
     hang: { kind: "observe", dims: ["build"], about: "external deadlines on real hangs (#4 truncated file, #8 zero-duration loop)" },
     variation: { kind: "observe", dims: [], about: "source build: run-to-run variation across launches and seeds, scheduler effect, generated buffer hashes (tolerance evidence)" },
+    filters: { kind: "assert", dims: ["build", "sampleRate"], about: "T12 (#27): fixed operator filters: getFrequencyResponse and rendered tone probes against an independent RBJ biquad (Q in dB and linear, key tracking, the 0.45 x SR clamp, drums), the consumer fixture's band energies, and release of every filter connection on the instrumented graph (steals, drums, stopMIDI, all-sound-off, replacement, dispose)" },
   },
 };
 
