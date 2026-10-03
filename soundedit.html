@@ -81,6 +81,7 @@ var synth, kb;
 var held={};
 var sustainCh=-1;       // the channel the sustain pedal was sent to, or -1
 var shiftSustain=false; // sustain is held by the Shift key rather than the checkbox
+var midiSustain={};     // channels whose sustain pedal the MIDI input holds down
 function Init(){
   InitMidi();
   synth=new WebAudioTinySynth({quality:1});
@@ -129,7 +130,8 @@ function NoteOff(key){
     kb.setNote(0,h.disp);
 }
 /* Releases the notes whose input key starts with prefix (all notes without
-   one), and the Shift sustain when everything is released. */
+   one), the MIDI input's sustain pedal with its notes, and the Shift sustain
+   when everything is released. */
 function ReleaseAll(prefix){
   prefix=prefix||"";
   if(prefix==""||prefix=="kb"){
@@ -142,6 +144,13 @@ function ReleaseAll(prefix){
   for(var key in held){
     if(key.indexOf(prefix)==0)
       NoteOff(key);
+  }
+  if(prefix==""||prefix=="midi"){
+    for(var ch in midiSustain){
+      delete midiSustain[ch];
+      if(+ch!=sustainCh)  // the page's own pedal (checkbox or Shift) keeps that channel sustained
+        synth.send([0xb0+(+ch),64,0],0);
+    }
   }
   if(prefix==""&&shiftSustain){
     shiftSustain=false;
@@ -192,6 +201,12 @@ function MidiIn(e){
       NoteOff(key);
     return;
   }
+  if(cmd==0xb0&&d[1]==64){
+    if(d[2]>=64)
+      midiSustain[ch]=1;
+    else
+      delete midiSustain[ch];
+  }
   synth.send(Array.prototype.slice.call(d),0);
 }
 function SelectMidi(n){
@@ -235,21 +250,34 @@ function UpdateMidiPorts(){
   });
   var same=ports.length==midiPort.length&&ports.every(function(p,i){return p.id==midiPort[i].id;});
   if(!same){
-    var prev=currentPort>=0?midiPort[currentPort].id:null;
-    SelectMidi(-1);
+    var prev=currentPort>=0?midiPort[currentPort]:null;
+    var keep=-1;
+    ports.forEach(function(p,i){
+      if(prev&&p.id==prev.id)
+        keep=i;
+    });
+    if(keep<0)
+      SelectMidi(-1);   // the selected input is gone: detach it and release its notes
     midiPort=ports;
     var sel=document.getElementById("midiport");
     while(sel.options.length>1)
       sel.remove(1);
-    var n=ports.length?0:-1;
-    ports.forEach(function(p,i){
+    ports.forEach(function(p){
       var o=document.createElement("option");
       o.textContent=p.name;
       sel.appendChild(o);
-      if(p.id==prev)
-        n=i;
     });
-    SelectMidi(n);
+    if(keep>=0){
+      // The selected input is still connected: keep listening and keep its held notes.
+      if(ports[keep]!==prev){
+        prev.removeEventListener("midimessage",MidiIn);
+        ports[keep].addEventListener("midimessage",MidiIn);
+      }
+      currentPort=keep;
+      sel.selectedIndex=keep+1;
+    }
+    else
+      SelectMidi(ports.length?0:-1);
   }
   if(ports.length)
     MidiStatus(ports.length+" MIDI input"+(ports.length>1?"s":"")+" connected.");

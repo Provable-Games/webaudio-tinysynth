@@ -595,6 +595,54 @@ function soundeditReleaseCase() {
           release: () => p.evaluate(() => window.__fakeMidi.remove("in-1")), // eslint-disable-line no-undef -- runs in the page
         });
       }
+      /* eslint-disable no-undef -- these callbacks run in the page */
+      {
+        const rec = await open("one"), p = rec.page;
+        await p.waitForFunction(() => document.getElementById("midiport").options.length === 2);
+        const midi = (bytes) => p.evaluate((b) => window.__fakeMidi.send("in-1", b), bytes);
+        const selected = () => p.evaluate(() => ({ index: document.getElementById("midiport").selectedIndex, current: currentPort }));
+        await scenario(t, rec, "MIDI input: another input connected and removed while a note is held", {
+          press: () => midi([0x90, 65, 90]), sounding: "0:65",
+          release: async () => {
+            await p.evaluate(() => window.__fakeMidi.add("in-2", "Fake keyboard 2"));
+            await waitText(p, "midistatus", /^2 MIDI inputs connected\.$/);
+            const plugged = await p.evaluate(HELD);
+            await p.evaluate(() => window.__fakeMidi.remove("in-2"));
+            await waitText(p, "midistatus", /^1 MIDI input connected\.$/);
+            const unplugged = await p.evaluate(HELD);
+            const sel = await selected();
+            t.check("MIDI input: hot-plug of another input keeps the held note and the selection", plugged.includes("0:65") && unplugged.includes("0:65") && sel.index === 1 && sel.current === 0,
+              JSON.stringify({ plugged, unplugged, sel }));
+            await midi([0x80, 65, 0]);
+          },
+        });
+        await scenario(t, rec, "MIDI input: sustain pedal down, note released, window blur", {
+          press: async () => { await midi([0xb0, 64, 127]); await midi([0x90, 62, 90]); await midi([0x80, 62, 0]); }, sounding: "0:62",
+          release: () => p.evaluate(BLUR),
+        });
+        const pedal1 = await p.evaluate(() => synth.sustain[0]);
+        t.check("MIDI input: the blur released the MIDI sustain pedal", pedal1 < 64, "CC64 " + pedal1);
+        await scenario(t, rec, "MIDI input: sustain pedal down, note released, port disconnected", {
+          press: async () => { await midi([0xb3, 64, 100]); await midi([0x93, 64, 90]); await midi([0x83, 64, 0]); }, sounding: "3:64",
+          release: () => p.evaluate(() => window.__fakeMidi.remove("in-1")),
+        });
+      }
+      {
+        // The latched Sustain checkbox keeps its channel sustained when the MIDI pedal is cleaned up.
+        const rec = await open("one"), p = rec.page;
+        await p.waitForFunction(() => document.getElementById("midiport").options.length === 2);
+        await p.check("#sus");
+        await p.evaluate(() => { window.__fakeMidi.send("in-1", [0xb0, 64, 127]); window.__fakeMidi.send("in-1", [0x90, 60, 90]); window.__fakeMidi.send("in-1", [0x80, 60, 0]); });
+        await p.evaluate(() => window.__fakeMidi.remove("in-1"));
+        await sleep(200);
+        const kept = await p.evaluate(() => ({ held: window.synth.notetab.filter((nt) => nt.e >= 99999).map((nt) => nt.ch + ":" + nt.n), cc: synth.sustain[0] }));
+        t.check("MIDI input: with the Sustain checkbox down, port cleanup leaves the pedal down", kept.cc >= 64 && kept.held.includes("0:60"), JSON.stringify(kept));
+        await p.uncheck("#sus");
+        await sleep(200);
+        const h = await held(p);
+        t.check("MIDI input: unchecking Sustain then releases the note", h.voices.length === 0, JSON.stringify(h));
+      }
+      /* eslint-enable no-undef */
     }),
   };
 }
