@@ -23,8 +23,7 @@
   var bytes = new Uint8Array(bin.length);
   for (var i = 0; i < bin.length; ++i) bytes[i] = bin.charCodeAt(i);
   var events = [];
-  var own = null;
-  var synth;
+  var own, synth;
   if (cfg.variant === "lazy-click" || cfg.variant === "lazy-key") {
     synth = new WebAudioTinySynth({ quality: 1, lazy: true });
   } else if (cfg.variant === "inject-click" || cfg.variant === "closed-click") {
