@@ -27,7 +27,6 @@
   },
   "homepage": "https://github.com/g200kg/webaudio-tinysynth#readme",
   "devDependencies": {
-    "node-minify": "^3.6.0",
     "terser": "^5.14.0"
   },
   "dependencies": {}
