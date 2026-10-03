@@ -204,6 +204,14 @@ Phase A of T6 on `t6/validation` (base `25d2a3d`). Record: [tasks/T6.md](tasks/T
   - `--seed=0` is kept.
 - **WebKit glitches.** Occasional non-reproducible WebKit render differences (up to 0.56; cause not isolated) are reconciled by re-render and recorded, while a reproducible difference still fails ([tasks/T6.md §15](tasks/T6.md#15-review-round-1-pr-33)).
 
+### Phase A.1
+
+- **Pitch isolation.** Every note measured for pitch, tuning, bend or vibrato is now rendered alone, and its window must carry the note's own energy. Before, a silenced sawtooth passed in Firefox on the previous note's tail; now it fails.
+- **Cleanup.** Contexts and browsers created after a case ends are closed, and the abandoned run cannot continue.
+- **Records.** [tasks/T6.md §16](tasks/T6.md#16-phase-a1) records:
+  - the GM 119/125 short-note silence (upstream behavior, identical at `3d75aee`);
+  - the WebKit re-render policy.
+
 ### Pending
 
 - **Manual listening is pending.** The steps are in [tasks/T6.md §12](tasks/T6.md#12-manual-listening). No automated listening is claimed.
