@@ -14,10 +14,18 @@ This is [g200kg/webaudio-tinysynth](https://github.com/g200kg/webaudio-tinysynth
 
 **What behaves differently:**
 - MIDI tempo is kept fractional. Upstream rounds the BPM down to a whole number (`Math.floor(60000000 / microsecondsPerQuarter)`), so 455,000 µs per quarter note (131.868 BPM) plays at 131 BPM, 0.66% slow.
+- `loadMIDI` checks the file before installing it, and throws an `Error` when it cannot use it:
+  - an invalid `MThd` header: `SMF_INVALID_HEADER`;
+  - format 2 or an unknown format: `SMF_UNSUPPORTED_FORMAT`;
+  - an SMPTE or zero time division: `SMF_UNSUPPORTED_DIVISION`;
+  - data that ends inside a header, chunk or event, or fewer track chunks than declared: `SMF_TRUNCATED`;
+  - invalid event data: `SMF_MALFORMED`.
+
+  The error has a `code`, an `offset` (byte offset) and, inside a track, a `track` (0-based track chunk index). A failed load changes nothing: the previous song, playback and channel state are kept. Some irregular files still load, as before: a track without End-of-Track that ends on an event boundary, bytes after End-of-Track, or a header that declares no tracks. So a successful load does not prove a file is strictly valid. Upstream returned silently or loaded what it could read, and some truncated files made it hang.
 
 **What is added:** the `loopEnd` property and `setLoopEnd(ticks)`. When looping, each pass can start on a bar boundary instead of on the song's last event (see `setLoopEnd()` below). Unset, looping works exactly as upstream.
 
-**What is unchanged:** `new WebAudioTinySynth(options)`, every upstream function documented below, and the CommonJS / AMD / `window.WebAudioTinySynth` exports.
+**What is unchanged:** `new WebAudioTinySynth(options)`, every upstream function documented below apart from the `loadMIDI` errors above, and the CommonJS / AMD / `window.WebAudioTinySynth` exports.
 
 **Tests:** `npm test` runs the unit tests, the native Node tests and the regression scripts. The differential regression plays every MIDI file in this repository through upstream's file (with the tempo change above applied, and nothing else) and through this one, against a mock WebAudio, and checks that both make exactly the same calls. The others check note timing at fractional tempos (`tests/tempo.js`) and `loopEnd` looping (`tests/loop-end.js`). See [Development](#development) for every command.
 
@@ -156,7 +164,8 @@ Settings are changed with the functions below (`setMasterVol()`, `setReverbLev()
 > set max voices that simultaneous sounds, default is 64.
 
 **loadMIDI(mididata)**
-> load MIDI data to built-in sequencer. mididata is a arraybuffer of SMF (.mid file contents).
+> load MIDI data to built-in sequencer. mididata is a arraybuffer of SMF (.mid file contents).  
+> Throws an `Error` with an `SMF_*` `code` when it cannot parse or does not support the data (see [What behaves differently](#about-this-fork)); the previous song is kept. Some irregular files still load, so it is not a strict validator. Use `try`/`catch` for files you did not create.
 
 **loadMIDIUrl(url)**
 > load MIDI data from specified url
