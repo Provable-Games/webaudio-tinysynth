@@ -237,7 +237,8 @@ function cases(shared) {
               const prefix = s.name + (parity ? "" : " [" + build + "]") + ": ";
               const check = (name, ok, detail) => t.check(prefix + name, ok, detail);
               const chans = res[build].map((r) => r.channels);
-              const m = s.items ? { slots: res[build][0].slots } : s.analyze(chans[0], sr, ...chans.slice(1));
+              const m = s.analyzeItems ? s.analyzeItems(parts[build][0].map((r) => r.channels), sr)
+                : s.items ? { slots: res[build][0].slots } : s.analyze(chans[0], sr, ...chans.slice(1));
               if (build === "source" && t.out) {
                 const pcm = chans[0].length === 1 ? [chans[0][0], chans[0][0]] : chans[0];
                 t.save("renders/" + tag.replace(" ", "-") + "/" + s.name + ".wav", A.wav(pcm, sr));
