@@ -14,9 +14,11 @@
  * currentTime has passed their end, so the render position of each cut
  * depends on wall-clock timing and repeated renders differ (baseline finding,
  * #11/#12; the variation spec records it). spec:
- *   seed        Math.random seed (prelude.js); restarted before construction
- *               and again before setAudioContext(), so the generated buffers
- *               depend only on (seed, sr) and not on the realtime context.
+ *   seed        the library's `seed` constructor option (#7, T8; options.seed
+ *               overrides it), and the Math.random seed (prelude.js), restarted
+ *               before construction and again before setAudioContext(), for
+ *               builds that still draw from Math.random. Either way the
+ *               generated buffers depend only on (seed, sr).
  *   sr, duration, channels (default 2)
  *   options     constructor options, e.g. {quality: 0, useReverb: 0}
  *   masterVol, reverbLev   optional setters, applied after the install
@@ -111,7 +113,7 @@
     }
     var synth;
     try {
-      synth = new WebAudioTinySynth(spec.options || {});
+      synth = new WebAudioTinySynth(Object.assign({ seed: spec.seed }, spec.options));
     } finally {
       window.AudioContext = RealAudioContext;
     }
