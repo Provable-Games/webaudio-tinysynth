@@ -673,15 +673,30 @@ function WebAudioTinySynthCore(target) {
       }
       return new Promise(r=>r(c && close && c.state!="closed" && c.close())).then(()=>{},()=>{});
     },
+    _num:(k,v,hi,i,lo)=>{
+      /* The public numeric contract (#13, D-013): a number, or a non-blank numeric string read
+         with Number(), that is finite, from lo (default 0) to hi, and an integer when i is set.
+         Returns the number. Callers check every argument before changing anything, so a
+         TypeError (not a number) or RangeError (out of range) leaves the synth as it was. */
+      const x=typeof v=="string" && v.trim() ? +v : v;
+      if(typeof x!="number")
+        throw new TypeError(k+" is not a number");
+      if(!(x>=(lo||0) && x<=hi && isFinite(x)) || i && x%1)
+        throw new RangeError(k+" out of range: "+x);
+      return x;
+    },
+    _time:(t)=>t==null ? t : this._num("time",t,1/0), // undefined, null or 0 mean now
+    _ch:(c)=>this._num("channel",c,15,1),
+    _cv:(ch,v,t,k,hi,i)=>[this._ch(ch),this._num(k,v,hi,i),this._time(t)],
     setMasterVol:(v)=>{
       if(v!=undefined)
-        this.masterVol=v;
+        this.masterVol=this._num("masterVol",v,1/0);
       if(this.out)
         this.out.gain.value=this.masterVol;
     },
     setReverbLev:(v)=>{
       if(v!=undefined)
-        this.reverbLev=v;
+        this.reverbLev=this._num("reverbLev",v,1/0);
       var r=parseFloat(this.reverbLev);
       if(this.rev&&!isNaN(r))
         this.rev.gain.value=r*8;
@@ -690,10 +705,10 @@ function WebAudioTinySynthCore(target) {
       this.loop=f;
     },
     setLoopEnd:(t)=>{
-      this.loopEnd=t;
+      this.loopEnd=this._num("loopEnd",t,1/0,1); // whole ticks (D-019 F8)
     },
     setVoices:(v)=>{
-      this.voices=v;
+      this.voices=this._num("voices",v,0xffffffff,1,1);
     },
     getPlayStatus:()=>{
       /* startTime (D-023): the AudioContext time at which tick 0 of the current pass sounds
@@ -736,10 +751,7 @@ function WebAudioTinySynthCore(target) {
         this.playMIDI();
     },
     getTimbreName:(m,n)=>{
-      if(m==0)
-        return this.program[n].name;
-      else
-        return this.drummap[n-35].name;
+      return this._slot(m,n).name;
     },
     loadMIDIfromSrc:()=>{
       this.loadMIDIUrl(this.src);
@@ -989,7 +1001,7 @@ function WebAudioTinySynthCore(target) {
     },
     setQuality:(q)=>{
       if(q!=undefined)
-        this.quality=q;
+        this.quality=this._num("quality",q,1,1);
       for(let i=0;i<128;++i)
         this.setTimbre(0,i,this.program0[i]);
       for(let i=0;i<this.drummap0.length;++i)
@@ -1033,24 +1045,39 @@ function WebAudioTinySynthCore(target) {
         c("fk",o.fk==0 || o.fk==1);
     },
     setTimbre:(m,n,p)=>{
-      for(let i=0;i<p.length;) this._checkFilter(p[i++]); // filter fields (#27), before any change
-      const defp={g:0,w:"sine",t:1,f:0,v:0.5,a:0,h:0.01,d:0.01,s:0,r:0.05,p:1,q:1,k:0};
-      function filldef(p){
-        for(n=0;n<p.length;++n){
-          for(let k in defp){
-            // eslint-disable-next-line no-prototype-builtins -- legacy timbre filling; validation is reworked in #13
-            if(!p[n].hasOwnProperty(k) || typeof(p[n][k])=="undefined")
-              p[n][k]=defp[k];
-          }
-        }
-        return p;
+      /* Install a copy of timbre p (#13, ledger L-09): program n (m 0, n 0-127) or drum n
+         (m 1, n 35-81). p is a non-empty array of operators (_op). Everything is checked
+         before anything changes, and the caller's array and objects are not modified. */
+      const s=this._slot(m,n);
+      if(!Array.isArray(p) || !p.length)
+        throw new TypeError("timbre is not a non-empty array");
+      s.p=Array.from(p,this._op);
+    },
+    _slot:(m,n)=>{
+      return this._num("m",m,1,1) ? this.drummap[this._num("drum",n,81,1,35)-35] : this.program[this._num("program",n,127,1)];
+    },
+    _op:(o,i)=>{
+      /* A normalized copy of operator i. Missing or undefined fields take the defaults below,
+         and other keys are copied and ignored. w is a known wave (_checkWave). g is 0 (output),
+         1-10 (FM into operator g-1) or 11 and up (AM into operator g-11), and that operator
+         comes earlier. a, h, d, r and q (times) are finite and >= 0; t, f, v, s, p and k
+         are finite. */
+      const d={g:0,w:"sine",t:1,f:0,v:0.5,a:0,h:0.01,d:0.01,s:0,r:0.05,p:1,q:1,k:0},e="operator "+i+" ";
+      if(typeof o!="object" || !o)
+        throw new TypeError(e+"is not an object");
+      const c=Object.assign({},o);
+      for(const k in d){
+        if(c[k]===undefined)
+          c[k]=d[k];
+        if(k!="w")
+          c[k]=this._num(e+k,c[k],k=="g" ? 10+i : 1/0,k=="g","ghadrq".includes(k) ? 0 : -1/0);
+        else
+          this._checkWave(c.w); // T11 (#26): built-in, registered or legacy names
       }
-      for(let i=0;i<p.length;++i) // every wave is known before anything changes (#26)
-        this._checkWave(p[i].w);
-      if(m && n>=35 && n<=81)
-        this.drummap[n-35].p=filldef(p);
-      if(m==0 && n>=0 && n<=127)
-        this.program[n].p=filldef(p);
+      if(c.g>i && c.g<11)
+        throw new RangeError(e+"g: "+c.g+" is not an earlier operator");
+      this._checkFilter(c); // T12 (#27): filter fields, on the copy
+      return c;
     },
     _checkWave:(w)=>{
       /* setTimbre's wave check (#26, D-006): an operator's w is undefined (the default, sine), a
@@ -1229,29 +1256,34 @@ function WebAudioTinySynthCore(target) {
       nt.f=1;
     },
     setModulation:(ch,v,t)=>{
+      [ch,v,t]=this._cv(ch,v,t,"value",127);
       if(!this._live())
         return;
       this.chmod[ch].gain.setValueAtTime(this._m[ch]=v*100/127,this._tsConv(t));
     },
     setChVol:(ch,v,t)=>{
+      [ch,v,t]=this._cv(ch,v,t,"value",127);
       if(!this._live())
         return;
       this.vol[ch]=3*v*v/(127*127);
       this.chvol[ch].gain.setValueAtTime(this.vol[ch]*this.ex[ch],this._tsConv(t));
     },
     setPan:(ch,v,t)=>{
+      [ch,v,t]=this._cv(ch,v,t,"value",127);
       if(!this._live())
         return;
       if(this.chpan[ch])
         this.chpan[ch].pan.setValueAtTime(this._p[ch]=(v-64)/64,this._tsConv(t));
     },
     setExpression:(ch,v,t)=>{
+      [ch,v,t]=this._cv(ch,v,t,"value",127);
       if(!this._live())
         return;
       this.ex[ch]=v*v/(127*127);
       this.chvol[ch].gain.setValueAtTime(this.vol[ch]*this.ex[ch],this._tsConv(t));
     },
     setSustain:(ch,v,t)=>{
+      [ch,v,t]=this._cv(ch,v,t,"value",127);
       if(!this._live())
         return;
       this.sustain[ch]=v;
@@ -1265,6 +1297,7 @@ function WebAudioTinySynthCore(target) {
       }
     },
     allSoundOff:(ch)=>{
+      ch=this._ch(ch);
       for(let i=this.notetab.length-1;i>=0;--i){
         const nt=this.notetab[i];
         if(nt.ch==ch){
@@ -1274,6 +1307,7 @@ function WebAudioTinySynthCore(target) {
       }
     },
     resetAllControllers:(ch)=>{
+      ch=this._ch(ch);
       this.bend[ch]=0; this.ex[ch]=1.0;
       this.rpnidx[ch]=0x3fff; this.sustain[ch]=0;
       if(this.chvol[ch]){
@@ -1282,11 +1316,13 @@ function WebAudioTinySynthCore(target) {
       }
     },
     setBendRange:(ch,v)=>{
+      [ch,v]=this._cv(ch,v,0,"bend range",16383);
       if(!this._live())
         return;
       this.brange[ch]=v;
     },
     setProgram:(ch,v)=>{
+      [ch,v]=this._cv(ch,v,0,"program",127,1);
       if(!this._live())
         return;
       if(this.debug)
@@ -1306,6 +1342,7 @@ function WebAudioTinySynthCore(target) {
       return t;
     },
     setBend:(ch,v,t)=>{
+      [ch,v,t]=this._cv(ch,v,t,"bend",16383);
       if(!this._live())
         return;
       t=this._tsConv(t);
@@ -1322,6 +1359,7 @@ function WebAudioTinySynthCore(target) {
       }
     },
     noteOff:(ch,n,t)=>{
+      [ch,n,t]=this._cv(ch,n,t,"note",127,1);
       if(this.rhythm[ch])
         return;
       t=this._tsConv(t);
@@ -1335,6 +1373,8 @@ function WebAudioTinySynthCore(target) {
       }
     },
     noteOn:(ch,n,v,t)=>{
+      [ch,n,t]=this._cv(ch,n,t,"note",127,1);
+      v=this._num("velocity",v,127);
       if(!this._live())
         return;
       if(v==0){
@@ -1353,11 +1393,19 @@ function WebAudioTinySynthCore(target) {
       this.tsmode=tsmode;
     },
     send:(msg,t)=>{    /* send midi message */
-      if(!this._live())
+      /* A message that is too short for its status, has no status byte, or has a data byte
+         that is not a number 0-127 (a SysEx may end with 0xf7) does nothing (#13). A msg that
+         is not an object, or a bad time, throws. */
+      t=this._time(t);
+      if(typeof msg!="object" || !msg)
+        throw new TypeError("msg is not an array");
+      const s=msg[0],ch=s&0xf,cmd=s&~0xf,n=s==0xf0 ? msg.length : cmd==0xc0 || cmd==0xd0 ? 2 : cmd<0xf0 ? 3 : 1;
+      if(typeof s!="number" || !(s>=0x80 && s<0x100) || s%1 || msg.length<n)
         return;
-      const ch=msg[0]&0xf;
-      const cmd=msg[0]&~0xf;
-      if(cmd<0x80||cmd>=0x100)
+      for(let i=1,b;i<n;++i)
+        if(!(typeof (b=msg[i])=="number" && b>=0 && b<0x80 && b%1==0 || b==0xf7 && i==n-1 && s==0xf0))
+          return;
+      if(!this._live())
         return;
       this._wake();
       switch(cmd){
