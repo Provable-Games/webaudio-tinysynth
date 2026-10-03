@@ -296,3 +296,14 @@ Decision:
 - Tests (amending D-021): a 64-step 4-bit triangle at A4 measures 440 Hz within 1 cent. Step widths at the home pitch are exactly `k` frames, and at other notes `sampleRate / (f · N)` ± 1 frame. 8-, 16-, 32-, 93- and 256-sample tables play at the right pitch. Edge sharpness is measured against an independent sample-and-hold reference, with T6 tolerances. All other D-021 and D-006 tests still apply.
 - The Beast `chip.js` reference uses `k = 1`. For tables shorter than `sampleRate/440` samples, this engine's output will have sharper steps than `chip.js`, which brings it closer to stepped chip hardware. The consumer is informed.
 - Consumer notes: TinyChip's `nMET`/`nNOI` noise tables are currently one sample per frame at the engine's 440 basis, which makes their texture sample-rate dependent. Under #26 they become sample-rate independent, so the consumer should retune those drum operators. `nNOI` (32,767 samples) exceeds the limits and falls back to `n0`, which needs #7 for determinism. TinyChip also writes `synth.program[129+]` and `noiseBuf` directly. Those are internals with no supported equivalent, and the consumer's carriage of presets through program slots 0–127 is unaffected.
+
+## D-028 Natural limits only for #26 and #27 (2026-10-03)
+
+The user applied the project principle "check format, not cost": validate only what the engine and the data format require, mirror engine caps exactly, impose no throttles, and document measured cost instead. This supersedes the count, size and range caps in D-006, D-007 and D-027. The #26 engine-review text asked to bound sizes and registry memory; the user's decision replaces that request.
+
+- **`setHarmonicWave`:** `real` and `imag` are arrays of finite numbers of equal length, at least 2 (the DC slot plus at least one harmonic). No upper bound.
+- **`setSampleWave`:** a non-empty array of finite numbers in [−1, 1], which is the format's normalized range. No upper bound. Held storage (D-027) gives `k = 1` for long tables, so TinyChip's 32,767-step LFSR is registrable directly.
+- **Names:** the D-006 grammar (prefix, second character a letter, at most 32 characters) and reserved built-in names stay. They are format rules.
+- **Registry:** no count limit and no memory bound. T11 measures and documents memory per wave and per sample rate.
+- **Filters (#27):** `fl` is one of the three types. `ff` is finite and > 0: Hz with `fk:0`, a note-frequency multiple with `fk:1`. `fq` is finite and > 0, converted to dB Q for low-pass and high-pass. `fk` is 0 or 1. The engine still applies a defined, sample-rate-aware handling of cutoffs at or above Nyquist (D-007): the computed cutoff is clamped into (0, Nyquist), with T12 setting the margin from evidence. That is engine behavior, not a throttle. Filter fields without `fl`, or on modulators, are still rejected (format).
+- The consumer mirrors these caps exactly and is informed.
