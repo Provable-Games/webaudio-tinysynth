@@ -131,8 +131,9 @@ async function worker(o) {
         if (session.fatal) break;
       }
       if (session.fatal) {
+        // The case that set fatal already failed its cleanup check and is
+        // counted in `failed`; the stop itself fails the worker below.
         results.fatal = session.fatal;
-        ++failed;
         console.log("FAIL: " + session.fatal + "; no further case runs in this worker");
         break;
       }
@@ -149,8 +150,9 @@ async function worker(o) {
     console.log("FAIL: " + engine + " " + session.version + ": no case ran");
     return 1;
   }
-  console.log((failed ? "FAIL: " : "PASS: ") + engine + " " + session.version + ": " + (n - failed) + " of " + n + " cases passed");
-  return failed ? 1 : 0;
+  const fail = failed || results.fatal;
+  console.log((fail ? "FAIL: " : "PASS: ") + engine + " " + session.version + ": " + (n - failed) + " of " + n + " cases passed");
+  return fail ? 1 : 0;
 }
 
 /* ---------------- orchestrator ---------------- */
