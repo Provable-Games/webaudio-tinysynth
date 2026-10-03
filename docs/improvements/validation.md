@@ -197,6 +197,12 @@ Phase A of T6 on `t6/validation` (base `25d2a3d`). Record: [tasks/T6.md](tasks/T
   - workers get normalized paths;
   - URL readings wait for the page's `loadend`.
 - **New baseline finding.** With a 0.3 s note, GM 119 (and 125 in quality 1) are silent: the release cancels the pending attack ramp.
+- **Round 2.** Four more Codex findings are fixed:
+  - non-finite alternate-seed renders now fail;
+  - a slow page setup is no longer reported as a hang;
+  - the URL hang case waits for the response;
+  - `--seed=0` is kept.
+- **WebKit glitches.** Occasional non-reproducible WebKit render differences (up to 0.56; cause not isolated) are reconciled by re-render and recorded, while a reproducible difference still fails ([tasks/T6.md §15](tasks/T6.md#15-review-round-1-pr-33)).
 
 ### Pending
 
