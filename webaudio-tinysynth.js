@@ -442,6 +442,10 @@ function WebAudioTinySynthCore(target) {
       [{w:"sine",t:0,f:1200,v:0.3,d:0.2,r:0.2,}],
 
     ],
+    /* The waveform registry (#26): name -> the caller's data, copied as Float32Arrays ([real, imag]
+       for a w* wave, [samples] for an n* wave). It outlives contexts; _mk builds each wave's
+       PeriodicWave or AudioBuffer into wave/noiseBuf for the installed context. */
+    _wv:new Map(),
     ready:()=>{
       /* The synth is ready when the constructor returns; kept for compatibility. */
       return Promise.resolve();
@@ -983,10 +987,18 @@ function WebAudioTinySynthCore(target) {
         }
         return p;
       }
+      for(let i=0;i<p.length;++i) // every wave is known before anything changes (#26)
+        this._checkWave(p[i].w);
       if(m && n>=35 && n<=81)
         this.drummap[n-35].p=filldef(p);
       if(m==0 && n>=0 && n<=127)
         this.program[n].p=filldef(p);
+    },
+    _checkWave:(w)=>{
+      /* setTimbre's wave check (#26, D-006): an operator's w is undefined (the default, sine), a
+         built-in or a registered name. Anything else throws a TypeError; nothing else happens. */
+      if(w!==undefined && !"sine square sawtooth triangle w9999 n0 n1".split(" ").includes(w) && !this._wv.has(w))
+        throw new TypeError("unknown wave: "+w);
     },
     _pruneNote:(nt)=>{
       for(let k=nt.o.length-1;k>=0;--k){
@@ -1032,8 +1044,18 @@ function WebAudioTinySynthCore(target) {
     },
     _note:(t,ch,n,v,p)=>{
       let out,sc,pn;
-      const o=[],g=[],vp=[],fp=[],r=[];
+      const o=[],g=[],vp=[],fp=[],r=[],b=[];
       const f=440*Math.pow(2,(n-69 + this.masterTuningC + this.tuningC[ch] + (this.masterTuningF + this.tuningF[ch]/8192 + this.scaleTuning[ch][n%12]))/12);
+      /* Every operator's wave is resolved first (#26): when one is missing from this context (a
+         timbre written past setTimbre), the note is dropped before a voice is stolen or a node made.
+         A buffer plays at fp/b[i]: a registered wave's home pitch sampleRate/length (D-027), else
+         440 (n0, n1). Only n* and w* names are looked up, and no Object.prototype key starts so. */
+      for(let i=0;i<p.length;++i){
+        const w=p[i].w,x=w[0]=="n" && this.noiseBuf[w];
+        if(w[0]=="n" ? !x : w[0]=="w" && !this.wave[w])
+          return;
+        b[i]=x && this._wv.has(w) ? x.sampleRate/x.length : 440;
+      }
       this._limitVoices(ch,n);
       for(let i=0;i<p.length;++i){
         pn=p[i];
@@ -1045,15 +1067,15 @@ function WebAudioTinySynthCore(target) {
         else if(o[pn.g-1].frequency)
           out=o[pn.g-1].frequency, sc=fp[pn.g-1], fp[i]=fp[pn.g-1]*pn.t+pn.f;
         else
-          out=o[pn.g-1].playbackRate, sc=fp[pn.g-1]/440, fp[i]=fp[pn.g-1]*pn.t+pn.f;
+          out=o[pn.g-1].playbackRate, sc=fp[pn.g-1]/b[pn.g-1], fp[i]=fp[pn.g-1]*pn.t+pn.f;
         switch(pn.w[0]){
         case "n":
           o[i]=this.actx.createBufferSource();
           o[i].buffer=this.noiseBuf[pn.w];
           o[i].loop=true;
-          o[i].playbackRate.value=fp[i]/440;
+          o[i].playbackRate.value=fp[i]/b[i];
           if(pn.p!=1)
-            this._setParamTarget(o[i].playbackRate,fp[i]/440*pn.p,t,pn.q);
+            this._setParamTarget(o[i].playbackRate,fp[i]/b[i]*pn.p,t,pn.q);
           if (o[i].detune) {
             this.chmod[ch].connect(o[i].detune);
             o[i].detune.value=this.bend[ch];
@@ -1354,6 +1376,54 @@ function WebAudioTinySynthCore(target) {
         imag[i]=w[i];
       return this.actx.createPeriodicWave(real,imag);
     },
+    setHarmonicWave:(w,real,imag)=>{
+      /* Registers PeriodicWave w (#26, D-006, D-028): real and imag are equal-length arrays of at
+         least 2 numbers, finite as floats. Index 0 (DC) is set to 0, and the browser normalizes
+         the peak to 1. */
+      this._reg("w",w,[real,imag],2,x=>isFinite(Math.fround(x)),"real, imag: equal-length arrays of >= 2 finite numbers");
+    },
+    setSampleWave:(w,samples)=>{
+      /* Registers single-cycle table w (#26, D-027, D-028): an array of at least 1 number in [-1, 1]. */
+      this._reg("n",w,[samples],1,x=>x>=-1 && x<=1,"samples: an array of numbers in [-1, 1]");
+    },
+    _reg:(k,w,a,m,f,s)=>{
+      /* Checks the name (D-006: k, a letter or _, then up to 30 of [A-Za-z0-9_]; a digit second is
+         reserved for built-ins), then the arrays a: each an Array or typed array of at least m
+         numbers that pass f, as long as the first (else a TypeError s if not an array, a RangeError
+         s otherwise). Copies them as Float32Arrays, with a PeriodicWave's DC set to 0, and builds
+         the wave in the installed context. Only then is it stored, so a failure changes nothing.
+         Re-registering a name replaces it: sounding voices keep the old wave, later notes get the
+         new one. */
+      if(typeof w!="string" || w[0]!=k || !/^.[A-Za-z_]\w{0,30}$/.test(w))
+        throw new TypeError("wave name: "+w);
+      const d=a.map(x=>{
+        if(!Array.isArray(x) && !ArrayBuffer.isView(x))
+          throw new TypeError(s);
+        if(!(x.length>=m && x.length==a[0].length && Array.from(x).every(v=>typeof v=="number" && f(v))))
+          throw new RangeError(s);
+        return Float32Array.from(x);
+      });
+      if(d[1])
+        d[0][0]=d[1][0]=0;
+      if(this.actx)
+        this._mk(w,d);
+      this._wv.set(w,d);
+    },
+    _mk:(w,d)=>{
+      /* Builds registered wave w in the installed context: a PeriodicWave from [real, imag], or
+         the table [samples] with each of its N samples held for k = max(1, round(sampleRate/(440*N)))
+         frames, so its home pitch sampleRate/(N*k) is near 440 Hz and notes play near rate 1 with
+         sharp steps (D-027). */
+      const c=this.actx,s=d[0],N=s.length,k=Math.max(1,Math.round(c.sampleRate/(440*N)));
+      if(d[1])
+        this.wave[w]=c.createPeriodicWave(s,d[1]);
+      else{
+        const b=c.createBuffer(1,N*k,c.sampleRate),x=b.getChannelData(0);
+        for(let i=0;i<N;++i)
+          x.fill(s[i],i*k,i*k+k);
+        this.noiseBuf[w]=b;
+      }
+    },
     getAudioContext:()=>{
       return this.actx;
     },
@@ -1417,6 +1487,7 @@ function WebAudioTinySynthCore(target) {
       this.comp.connect(this.dest);
       this.chvol=[]; this.chmod=[]; this.chpan=[];
       this.wave={"w9999":this._createWave("w9999")};
+      this._wv.forEach((d,w)=>this._mk(w,d)); // the registered waves, for this context (#26)
       this.lfo=this.actx.createOscillator();
       this.lfo.frequency.value=5;
       this.lfo.start(0);
