@@ -3,9 +3,9 @@
  *
  * Each case drives the page into a known baseline hang and lets the
  * Node-side case deadline (HANG_DEADLINE seconds) expire. The runner then
- * closes the page from Node; the observation records whether the page hung
- * or returned, and a final case asserts that the engine still runs a page
- * afterwards. Only allocation-free hangs are used, so a hung page cannot
+ * closes the page from Node; the observation records whether the page hung,
+ * returned or threw (with page errors), and a final case asserts that the
+ * engine still runs a page afterwards. Only allocation-free hangs are used, so a hung page cannot
  * exhaust memory before the deadline (T0 §5):
  *   #4  ws.mid truncated to 40 bytes, via loadMIDI() and via loadMIDIUrl()
  *       (the parser loops without producing events);
@@ -60,13 +60,21 @@ function cases(shared) {
   for (const build of matrix.builds) {
     const pageId = "hang-" + build;
     const page = () => pages.inlinePage({ library: pages.readLibrary(build, options.overrides), seed: options.seed });
+    // Records how the call ended: a hang (the case deadline fires), a return,
+    // or an exception thrown in the page (for example SMF_TRUNCATED once
+    // T2's parser is in). All three are observations, not failures.
     const timed = async (t, fn) => {
       server.registerPage(pageId, page());
       const p = await t.newPage();
       await p.page.goto(server.origin + "/html/" + pageId);
       const started = Date.now();
-      const value = await fn(p);
-      t.observe("returned", { ms: Date.now() - started, value });
+      let outcome;
+      try {
+        outcome = { returned: await fn(p) };
+      } catch (e) {
+        outcome = { threw: String(e && e.message ? e.message : e).split("\n")[0] };
+      }
+      t.observe("outcome", Object.assign({ ms: Date.now() - started, pageErrors: p.pageErrors.slice(0, 3) }, outcome));
     };
     out.push({
       id: "hang " + build + " #4 loadMIDI(ws.mid cut at 40 bytes)", dims: { build }, deadline: HANG_DEADLINE, expectHang: true,
