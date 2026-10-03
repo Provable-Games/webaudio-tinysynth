@@ -13,8 +13,10 @@
     "test": "tests"
   },
   "scripts": {
-    "test": "node tests/differential.js && node tests/tempo.js && node tests/loop-end.js",
-    "build": "terser webaudio-tinysynth.js --output webaudio-tinysynth.min.js --compress --source-map"
+    "build": "node scripts/build.js",
+    "verify": "node scripts/verify-dist.js",
+    "size": "node scripts/size.js",
+    "test": "node tests/differential.js && node tests/tempo.js && node tests/loop-end.js"
   },
   "repository": {
     "type": "git",
