@@ -15,6 +15,11 @@ const fs = require("fs");
 const path = require("path");
 
 const CLOSE_TIMEOUT_MS = 5000;
+// How long a case's cleanup waits for resources still being created (a browser
+// launch times out after 60 s), so that one created late is closed before the
+// next case starts.
+const LATE_WAIT_MS = 65000;
+const ENDED = "the case has ended (deadline or finish); no new pages or browsers";
 
 function withTimeout(promise, ms) {
   let timer;
@@ -64,6 +69,31 @@ class EngineSession {
     const opened = [];
     const extraBrowsers = [];
     let abandoned = false;
+    /*
+     * Creates a context, page or browser for the case. If the case has ended
+     * (deadline or finish) before the creation starts, nothing is created;
+     * if it ends while the creation is in flight, the new resource is closed
+     * as soon as it exists. Either way the caller gets an error, so an
+     * abandoned run() cannot continue with it. Cleanup waits for creations
+     * in flight (pending), so a late resource is closed before the next case.
+     */
+    const pending = new Set();
+    let lateClosed = 0;
+    const create = (make, close) => {
+      if (abandoned) return Promise.reject(new Error(ENDED));
+      const p = (async () => {
+        const x = await make();
+        if (abandoned) {
+          ++lateClosed;
+          await withTimeout(close(x), CLOSE_TIMEOUT_MS);
+          throw new Error(ENDED);
+        }
+        return x;
+      })();
+      pending.add(p);
+      p.then(() => pending.delete(p), () => pending.delete(p));
+      return p;
+    };
     const record = {
       check: (name, ok, detail) => {
         const rec = { name, ok: !!ok, detail: detail === undefined ? "" : String(detail) };
@@ -101,11 +131,12 @@ class EngineSession {
        * Returns {page, context, requests, pageErrors, consoleErrors, console}.
        */
       newPage: async ({ offline = false, contextOptions = {}, browser = null } = {}) => {
-        const context = await (browser || this.browser).newContext(contextOptions);
+        const target = browser || this.browser;
+        const context = await create(() => target.newContext(contextOptions), (x) => x.close());
         const rec = { context, page: null, requests: [], aborted: [], pageErrors: [], consoleErrors: [], console: [] };
         opened.push(rec);
         if (offline) await context.route("**/*", (route) => { rec.aborted.push(route.request().url()); return route.abort(); });
-        const page = await context.newPage();
+        const page = await create(() => context.newPage(), (x) => x.close({ runBeforeUnload: false }));
         rec.page = page;
         page.on("request", (r) => rec.requests.push(r.url()));
         page.on("pageerror", (e) => rec.pageErrors.push(short(e)));
@@ -117,7 +148,7 @@ class EngineSession {
       },
       /* A separate browser instance of the same engine, closed when the case ends. */
       launchBrowser: async () => {
-        const b = await this.playwright[this.engine].launch(Object.assign({ headless: true, timeout: 60000 }, this.launchOptions));
+        const b = await create(() => this.playwright[this.engine].launch(Object.assign({ headless: true, timeout: 60000 }, this.launchOptions)), (x) => x.close());
         extraBrowsers.push(b);
         return b;
       },
@@ -141,8 +172,13 @@ class EngineSession {
       record.check("ran without an exception", false, short(r.error));
     }
     abandoned = true;
-    // Close everything the case opened. A context that does not close in time
-    // means the browser is wedged: close it and relaunch.
+    // Let creations still in flight finish (each closes its own resource,
+    // since the case has ended), then close everything the case opened. A
+    // context that does not close in time means the browser is wedged: close
+    // it and relaunch.
+    const late = await withTimeout(Promise.allSettled([...pending]), LATE_WAIT_MS);
+    if (late.timedOut) record.observe("cleanup: resources still being created", pending.size + " creation(s) did not settle within " + LATE_WAIT_MS / 1000 + " s");
+    if (lateClosed) record.observe("cleanup: resources created after the case ended, closed", lateClosed);
     let wedged = false;
     for (const rec of opened) {
       if (rec.page) await withTimeout(rec.page.close({ runBeforeUnload: false }), CLOSE_TIMEOUT_MS);
