@@ -1,4 +1,4 @@
-# Tests the AI review helpers and lints the review workflows. No credentials.
+# Tests the AI review helpers and lints every workflow (read-only). No credentials.
 name: Review Helpers
 
 on:
@@ -33,9 +33,9 @@ jobs:
         run: |
           python3 --version
           git --version
-          python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
+          python3 -I -B -m unittest discover -s .github/scripts -p 'test_*.py' -v
 
-      - name: Lint the review workflows and scripts
+      - name: Lint all workflows and the review scripts
         env:
           ACTIONLINT_VERSION: 1.7.12
           # sha256 of actionlint_1.7.12_linux_arm64.tar.gz from the release's checksums.txt
@@ -49,4 +49,4 @@ jobs:
           tar -xzf "$archive" -C "$RUNNER_TEMP" actionlint
           shellcheck --version
           shellcheck .github/scripts/*.sh
-          "$RUNNER_TEMP/actionlint" -color .github/workflows/*review*.yml
+          "$RUNNER_TEMP/actionlint" -color .github/workflows/*.yml

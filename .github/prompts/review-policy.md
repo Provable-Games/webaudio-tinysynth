@@ -24,10 +24,14 @@ If the review completed and there are no actionable findings, output exactly:
 
 lgtm
 
-Otherwise output only findings, ordered by severity. Do not add a summary,
-preamble, praise, verdict, or empty sections. Write each finding in exactly this
-form, choosing one severity and giving a repository-relative path and a line
-number in the head revision:
+Your entire response is read by a program. Start it with `lgtm` or with the
+first finding's `### [`, and write nothing before, between or after the
+findings: no introduction such as "I've finished reading the files", no
+summary, praise, verdict, closing remark or empty section.
+
+Otherwise output only findings, ordered by severity. Write each finding in
+exactly this form, choosing one severity and giving a repository-relative path
+and a line number in the head revision:
 
 ### [SEVERITY] path/to/file.js:123 — concise issue
 - **Evidence/trigger:** The concrete evidence, or the input or state that
@@ -43,8 +47,9 @@ serious correctness, security, compatibility, or availability impact; MEDIUM
 for material defects with bounded impact; LOW for smaller actionable defects.
 Assign severity from the supported impact. HIGH and CRITICAL block merging;
 MEDIUM and LOW are advisory. The workflow parses these headings and fields to
-enforce that gate, so keep the heading on one line and include all three
-fields. Code blocks inside a field are allowed.
+enforce that gate, so keep the heading on one line, include all three fields,
+and use no other headings. Code blocks and lists inside a field are allowed;
+indent any further paragraph of a field by two spaces.
 
 For a design issue without a runtime reproduction, start Evidence/trigger with
 `Design evidence:` and name the concrete affected caller or maintenance

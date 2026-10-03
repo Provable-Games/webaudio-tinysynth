@@ -4,6 +4,7 @@ Standard library only. The workflows run this file from a trusted staging
 directory (the pull request's base revision), never from the reviewed checkout.
 """
 
+import base64
 import json
 import re
 import shlex
@@ -26,7 +27,13 @@ PROMPT_DIR = ".github/prompts/"
 
 FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 FINDING_RE = re.compile(r"^### \[([A-Z]+)\] (\S.*?):(\d+)(?:-(\d+))? (?:—|–|-) (\S.*?)\s*$")
-FINDING_LIKE_RE = re.compile(r"^#{1,6}\s*\[")
+# Any other Markdown heading, or a line that starts like a finding (a severity tag
+# followed by a location) without the exact heading form, makes the review malformed.
+ATX_HEADING_RE = re.compile(r"^ {0,3}#{1,6}(\s|$)")
+PSEUDO_FINDING_RE = re.compile(r"^\s*(?:[-*+]\s+)?(?:\*\*|__)?\[?(?:CRITICAL|HIGH|MEDIUM|LOW)\]?(?:\*\*|__)?:?\s+\S+:\d+")
+LIST_ITEM_RE = re.compile(r"^(?:[-*+]|\d{1,9}[.)])\s")
+MAX_PREAMBLE_LINES = 3
+MAX_PREAMBLE_CHARS = 500
 FIELD_RE = re.compile(r"^- \*\*(" + "|".join(re.escape(f) for f in FINDING_FIELDS) + r"):\*\*(.*)$")
 
 
@@ -114,6 +121,15 @@ def agent_by_id(config, agent_id):
         if agent["agent_id"] == agent_id:
             return agent
     raise ReviewError(f"unknown agent_id: {agent_id!r}")
+
+
+def is_metadata_edit(event):
+    """An `edited` event that did not change the base: no review, no gate.
+
+    Mirrors the workflows' guard
+    `github.event.action == 'edited' && !github.event.changes.base`.
+    """
+    return event.get("action") == "edited" and not (event.get("changes") or {}).get("base")
 
 
 def in_scope(path, diff_paths):
@@ -208,68 +224,98 @@ def parse_review(text):
     """Classify review text deterministically.
 
     Returns a dict with kind in {"lgtm", "findings", "incomplete", "malformed"},
-    the validated findings, and parse errors. Severity tags count only in
-    finding headings outside code fences.
+    the validated findings, parse errors, warnings, and the findings text. Severity
+    tags count only in exact finding headings outside code fences. Within a
+    finding, list semantics apply: after a blank line, only field bullets, list
+    items, indented lines and code fences continue it, so prose between or after
+    findings is rejected. Up to MAX_PREAMBLE_LINES of prose before the first
+    finding are discarded with a warning, and only when every finding is valid.
     """
     stripped = (text or "").strip()
     if not stripped:
-        return {"kind": "malformed", "findings": [], "errors": ["the review output is empty"]}
+        return {"kind": "malformed", "findings": [], "errors": ["the review output is empty"], "warnings": [],
+                "body": ""}
     if stripped == "lgtm":
-        return {"kind": "lgtm", "findings": [], "errors": []}
+        return {"kind": "lgtm", "findings": [], "errors": [], "warnings": [], "body": "lgtm"}
     lines = stripped.splitlines()
     if lines[0].startswith("Review incomplete:"):
-        return {"kind": "incomplete", "findings": [], "errors": [lines[0][:300]]}
+        return {"kind": "incomplete", "findings": [], "errors": [lines[0][:300]], "warnings": [], "body": ""}
 
-    findings, errors, stray = [], [], []
+    findings, errors, warnings, preamble = [], [], [], []
     current, field, fence = None, None, None
-    for number, line in enumerate(lines, 1):
-        fence_match = FENCE_RE.match(line)
-        if fence is None and fence_match:
-            fence = fence_match.group(1)
-        elif fence is not None and fence_match and fence_match.group(1)[0] == fence[0] \
-                and len(fence_match.group(1)) >= len(fence) and not line.strip()[len(fence_match.group(1)):].strip():
-            fence = None
-        elif fence is None:
-            heading = FINDING_RE.match(line)
-            if heading:
-                severity = heading.group(1)
-                if severity not in SEVERITIES:
-                    errors.append(f"line {number}: unknown severity {severity!r}")
-                current = {
-                    "severity": severity, "path": heading.group(2), "line": int(heading.group(3)),
-                    "end_line": int(heading.group(4)) if heading.group(4) else None,
-                    "title": heading.group(5), "fields": {},
-                }
-                findings.append(current)
-                field = None
-                if current["path"].startswith("/") or ".." in current["path"].split("/"):
-                    errors.append(f"line {number}: finding path must be repository-relative")
-                continue
-            if FINDING_LIKE_RE.match(line):
-                errors.append(f"line {number}: malformed finding heading {line[:120]!r}")
-                continue
-            if line.strip() == "lgtm":
-                errors.append(f"line {number}: 'lgtm' cannot accompany findings")
-                continue
-            field_match = FIELD_RE.match(line)
-            if current is not None and field_match:
-                field = field_match.group(1)
-                if field in current["fields"]:
-                    errors.append(f"line {number}: duplicate field {field!r}")
-                current["fields"][field] = field_match.group(2).strip()
-                continue
-        # Ordinary text, or any line inside a fence, continues the current field.
+    preamble_fence, first_heading, previous_blank = False, None, False
+
+    def continue_field(number, line):
         if current is None:
             if line.strip():
-                stray.append(number)
+                preamble.append(number)
         elif field is not None:
             current["fields"][field] += "\n" + line
         elif line.strip():
             errors.append(f"line {number}: text before the first field of a finding")
+
+    for index, line in enumerate(lines):
+        number = index + 1
+        fence_match = FENCE_RE.match(line)
+        if fence is not None:
+            marker_text = fence_match.group(1) if fence_match else ""
+            if marker_text and marker_text[0] == fence[0] and len(marker_text) >= len(fence) \
+                    and not line.strip()[len(marker_text):].strip():
+                fence = None
+            continue_field(number, line)
+            previous_blank = False
+            continue
+        if fence_match:
+            fence = fence_match.group(1)
+            preamble_fence = preamble_fence or current is None
+            continue_field(number, line)
+            previous_blank = False
+            continue
+        heading = FINDING_RE.match(line)
+        if heading:
+            severity = heading.group(1)
+            if severity not in SEVERITIES:
+                errors.append(f"line {number}: unknown severity {severity!r}")
+            current = {
+                "severity": severity, "path": heading.group(2), "line": int(heading.group(3)),
+                "end_line": int(heading.group(4)) if heading.group(4) else None,
+                "title": heading.group(5), "fields": {},
+            }
+            findings.append(current)
+            field, previous_blank = None, False
+            first_heading = index if first_heading is None else first_heading
+            if current["path"].startswith("/") or ".." in current["path"].split("/"):
+                errors.append(f"line {number}: finding path must be repository-relative")
+            continue
+        if ATX_HEADING_RE.match(line) or PSEUDO_FINDING_RE.match(line):
+            errors.append(f"line {number}: malformed finding heading {line[:120]!r}")
+            previous_blank = False
+            continue
+        if line.strip() == "lgtm":
+            errors.append(f"line {number}: 'lgtm' cannot accompany findings or other text")
+            previous_blank = False
+            continue
+        field_match = FIELD_RE.match(line)
+        if current is not None and field_match:
+            field = field_match.group(1)
+            if field in current["fields"]:
+                errors.append(f"line {number}: duplicate field {field!r}")
+            current["fields"][field] = field_match.group(2).strip()
+            previous_blank = False
+            continue
+        if not line.strip():
+            if current is not None and field is not None:
+                current["fields"][field] += "\n"
+            previous_blank = True
+            continue
+        if current is not None and previous_blank and not (
+                line.startswith(("  ", "\t")) or LIST_ITEM_RE.match(line)):
+            errors.append(f"line {number}: prose between or after findings")
+        else:
+            continue_field(number, line)
+        previous_blank = False
     if fence is not None:
         errors.append("unterminated code block")
-    if stray:
-        errors.append(f"text outside findings at line {stray[0]}")
     if not findings and not errors:
         errors.append("the output is neither 'lgtm' nor findings")
     records = []
@@ -283,9 +329,17 @@ def parse_review(text):
             "impact": fields.get("Impact", ""),
             "action": fields.get("Recommended action", ""),
         })
+    if preamble:
+        size = sum(len(lines[n - 1]) for n in preamble)
+        if errors or not records or preamble_fence or len(preamble) > MAX_PREAMBLE_LINES \
+                or size > MAX_PREAMBLE_CHARS:
+            errors.append(f"text outside findings at line {preamble[0]}")
+        else:
+            warnings.append(f"discarded {len(preamble)} line(s) of text before the first finding")
     if errors:
-        return {"kind": "malformed", "findings": records, "errors": errors}
-    return {"kind": "findings", "findings": records, "errors": []}
+        return {"kind": "malformed", "findings": records, "errors": errors, "warnings": [], "body": ""}
+    body = "\n".join(lines[first_heading:])
+    return {"kind": "findings", "findings": records, "errors": [], "warnings": warnings, "body": body}
 
 
 def build_result(*, identity, execution_ok, execution_errors, text, blocking_severities):
@@ -306,6 +360,7 @@ def build_result(*, identity, execution_ok, execution_errors, text, blocking_sev
         return result
     parsed = parse_review(text)
     result["findings"] = parsed["findings"]
+    result["warnings"] = parsed["warnings"]
     if parsed["kind"] == "lgtm":
         result.update(status="complete", verdict="lgtm")
     elif parsed["kind"] == "findings":
@@ -346,13 +401,30 @@ def credential_values(sources):
     return values
 
 
+def encoded_forms(value):
+    """Literal, JSON-escaped, reversed, hex and base64 (standard and URL-safe) forms of a value.
+
+    Base64 depends on alignment, so each of the three byte offsets contributes the
+    part of its encoding that does not mix with unknown neighbouring bytes.
+    """
+    data = value.encode("utf-8")
+    forms = {value, json.dumps(value)[1:-1], value[::-1], data.hex(), data.hex().upper()}
+    for offset in range(3):
+        encoded = base64.b64encode(b"\0" * offset + data).decode("ascii").rstrip("=")
+        core = encoded[4 if offset else 0:len(encoded) - 4]
+        forms.update({core, core.translate(str.maketrans("+/", "-_"))})
+    return {form for form in forms if len(form) >= 16}
+
+
 def contains_credential(text, values):
-    """True if text contains a credential literally or in JSON-escaped form."""
+    """True if text contains a credential in any form from encoded_forms, also after removing whitespace."""
     if not text:
         return False
+    compact = re.sub(r"\s+", "", text)
     for value in values:
-        if value in text or json.dumps(value)[1:-1] in text:
-            return True
+        for form in encoded_forms(value):
+            if form in text or form in compact:
+                return True
     return False
 
 
@@ -408,12 +480,11 @@ def render_comment(result, review_text, display_name):
     Every comment shows which provider, model and effort produced it. A clean
     review's body is exactly lgtm. The gate reads result records, never this text.
     """
-    lines = [marker(result["provider"], result["agent_id"]), _metadata(result)]
+    lines = [marker(result["provider"], result["agent_id"]), _metadata(result), heading(result, display_name), ""]
     if result.get("bootstrap"):
         lines.append("> **BOOTSTRAP:** the base revision has no review configuration, so this review "
                      "used the configuration from the pull request head.")
         lines.append("")
-    lines += [heading(result, display_name), ""]
     body = review_text or ""
     if result["status"] == "complete" and result["verdict"] == "lgtm":
         lines.append("lgtm")
@@ -446,9 +517,15 @@ def evaluate_gate(*, policy, upstream, expected, results, event_head, event_base
     if upstream.get("prepare") != "success":
         return False, [f"Review setup did not succeed (prepare job: {upstream.get('prepare') or 'unknown'})."]
     if policy == "fork":
-        return False, ["AI review unavailable for fork PRs: this public repository does not expose review "
-                       "credentials to forks. A maintainer must review the change or re-open it from a branch "
-                       "in this repository."]
+        return False, ["AI review unavailable for fork PRs: this public repository does not give review "
+                       "credentials to forks. A maintainer must review the fork's changes manually; only code a "
+                       "maintainer has reviewed and trusts may be mirrored to a branch in this repository."]
+    if policy == "dependabot":
+        return False, ["AI review unavailable for Dependabot PRs: Dependabot runs receive no Actions secrets. "
+                       "A maintainer must review the update manually; giving Dependabot review credentials is an "
+                       "organization decision."]
+    if policy == "metadata-edit":
+        return False, ["A title or body edit is not evaluated; the gate of the latest review run stands."]
     if policy == "draft":
         return True, ["Review intentionally skipped: draft PR. Marking it ready for review runs the review."]
     if policy == "no-changes":
@@ -487,6 +564,8 @@ def evaluate_gate(*, policy, upstream, expected, results, event_head, event_base
                             f"{finding['path']}:{finding['line']}: {finding['title']}")
         if advisory:
             messages.append(f"{label}: {len(advisory)} advisory finding(s) (MEDIUM/LOW) do not block merging.")
+        for warning in result.get("warnings") or []:
+            messages.append(f"{label}: warning: {warning}")
         if result.get("bootstrap"):
             messages.append(f"{label}: BOOTSTRAP review used the pull request head's review configuration.")
         if not blocking:

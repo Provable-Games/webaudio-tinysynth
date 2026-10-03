@@ -6,12 +6,14 @@ name: Codex Review
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    # edited: only a base change re-runs the review (see the guards below).
+    types: [opened, synchronize, reopened, ready_for_review, edited]
 
 permissions: {}
 
+# A title or body edit joins its own group, so it never cancels a review.
 concurrency:
-  group: codex-review-${{ github.event.pull_request.number }}
+  group: codex-review-${{ github.event.pull_request.number }}${{ github.event.action == 'edited' && !github.event.changes.base && '-metadata' || '' }}
   cancel-in-progress: true
 
 defaults:
@@ -21,6 +23,8 @@ defaults:
 jobs:
   prepare:
     name: Codex review setup
+    # A title or body edit (no base change) starts nothing.
+    if: ${{ !(github.event.action == 'edited' && !github.event.changes.base) }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     permissions:
@@ -44,7 +48,11 @@ jobs:
         id: trust
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # Bases that may take the configuration from the pull request head
+          # while they lack it: only main, for the one-time path that lands it.
+          BOOTSTRAP_BASE_BRANCHES: main
         run: |
           # begin trusted-config-selection
           set -euo pipefail
@@ -55,10 +63,13 @@ jobs:
           if git -C src cat-file -e "$BASE_SHA:.github/review-agents.json" 2>/dev/null; then
             config_sha="$BASE_SHA"
             bootstrap=false
-          else
+          elif [[ " $BOOTSTRAP_BASE_BRANCHES " == *" $BASE_REF "* ]]; then
             config_sha="$HEAD_SHA"
             bootstrap=true
             echo "::warning title=AI review bootstrap::Base revision $BASE_SHA has no .github/review-agents.json, so this review uses the review configuration from the pull request head $HEAD_SHA."
+          else
+            echo "::error title=AI review configuration::Base branch '$BASE_REF' ($BASE_SHA) has no .github/review-agents.json. Bootstrap from the pull request head is allowed only for: $BOOTSTRAP_BASE_BRANCHES. Land the review configuration on '$BASE_REF' first."
+            exit 1
           fi
           echo "config_sha=$config_sha" >> "$GITHUB_OUTPUT"
           echo "bootstrap=$bootstrap" >> "$GITHUB_OUTPUT"
@@ -82,7 +93,7 @@ jobs:
           CONFIG_SHA: ${{ steps.trust.outputs.config_sha }}
           BOOTSTRAP: ${{ steps.trust.outputs.bootstrap }}
         run: >-
-          python3 trusted/.github/scripts/review.py prepare --config-root trusted --repo-dir src
+          python3 -I -B trusted/.github/scripts/review.py prepare --config-root trusted --repo-dir src
           --event "$GITHUB_EVENT_PATH" --config-sha "$CONFIG_SHA" --bootstrap "$BOOTSTRAP"
 
   review:
@@ -114,6 +125,15 @@ jobs:
             .github/scripts
           sparse-checkout-cone-mode: false
 
+      - name: Fingerprint the trusted configuration
+        id: fingerprint
+        run: |
+          # begin trusted-fingerprint
+          set -euo pipefail
+          digest="$(cd trusted && find .github -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
+          # end trusted-fingerprint
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
       - name: Check out the pull request head as data
         id: source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -128,7 +148,7 @@ jobs:
         env:
           CODEX_REVIEW_MODEL: ${{ vars.CODEX_REVIEW_MODEL }}
           CODEX_REVIEW_EFFORT: ${{ vars.CODEX_REVIEW_EFFORT }}
-        run: python3 trusted/.github/scripts/review.py config --config-root trusted --provider codex
+        run: python3 -I -B trusted/.github/scripts/review.py config --config-root trusted --provider codex
 
       - name: Check the review credential
         id: credential
@@ -139,7 +159,7 @@ jobs:
             echo "::error title=AI review configuration::The CODEX_AUTH_DOT_JSON secret is not available to this workflow run."
             exit 1
           fi
-          if ! python3 -c 'import json, os; json.loads(os.environ["CODEX_AUTH_DOT_JSON"])' 2>/dev/null; then
+          if ! python3 -I -c 'import json, os; json.loads(os.environ["CODEX_AUTH_DOT_JSON"])' 2>/dev/null; then
             echo "::error title=AI review configuration::The CODEX_AUTH_DOT_JSON secret is not valid JSON."
             exit 1
           fi
@@ -193,7 +213,21 @@ jobs:
             echo "::error::The Codex read-only sandbox allowed a write."
             exit 1
           fi
-          if sandbox curl -sS --max-time 10 -o /dev/null https://api.github.com 2>/dev/null; then
+          # The same HTTPS request must succeed outside the sandbox and fail inside
+          # it, so the refusal is attributable to the sandbox, not to DNS, TLS or
+          # an outage.
+          set +e
+          curl -sS --max-time 10 -o /dev/null https://api.github.com
+          control=$?
+          sandbox curl -sS --max-time 10 -o /dev/null https://api.github.com 2>/dev/null
+          sandboxed=$?
+          set -e
+          echo "Network probe: unsandboxed curl exit $control, sandboxed curl exit $sandboxed."
+          if [ "$control" -ne 0 ]; then
+            echo "::error::Network refusal is unverified: the unsandboxed control request failed (curl exit $control)."
+            exit 1
+          fi
+          if [ "$sandboxed" -eq 0 ]; then
             echo "::error::The Codex read-only sandbox allowed network access."
             exit 1
           fi
@@ -206,7 +240,7 @@ jobs:
           BOOTSTRAP: ${{ needs.prepare.outputs.bootstrap }}
           AGENT_ID: ${{ matrix.agent_id }}
         run: >-
-          python3 trusted/.github/scripts/review.py prompt --config-root trusted --provider codex
+          python3 -I -B trusted/.github/scripts/review.py prompt --config-root trusted --provider codex
           --repo-dir src --event "$GITHUB_EVENT_PATH" --agent-id "$AGENT_ID"
           --out-dir "$RUNNER_TEMP/review" --config-sha "$CONFIG_SHA" --bootstrap "$BOOTSTRAP"
 
@@ -225,9 +259,24 @@ jobs:
           bash trusted/.github/scripts/run-codex-review.sh "$GITHUB_WORKSPACE/trusted" \
             "$GITHUB_WORKSPACE/src" "$RUNNER_TEMP/review/prompt.txt" "$RUNNER_TEMP/review/run"
 
+      - name: Verify the trusted configuration
+        id: verify
+        if: ${{ !cancelled() && steps.fingerprint.outcome == 'success' }}
+        env:
+          EXPECTED_DIGEST: ${{ steps.fingerprint.outputs.digest }}
+        run: |
+          # begin trusted-fingerprint
+          set -euo pipefail
+          digest="$(cd trusted && find .github -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
+          # end trusted-fingerprint
+          if [ "$digest" != "$EXPECTED_DIGEST" ]; then
+            echo "::error title=AI review integrity::The trusted review configuration changed during the review run."
+            exit 1
+          fi
+
       - name: Record the review result
         id: result
-        if: ${{ !cancelled() && steps.trusted.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' }}
         env:
           CODEX_REVIEW_MODEL: ${{ vars.CODEX_REVIEW_MODEL }}
           CODEX_REVIEW_EFFORT: ${{ vars.CODEX_REVIEW_EFFORT }}
@@ -250,7 +299,7 @@ jobs:
           steps=()
           for outcome in $OUTCOMES; do steps+=(--step "$outcome"); done
           run_dir="$RUNNER_TEMP/review/run"
-          python3 trusted/.github/scripts/review.py result --config-root trusted --provider codex \
+          python3 -I -B trusted/.github/scripts/review.py result --config-root trusted --provider codex \
             --event "$GITHUB_EVENT_PATH" --agent-id "$AGENT_ID" --out-dir "$RUNNER_TEMP/review/out" \
             --config-sha "$CONFIG_SHA" --bootstrap "$BOOTSTRAP" --merge-base "$MERGE_BASE" --run-url "$RUN_URL" \
             --exit-code-file "$run_dir/exit-code" --review-file "$run_dir/review.txt" \
@@ -273,7 +322,12 @@ jobs:
 
       - name: Require a completed review
         if: ${{ !cancelled() }}
-        run: python3 trusted/.github/scripts/review.py require-complete --result "$RUNNER_TEMP/review/out/result.json"
+        run: |
+          result="$RUNNER_TEMP/review/out/result.json"
+          if ! jq -e '.status == "complete"' "$result" >/dev/null 2>&1; then
+            echo "::error title=AI review::The review did not complete: $(jq -r '(.status // "missing") + ": " + ((.errors // []) | join("; "))' "$result" 2>/dev/null || echo 'no result was recorded')"
+            exit 1
+          fi
 
   publish:
     name: Codex review comment
@@ -312,14 +366,16 @@ jobs:
           MATRIX: ${{ needs.prepare.outputs.matrix }}
           REVIEW_RESULT: ${{ needs.review.result }}
         run: >-
-          python3 trusted/.github/scripts/review.py publish --config-root trusted --provider codex
+          python3 -I -B trusted/.github/scripts/review.py publish --config-root trusted --provider codex
           --event "$GITHUB_EVENT_PATH" --results-dir "$RUNNER_TEMP/results" --matrix "$MATRIX"
           --review-job-result "$REVIEW_RESULT"
 
   gate:
-    name: Codex review gate
+    # A title or body edit gets a different check name, so its skipped job can
+    # never stand in for the required "Codex review gate" of a real run.
+    name: ${{ github.event.action == 'edited' && !github.event.changes.base && 'Codex review gate (title or body edit, not evaluated)' || 'Codex review gate' }}
     needs: [prepare, review, publish]
-    if: always()
+    if: ${{ always() && !(github.event.action == 'edited' && !github.event.changes.base) }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     permissions:
@@ -361,7 +417,7 @@ jobs:
           REVIEW_RESULT: ${{ needs.review.result }}
           PUBLISH_RESULT: ${{ needs.publish.result }}
         run: >-
-          python3 trusted/.github/scripts/review.py gate --config-root trusted --provider codex
+          python3 -I -B trusted/.github/scripts/review.py gate --config-root trusted --provider codex
           --event "$GITHUB_EVENT_PATH" --results-dir "$RUNNER_TEMP/results" --policy "$POLICY"
           --matrix "$MATRIX" --prepare-result "$PREPARE_RESULT" --review-result "$REVIEW_RESULT"
           --publish-result "$PUBLISH_RESULT"

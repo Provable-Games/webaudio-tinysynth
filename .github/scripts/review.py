@@ -14,9 +14,13 @@ import sys
 import tempfile
 from pathlib import Path
 
-import review_lib as lib
+# The workflows run `python3 -I -B`, which keeps the working directory and this
+# script's directory off sys.path; import the sibling module from here only.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import review_lib as lib  # noqa: E402
 
 SECRET_NAMES = {"codex": "CODEX_AUTH_DOT_JSON", "claude": "CLAUDE_CODE_OAUTH_TOKEN"}
+DEPENDABOT_LOGIN = "dependabot[bot]"
 MAX_LISTED_PATHS = 300
 MAX_BODY_CHARS = 20000
 # Tools that execute, write, delegate or reach the network. A denylist, because
@@ -72,6 +76,9 @@ def event_facts(path):
             "changed_files": pr.get("changed_files"),
             "title": pr.get("title") or "",
             "body": pr.get("body") or "",
+            "metadata_edit": lib.is_metadata_edit(event),
+            "author": (pr.get("user") or {}).get("login") or "",
+            "sender": (event.get("sender") or {}).get("login") or "",
         }
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise lib.ReviewError(f"cannot read the pull_request event: {error}") from None
@@ -126,10 +133,16 @@ def cmd_prepare(args):
     facts = event_facts(args.event)
     config = lib.load_config(args.config_root)
     outputs = {"policy": "", "matrix": json.dumps({"include": []}), "merge_base": "", "changed_count": "0"}
-    if facts["head_repository"] != facts["repository"]:
+    if facts["metadata_edit"]:
+        outputs["policy"] = "metadata-edit"
+        reason = "a title or body edit that did not change the base; no review runs"
+    elif facts["head_repository"] != facts["repository"]:
         outputs["policy"] = "fork"
         reason = (f"head repository {facts['head_repository'] or '(deleted)'} is not {facts['repository']}; "
                   "AI review unavailable for fork PRs")
+    elif DEPENDABOT_LOGIN in (facts["author"], facts["sender"]):
+        outputs["policy"] = "dependabot"
+        reason = "Dependabot pull request; Dependabot runs receive no Actions secrets"
     elif facts["draft"]:
         outputs["policy"] = "draft"
         reason = "draft pull request; the review runs when it is marked ready for review"
@@ -241,7 +254,10 @@ def cmd_prompt(args):
          if bootstrap else f"- Review configuration: base revision {args.config_sha}"),
         "- Scope: every changed file, including documentation, tests, demos, generated files and .github automation.",
         "",
-        f"The working directory is a checkout of the head commit. Read-only context is in `{context.resolve()}`:",
+        ("The working directory is a checkout of the head commit." if args.provider == "codex" else
+         f"Your working directory is an empty directory. The head commit is checked out at `{repo}`; "
+         "read the pull request's files there."),
+        f"Read-only context is in `{context.resolve()}`:",
         f"- `diff.patch`: the complete diff from the merge base to the head (`git diff --no-renames {base} {head}`).",
         "- `changed-files.json`: every changed path, including both sides of renames.",
         "- `base/<path>`: the merge-base version of each changed file that existed there.",
@@ -252,8 +268,7 @@ def cmd_prompt(args):
                   f"`git diff {base} {head} -- <path>`, `git show {base}:<path>` and `git log {base}..{head}`. "
                   "Commands run in a read-only sandbox.", ""]
     else:
-        lines += ["No shell is available. Use Read, Glob and Grep on the working directory and the context "
-                  "directory.", ""]
+        lines += ["No shell is available. Use Read, Glob and Grep on the checkout and the context directory.", ""]
         if replaced:
             lines += ["Symbolic links that point outside the checkout were replaced by placeholder files: "
                       + ", ".join(json.dumps(p) for p in replaced), ""]
@@ -269,7 +284,8 @@ def cmd_prompt(args):
               f"BEGIN_UNTRUSTED_PR_METADATA_{nonce}",
               f"Title: {title}", "Body:", body,
               f"END_UNTRUSTED_PR_METADATA_{nonce}", "",
-              "Apply the shared review policy and its output contract to this pull request now."]
+              "Apply the shared review policy and its output contract to this pull request now. Start your "
+              "response with `lgtm` or with `### [`, and write nothing before, between or after the findings."]
     (out / "prompt.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     write_outputs({"prompt_file": str((out / "prompt.txt").resolve()), "context_dir": str(context.resolve())})
 
@@ -316,6 +332,9 @@ def claude_execution(args, errors):
     if args.conclusion != "success":
         errors.append(f"the Claude action reported conclusion {args.conclusion or '(none)'}")
     messages = None
+    if args.execution_file and args.expected_execution_file and \
+            os.path.realpath(args.execution_file) != os.path.realpath(args.expected_execution_file):
+        errors.append(f"the execution file {args.execution_file!r} is not the action's own output file")
     if args.execution_file:
         try:
             messages = json.loads(Path(args.execution_file).read_text(encoding="utf-8"))
@@ -336,8 +355,11 @@ def claude_execution(args, errors):
     else:
         if not args.expected_cwd:
             errors.append("no expected working directory was given, so Claude's working directory is unverified")
-        elif init.get("cwd") != args.expected_cwd:
-            errors.append(f"Claude ran in {init.get('cwd')!r}, not the pull request checkout {args.expected_cwd!r}")
+        elif os.path.realpath(str(init.get("cwd"))) != os.path.realpath(args.expected_cwd):
+            errors.append(f"Claude ran in {init.get('cwd')!r}, not the trusted working directory "
+                          f"{args.expected_cwd!r}")
+        if not args.session_id or init.get("session_id") != args.session_id:
+            errors.append("the execution file's session does not match the session the action reported")
         tools = init.get("tools")
         if not isinstance(tools, list):
             errors.append("Claude did not report its tool set, so read-only execution is unverified")
@@ -381,8 +403,8 @@ def cmd_result(args):
     else:
         text, resolved, permission_mode = claude_execution(args, errors)
         if resolved and settings and resolved != settings["model"]:
-            annotate("warning", f"Claude reported model {resolved!r} for configured {settings['model']!r} "
-                     "(an alias resolves to a full model ID).")
+            errors.append(f"Claude reported model {resolved!r}, not the configured {settings['model']!r}; "
+                          "configure a full model ID rather than an alias")
 
     sources = [os.environ.get(secret_name, "")]
     if args.auth_file and Path(args.auth_file).is_file():
@@ -406,8 +428,13 @@ def cmd_result(args):
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
     (out / "result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-    # Only text from a run that completed is ever published.
-    review_text = text if result["status"] in ("complete", "incomplete") else ""
+    # Only text from a run that completed is ever published, and findings are
+    # published from the first finding heading (a discarded preamble is dropped).
+    review_text = ""
+    if result["status"] == "complete":
+        review_text = lib.parse_review(text)["body"]
+    elif result["status"] == "incomplete":
+        review_text = text
     (out / "review.md").write_text(review_text, encoding="utf-8")
 
     if log:
@@ -595,6 +622,8 @@ def main(argv=None):
     p.add_argument("--action-outcome", default="")
     p.add_argument("--conclusion", default="")
     p.add_argument("--expected-cwd", default="")
+    p.add_argument("--expected-execution-file", default="")
+    p.add_argument("--session-id", default="")
     p = add("require-complete", cmd_require_complete, config=False)
     p.add_argument("--result", required=True)
     p = add("publish", cmd_publish)

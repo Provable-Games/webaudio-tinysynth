@@ -6,12 +6,14 @@ name: Claude Review
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    # edited: only a base change re-runs the review (see the guards below).
+    types: [opened, synchronize, reopened, ready_for_review, edited]
 
 permissions: {}
 
+# A title or body edit joins its own group, so it never cancels a review.
 concurrency:
-  group: claude-review-${{ github.event.pull_request.number }}
+  group: claude-review-${{ github.event.pull_request.number }}${{ github.event.action == 'edited' && !github.event.changes.base && '-metadata' || '' }}
   cancel-in-progress: true
 
 defaults:
@@ -21,6 +23,8 @@ defaults:
 jobs:
   prepare:
     name: Claude review setup
+    # A title or body edit (no base change) starts nothing.
+    if: ${{ !(github.event.action == 'edited' && !github.event.changes.base) }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     permissions:
@@ -44,7 +48,11 @@ jobs:
         id: trust
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # Bases that may take the configuration from the pull request head
+          # while they lack it: only main, for the one-time path that lands it.
+          BOOTSTRAP_BASE_BRANCHES: main
         run: |
           # begin trusted-config-selection
           set -euo pipefail
@@ -55,10 +63,13 @@ jobs:
           if git -C src cat-file -e "$BASE_SHA:.github/review-agents.json" 2>/dev/null; then
             config_sha="$BASE_SHA"
             bootstrap=false
-          else
+          elif [[ " $BOOTSTRAP_BASE_BRANCHES " == *" $BASE_REF "* ]]; then
             config_sha="$HEAD_SHA"
             bootstrap=true
             echo "::warning title=AI review bootstrap::Base revision $BASE_SHA has no .github/review-agents.json, so this review uses the review configuration from the pull request head $HEAD_SHA."
+          else
+            echo "::error title=AI review configuration::Base branch '$BASE_REF' ($BASE_SHA) has no .github/review-agents.json. Bootstrap from the pull request head is allowed only for: $BOOTSTRAP_BASE_BRANCHES. Land the review configuration on '$BASE_REF' first."
+            exit 1
           fi
           echo "config_sha=$config_sha" >> "$GITHUB_OUTPUT"
           echo "bootstrap=$bootstrap" >> "$GITHUB_OUTPUT"
@@ -82,7 +93,7 @@ jobs:
           CONFIG_SHA: ${{ steps.trust.outputs.config_sha }}
           BOOTSTRAP: ${{ steps.trust.outputs.bootstrap }}
         run: >-
-          python3 trusted/.github/scripts/review.py prepare --config-root trusted --repo-dir src
+          python3 -I -B trusted/.github/scripts/review.py prepare --config-root trusted --repo-dir src
           --event "$GITHUB_EVENT_PATH" --config-sha "$CONFIG_SHA" --bootstrap "$BOOTSTRAP"
 
   review:
@@ -114,6 +125,15 @@ jobs:
             .github/scripts
           sparse-checkout-cone-mode: false
 
+      - name: Fingerprint the trusted configuration
+        id: fingerprint
+        run: |
+          # begin trusted-fingerprint
+          set -euo pipefail
+          digest="$(cd trusted && find .github -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
+          # end trusted-fingerprint
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
       - name: Check out the pull request head as data
         id: source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -128,7 +148,7 @@ jobs:
         env:
           CLAUDE_REVIEW_MODEL: ${{ vars.CLAUDE_REVIEW_MODEL }}
           CLAUDE_REVIEW_EFFORT: ${{ vars.CLAUDE_REVIEW_EFFORT }}
-        run: python3 trusted/.github/scripts/review.py config --config-root trusted --provider claude
+        run: python3 -I -B trusted/.github/scripts/review.py config --config-root trusted --provider claude
 
       - name: Check the review credential
         id: credential
@@ -147,9 +167,25 @@ jobs:
           BOOTSTRAP: ${{ needs.prepare.outputs.bootstrap }}
           AGENT_ID: ${{ matrix.agent_id }}
         run: >-
-          python3 trusted/.github/scripts/review.py prompt --config-root trusted --provider claude
+          python3 -I -B trusted/.github/scripts/review.py prompt --config-root trusted --provider claude
           --repo-dir src --event "$GITHUB_EVENT_PATH" --agent-id "$AGENT_ID"
           --out-dir "$RUNNER_TEMP/review" --config-sha "$CONFIG_SHA" --bootstrap "$BOOTSTRAP"
+
+      # The action changes into CLAUDE_WORKING_DIR and runs Bun there, and Bun
+      # loads bunfig.toml (preloads) and .env files from that directory. It must
+      # therefore be a trusted empty directory, never the pull request checkout.
+      - name: Prepare an empty working directory for Claude
+        id: workdir
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/claude-cwd"
+          mkdir -p "$dir"
+          if [ -n "$(ls -A "$dir")" ]; then
+            echo "::error title=AI review integrity::$dir is not empty."
+            exit 1
+          fi
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+          echo "config_dir=$HOME/.claude" >> "$GITHUB_OUTPUT"
 
       - name: Build the Claude arguments
         id: args
@@ -157,23 +193,56 @@ jobs:
           CLAUDE_REVIEW_MODEL: ${{ vars.CLAUDE_REVIEW_MODEL }}
           CLAUDE_REVIEW_EFFORT: ${{ vars.CLAUDE_REVIEW_EFFORT }}
           CONTEXT_DIR: ${{ steps.prompt.outputs.context_dir }}
-        run: python3 trusted/.github/scripts/review.py claude-args --config-root trusted --add-dir "$CONTEXT_DIR"
+        run: >-
+          python3 -I -B trusted/.github/scripts/review.py claude-args --config-root trusted
+          --add-dir "$GITHUB_WORKSPACE/src" --add-dir "$CONTEXT_DIR"
 
       # The base action runs Claude Code without GitHub tools or a GitHub token.
       # Its SHA fixes the Claude Code version it installs (2.1.288 for v1.0.240).
+      # The environment below presets every variable that could redirect the
+      # model, effort, configuration, proxy or runtime to trusted values.
       - name: Run the Claude review
         id: claude
         uses: anthropics/claude-code-action/base-action@ed670b4cf9de2a5a570d130d2f6197b9e543cd64 # v1.0.240
         env:
-          CLAUDE_WORKING_DIR: ${{ github.workspace }}/src
+          CLAUDE_WORKING_DIR: ${{ steps.workdir.outputs.dir }}
+          ANTHROPIC_MODEL: ${{ steps.settings.outputs.model }}
+          CLAUDE_CODE_EFFORT_LEVEL: ""
+          CLAUDE_CONFIG_DIR: ${{ steps.workdir.outputs.config_dir }}
+          CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1"
+          CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: "0"
+          HTTPS_PROXY: ""
+          HTTP_PROXY: ""
+          ALL_PROXY: ""
+          NO_PROXY: ""
+          NODE_OPTIONS: ""
+          NODE_EXTRA_CA_CERTS: ""
+          BUN_OPTIONS: ""
+          BUN_CONFIG_REGISTRY: ""
+          BUN_CONFIG_TOKEN: ""
         with:
           prompt_file: ${{ steps.prompt.outputs.prompt_file }}
           claude_args: ${{ steps.args.outputs.claude_args }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
+      - name: Verify the trusted configuration
+        id: verify
+        if: ${{ !cancelled() && steps.fingerprint.outcome == 'success' }}
+        env:
+          EXPECTED_DIGEST: ${{ steps.fingerprint.outputs.digest }}
+        run: |
+          # begin trusted-fingerprint
+          set -euo pipefail
+          digest="$(cd trusted && find .github -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
+          # end trusted-fingerprint
+          if [ "$digest" != "$EXPECTED_DIGEST" ]; then
+            echo "::error title=AI review integrity::The trusted review configuration changed during the review run."
+            exit 1
+          fi
+
       - name: Record the review result
         id: result
-        if: ${{ !cancelled() && steps.trusted.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' }}
         env:
           CLAUDE_REVIEW_MODEL: ${{ vars.CLAUDE_REVIEW_MODEL }}
           CLAUDE_REVIEW_EFFORT: ${{ vars.CLAUDE_REVIEW_EFFORT }}
@@ -184,23 +253,27 @@ jobs:
           AGENT_ID: ${{ matrix.agent_id }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
           EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+          SESSION_ID: ${{ steps.claude.outputs.session_id }}
           ACTION_OUTCOME: ${{ steps.claude.outcome }}
           CONCLUSION: ${{ steps.claude.outputs.conclusion }}
+          WORKDIR: ${{ steps.workdir.outputs.dir }}
           OUTCOMES: >-
             checkout=${{ steps.source.outcome }}
             settings=${{ steps.settings.outcome }}
             credential=${{ steps.credential.outcome }}
             prompt=${{ steps.prompt.outcome }}
+            workdir=${{ steps.workdir.outcome }}
             arguments=${{ steps.args.outcome }}
         run: |
           set -euo pipefail
           steps=()
           for outcome in $OUTCOMES; do steps+=(--step "$outcome"); done
-          python3 trusted/.github/scripts/review.py result --config-root trusted --provider claude \
+          python3 -I -B trusted/.github/scripts/review.py result --config-root trusted --provider claude \
             --event "$GITHUB_EVENT_PATH" --agent-id "$AGENT_ID" --out-dir "$RUNNER_TEMP/review/out" \
             --config-sha "$CONFIG_SHA" --bootstrap "$BOOTSTRAP" --merge-base "$MERGE_BASE" --run-url "$RUN_URL" \
             --execution-file "$EXECUTION_FILE" --action-outcome "$ACTION_OUTCOME" --conclusion "$CONCLUSION" \
-            --expected-cwd "$GITHUB_WORKSPACE/src" "${steps[@]}"
+            --expected-execution-file "$RUNNER_TEMP/claude-execution-output.json" --session-id "$SESSION_ID" \
+            --expected-cwd "$WORKDIR" "${steps[@]}"
 
       - name: Upload the review result
         if: ${{ !cancelled() && steps.result.outcome == 'success' }}
@@ -215,7 +288,12 @@ jobs:
 
       - name: Require a completed review
         if: ${{ !cancelled() }}
-        run: python3 trusted/.github/scripts/review.py require-complete --result "$RUNNER_TEMP/review/out/result.json"
+        run: |
+          result="$RUNNER_TEMP/review/out/result.json"
+          if ! jq -e '.status == "complete"' "$result" >/dev/null 2>&1; then
+            echo "::error title=AI review::The review did not complete: $(jq -r '(.status // "missing") + ": " + ((.errors // []) | join("; "))' "$result" 2>/dev/null || echo 'no result was recorded')"
+            exit 1
+          fi
 
   publish:
     name: Claude review comment
@@ -254,14 +332,16 @@ jobs:
           MATRIX: ${{ needs.prepare.outputs.matrix }}
           REVIEW_RESULT: ${{ needs.review.result }}
         run: >-
-          python3 trusted/.github/scripts/review.py publish --config-root trusted --provider claude
+          python3 -I -B trusted/.github/scripts/review.py publish --config-root trusted --provider claude
           --event "$GITHUB_EVENT_PATH" --results-dir "$RUNNER_TEMP/results" --matrix "$MATRIX"
           --review-job-result "$REVIEW_RESULT"
 
   gate:
-    name: Claude review gate
+    # A title or body edit gets a different check name, so its skipped job can
+    # never stand in for the required "Claude review gate" of a real run.
+    name: ${{ github.event.action == 'edited' && !github.event.changes.base && 'Claude review gate (title or body edit, not evaluated)' || 'Claude review gate' }}
     needs: [prepare, review, publish]
-    if: always()
+    if: ${{ always() && !(github.event.action == 'edited' && !github.event.changes.base) }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     permissions:
@@ -303,7 +383,7 @@ jobs:
           REVIEW_RESULT: ${{ needs.review.result }}
           PUBLISH_RESULT: ${{ needs.publish.result }}
         run: >-
-          python3 trusted/.github/scripts/review.py gate --config-root trusted --provider claude
+          python3 -I -B trusted/.github/scripts/review.py gate --config-root trusted --provider claude
           --event "$GITHUB_EVENT_PATH" --results-dir "$RUNNER_TEMP/results" --policy "$POLICY"
           --matrix "$MATRIX" --prepare-result "$PREPARE_RESULT" --review-result "$REVIEW_RESULT"
           --publish-result "$PUBLISH_RESULT"

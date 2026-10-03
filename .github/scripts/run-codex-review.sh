@@ -37,7 +37,7 @@ if [ -n "$(find "$CODEX_HOME" -maxdepth 1 \( -name '*.toml' -o -name rules \) -p
 fi
 
 # Build the argument list from the validated central settings (NUL-delimited).
-python3 "$script_dir/review.py" codex-argv --config-root "$config_root" \
+python3 -I -B "$script_dir/review.py" codex-argv --config-root "$config_root" \
   --workdir "$repo_dir" --output "$out_dir/review.txt" > "$out_dir/argv"
 args=()
 while IFS= read -r -d '' arg; do

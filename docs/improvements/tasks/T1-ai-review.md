@@ -6,12 +6,17 @@
 | Governing issue | #25, updatedAt 2026-10-03T00:44:05Z, sha256(body)[:16] `3e13f34c17fb3f73`, no comments (rechecked live at completion) |
 | Base | `1e6184c37c0d2cdb8b493d59718c9c7281787a9e` on `improve/integration` |
 | Branch / worktree | `t1/ai-review` in `/workspace/webaudio-tinysynth-worktrees/t1-ai-review` |
-| Commits (GPG-signed) | `ef00de2` implementation, `f429489` this record, then a follow-up adding the Claude tool-set check (see `git log`) |
+| Commits (GPG-signed) | `ef00de2` implementation, `f429489` this record, `1f17527` Claude tool-set check, `81f8efd` comment heading, `e9e31e6` instruction files and comment ownership, `848bae6` init requirement and Codex authentication message, then the round-three and G0 fixes (§6d; see `git log`) |
 | Large evidence | `/workspace/webaudio-tinysynth-worktrees/_evidence/t1-ai-review/` |
 | Setup documentation | `.github/scripts/README.md` |
 
-No real provider run has happened. The supervisor pushes the branch and opens
-the pull request; section 6 lists what that run must confirm.
+Real runs: PR #28 (`t1/ai-review` → `improve/integration`) ran three rounds in
+bootstrap mode. Round one at `1f17527` passed both gates with two MEDIUM
+findings. Round two at `e9e31e6` passed with two MEDIUM findings. Round three at
+`848bae6` failed by design: Codex reported a HIGH (Bun in the checkout, fixed in
+§6d) and Claude's review was incomplete (a prose preamble, handled in §6d).
+Section 6 marks what these runs confirmed. Logs:
+`_evidence/t1-ai-review/pr28-runs/`.
 
 ## 1. Files
 
@@ -23,7 +28,7 @@ the pull request; section 6 lists what that run must confirm.
 | `.github/scripts/review_lib.py`, `review.py` | Configuration and settings validation, change detection, prompt building, result parsing, credential guard, comment rendering, upsert and gate |
 | `.github/scripts/run-codex-review.sh` | Runs the pinned Codex CLI with a minimal environment |
 | `.github/scripts/codex-cli/package.json`, `package-lock.json` | Codex CLI pin `@openai/codex` 0.160.0 with integrity hashes. The root `.gitignore` matches `package-lock.json`, so the lockfile was added with `git add -f`; once T1 tooling removes that entry, nothing changes. |
-| `.github/scripts/test_review.py` | 54 `unittest` tests |
+| `.github/scripts/test_review.py` | 69 `unittest` tests (one opt-in Bun test) |
 | `.github/scripts/.gitignore` | Ignores `__pycache__/` |
 | `.github/workflows/codex-review.yml`, `claude-review.yml` | Jobs `prepare` → `review` (matrix) → `publish` → `gate` per provider |
 | `.github/workflows/review-helpers.yml` | Runs the tests, shellcheck and a pinned, checksum-verified actionlint on the review workflows |
@@ -47,15 +52,15 @@ No file outside `.github/` and this record changed.
 | Tests: lgtm, each severity, malformed and missing output, partial lgtm after failure, missing settings, fork and draft, stale heads, repeated comment updates, propagation for both providers | Met | `test_review.py` (all named in section 3) |
 | Versions from official sources, compatible pins, no `@latest` | Met | Section 4; `test_codex_cli_is_pinned_exactly`, `test_actions_are_pinned_to_commit_shas` |
 | Stable check names and required variables and secrets documented | Met | `.github/scripts/README.md` "Checks" and "Configuration" |
-| Real authorized Actions run | **Not done** | Requires the supervisor's push; see section 6 |
+| Real authorized Actions run | Done for both providers in bootstrap mode (PR #28, three rounds); the round-three fixes still need a run | Section 6; `_evidence/t1-ai-review/pr28-runs/` (`highlights.txt`, `review-job-highlights.txt`, `step-conclusions.txt`, job logs) |
 | Ruleset and credential changes reported separately | Met | Section 7 (recommendations only) |
 
 ## 3. Validation
 
 | Command | Result |
 | --- | --- |
-| `python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v` (Python 3.12.3) | 54 tests OK after the follow-ups (`_evidence/t1-ai-review/unittest.log`) |
-| `actionlint` 1.7.12 linux_amd64 (sha256 `8aca8db9…` verified against the release `checksums.txt`) on `.github/workflows/*review*.yml`, with shellcheck on PATH | exit 0 |
+| `python3 -I -B -m unittest discover -s .github/scripts -p 'test_*.py' -v` (Python 3.12.3) | 69 tests OK, 1 skipped without `REVIEW_TEST_BUN` (`_evidence/t1-ai-review/unittest.log`); the Bun test passes with the pinned Bun 1.3.14 |
+| `actionlint` 1.7.12 linux_amd64 (sha256 `8aca8db9…` verified against the release `checksums.txt`) on `.github/workflows/*.yml`, with shellcheck on PATH | exit 0 |
 | `shellcheck` 0.11.0 (asset digest `sha256:8c3be12b…` verified against the GitHub release) on `.github/scripts/*.sh` | exit 0 |
 | Mutation checks on a scratch copy: removing fence tracking, the bot identity match, the Claude `--effort` flag, the stale check, the partial-output rule, the fork failure, the Codex header check, the credential guard or the Claude tool-set check | each made the suite fail |
 | Local end-to-end with the real pinned CLIs, no credentials (`_evidence/t1-ai-review/local-e2e/`) | Codex 0.160.0 through `run-codex-review.sh`: header `model: fixture-model-xyz` / `reasoning effort: low` parsed; 401 exit recorded as failed. Claude Code 2.1.288 with the generated `claude_args`: init shows the configured model, `cwd` = checkout, `permissionMode: dontAsk`, tools `[Glob, Grep, Read]`; the `is_error: true` result is classified failed |
@@ -153,32 +158,48 @@ fetched script `3a68d340…`). The base action pins `oven-sh/setup-bun` and
   `persist-credentials: false` and is read only. No npm install of PR code runs.
 - PR title and body come from `$GITHUB_EVENT_PATH` and sit between random
   `BEGIN/END_UNTRUSTED_PR_METADATA_<nonce>` markers.
-- The result step withholds output that contains a secret literal or its JSON
-  escape, including refreshed Codex tokens re-read from `auth.json`; it prints
-  the Codex log only when clean. Artifacts contain only `result.json` and
-  `review.md` and expire after one day.
-- **Bootstrap:** when `base.sha` lacks `.github/review-agents.json`, the config
-  comes from `head.sha`, loudly: `::warning::`, step summary, `bootstrap: true`
-  in the result and a BOOTSTRAP notice in the comment. Normal gate rules apply.
-  This PR and an umbrella PR into `main` take that path. Partial configuration
-  at the base fails setup.
-- **Gate:** fork fails ("AI review unavailable for fork PRs"); draft passes as an
-  intentional skip; anything other than complete results for this exact base and
-  head with successful review and publish jobs fails; any CRITICAL or HIGH
-  finding fails after publication; MEDIUM and LOW are reported as advisory.
+- The result step withholds output that contains a secret value or a long
+  string leaf of it, in literal, JSON-escaped, reversed, hex or base64
+  (standard and URL-safe, every alignment) form, also after removing
+  whitespace. This includes refreshed Codex tokens re-read from `auth.json`.
+  The Codex log is printed only when clean. Artifacts contain only
+  `result.json` and `review.md` and expire after one day.
+- Claude runs from an empty trusted working directory and reads the checkout
+  via `--add-dir`; helpers run as `python3 -I -B`; `trusted/` is fingerprinted
+  before and verified after the provider step (§6d).
+- **Bootstrap:** only a base `main` without `.github/review-agents.json` takes
+  the configuration from `head.sha`, loudly: `::warning::`, step summary,
+  `bootstrap: true` in the result and a BOOTSTRAP notice in the comment. Normal
+  gate rules apply. Any other base without the configuration fails setup with
+  an explicit message. Partial configuration at the base fails setup.
+- **Gate:** fork and Dependabot pull requests fail with explicit messages;
+  draft passes as an intentional skip; anything other than complete results for
+  this exact base and head with successful review and publish jobs fails; any
+  CRITICAL or HIGH finding fails after publication; MEDIUM and LOW are
+  reported as advisory. A title or body edit runs nothing, and its gate job has
+  a different name, so it cannot satisfy the required check.
 
 ## 6. What a real Actions run must confirm
 
-1. `ubuntu-24.04-arm` starts all jobs; `npm ci` installs `codex-linux-arm64`, and the version check passes.
-2. After the sysctl step, the sandbox preflight passes on ARM: `git` runs, the write is refused, and **network access is refused**. If read-only mode allows network, the job fails by design and the sandbox configuration must change.
-3. Codex authenticates with `CODEX_AUTH_DOT_JSON`; the log header shows the organization's `CODEX_REVIEW_MODEL` and `CODEX_REVIEW_EFFORT`; the API accepts them; `-o` captures the final message.
-4. Claude installs on ARM; `--restricted` still accepts `CLAUDE_CODE_OAUTH_TOKEN` from the environment (the help text says `--bare` limits auth routes, and the local run cannot distinguish a restriction from "not logged in"); the init message reports the configured model, `cwd` = `src/` (so `CLAUDE_WORKING_DIR` reaches the composite action) and a read-only tool set through the SDK path; `--add-dir` lets Claude read the context directory; the run completes within 45 minutes.
-5. Artifacts pass between jobs; `pull-requests: write` is enough to list, create, update and delete issue comments; the comment author is `github-actions[bot]` with type `Bot`.
-6. Bootstrap labeling appears on this pull request; a second push updates the same comments; a push during a run cancels it and the older run does not publish.
-7. The gates report the expected names. A deliberate invalid variable on a test repository (or a repository-level override) fails with the variable named.
-8. Whether the OpenAI API rejects an unsupported `model_reasoning_effort` (expected) rather than ignoring it.
-9. The `OUTCOMES` word-split passes each setup step outcome to the result step.
-10. If setup fails, the skipped review job's `fromJSON` matrix may show a strategy-evaluation error rather than a clean skip. The gate still fails through `prepare != success`, so this is cosmetic.
+Status after PR #28's three rounds (runs 37090657860/71, 37091416897/840,
+37091989339/349; job logs in `_evidence/t1-ai-review/pr28-runs/`):
+
+| # | Item | Status |
+| --- | --- | --- |
+| 1 | `ubuntu-24.04-arm` starts all jobs; `npm ci` installs `codex-linux-arm64`; the version check passes | **Confirmed**: "Image: ubuntu-24.04-arm", "Node v22.23.3, npm 10.9.9, aarch64", install step success in all three Codex runs |
+| 2 | After the sysctl step the sandbox preflight passes on ARM: `git` runs, the write is refused, network is refused | **Confirmed** as a passing step in all three runs, but the old probe could not tell refusal from other curl failures (G0 L5). The new probe logs both exit codes against an unsandboxed control; it needs one more run. |
+| 3 | Codex authenticates with `CODEX_AUTH_DOT_JSON`; the header shows the configured model and effort; `-o` captures the final message | **Confirmed**: "model: gpt-6.1-sol", "reasoning effort: high", "sandbox: read-only", exit 0, findings captured and published |
+| 4 | Claude installs on ARM; `--restricted` accepts `CLAUDE_CODE_OAUTH_TOKEN`; the init message reports the configured model through the SDK path; the run finishes within 45 minutes | **Confirmed**: "Installing Claude Code v2.1.288", `INPUT_CLAUDE_ARGS` and SDK `settingSources: ["user"]`, init model `claude-opus-5-5`, `subtype: success`, `permission_denials_count: 0` |
+| 4b | Claude reads the checkout via `--add-dir` from the empty trusted working directory; the init `cwd` is `$RUNNER_TEMP/claude-cwd`; the session and execution-file checks pass | **Open** (new in §6d) |
+| 5 | Artifacts pass between jobs; `pull-requests: write` lists, creates and updates comments; the author is `github-actions[bot]` | **Confirmed**: comments 5964792024 (Codex) and 5964758179 (Claude) were created in round one and updated in place in rounds two and three |
+| 6 | Bootstrap labeling; a second push updates the same comments; a push during a run cancels it and the older run does not publish | Labeling and in-place updates **confirmed**; cancel-on-push **open** |
+| 7 | The gates report the expected names; an invalid variable fails with its name | Names **confirmed** (job list); invalid variable **open** |
+| 8 | The OpenAI API rejects an unsupported `model_reasoning_effort` | **Open** |
+| 9 | The `OUTCOMES` word-split passes each step outcome to the result step | **Confirmed**: complete results with no spurious setup-step errors |
+| 10 | A failed setup makes the skipped review job show a strategy error (cosmetic) | Not exercised |
+| 11 | A title edit produces no check named exactly `Codex review gate` or `Claude review gate`; a base change runs a full review | **Open** (new in §6d) |
+| 12 | The fingerprint verification passes in a normal run (`-B` writes no bytecode) | **Open** (new in §6d) |
+| 13 | PR #28's next run fails setup by design: its base `improve/integration` lacks the configuration and is not on the bootstrap allowlist | Expected; the configuration must land on `improve/integration` first (§6d, M3) |
 
 ## 6a. Follow-up: visible provider and model heading
 
@@ -283,16 +304,72 @@ MEDIUM findings are fixed here.
   refreshed tokens, or an API-key credential, is an organization-level
   decision.
 
+## 6d. Round three and the G0 review
+
+Round three at `848bae6` failed both gates as designed, and the independent G0
+review of `1eff7ba` (`/workspace/webaudio-tinysynth-worktrees/g0-review/docs/improvements/tasks/G0-review.md`)
+rejected #25 pending H1. Evidence for this section is under
+`_evidence/t1-ai-review/` in `bun-cwd/`, `env-presets/`, `npmrc/` and `pr28-runs/`.
+
+| Finding | Fix | Tests and evidence |
+| --- | --- | --- |
+| Round-three HIGH and G0 H1: Bun ran in the checkout with the Claude token | `CLAUDE_WORKING_DIR` is now `$RUNNER_TEMP/claude-cwd`, created and verified empty. The checkout and the context go in through `--add-dir`. The prompt says the working directory is empty and names the checkout path. The result step requires the init `cwd` (compared by realpath) to be that directory. | `test_claude_runs_from_an_empty_trusted_directory`; `test_bun_does_not_load_checkout_configuration` (opt-in; passes with the pinned Bun 1.3.14, `bun-cwd/unittest-bun.txt`). Probe `bun-cwd/bun-preload-probe.txt`: with the checkout as working directory the preload ran with the token visible and `.env`/`.env.local` were injected; with the empty directory nothing loaded; Bun does not walk up to parent directories. API-stub probe `bun-cwd/claude-addir-probe.txt`: empty working directory plus the hostile checkout as `--add-dir` sends only the prompt, with tools `[Glob, Grep, Read]`. |
+| H1 extra, L3: the model could be overridden; a mismatch only warned | A reported model that differs from the variable now fails the review. The action step sets `ANTHROPIC_MODEL` to the validated model; the base action gives it precedence over `--model`. | `test_claude_final_result_extraction` ("model differs from the variable"). `env-presets/summary.txt` shows `CLAUDE_CODE_EFFORT_LEVEL=low` overriding `--effort high`, so it is cleared, and an empty value defers to `--effort`. The captured request carries `output_config.effort`. |
+| H1 extra: pass-through variables | The action step presets `CLAUDE_CONFIG_DIR` (`~/.claude`), `CLAUDE_CODE_EFFORT_LEVEL` (empty), `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`, `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=0`, empty `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY`/`NO_PROXY`, `NODE_OPTIONS`, `NODE_EXTRA_CA_CERTS`, `BUN_OPTIONS`, `BUN_CONFIG_REGISTRY` and `BUN_CONFIG_TOKEN`. Lowercase proxy names are omitted because Actions treats `env` keys case-insensitively (actionlint). | `test_claude_runs_from_an_empty_trusted_directory` checks each preset; `env-presets/summary.txt` shows the empty presets leave the request unchanged |
+| H1 extra: result and gate steps must not trust files the provider step could rewrite | `trusted/.github` is fingerprinted before the provider step (the output is runner-held) and verified afterwards. The result step runs only after verification. The completion check is inline `jq`. The Claude execution file must be the action's own path and carry the `session_id` that the action output. Helpers run as `python3 -I -B`, so no bytecode is written or trusted. | `test_trusted_configuration_is_fingerprinted_and_verified` (tampered or planted `.pyc` changes the digest); `test_claude_final_result_extraction` (session, file) |
+| Round-three incomplete Claude review and parser robustness | The policy now says to start with `lgtm` or `### [` and write nothing else, and the prompt's last line repeats it. A bounded tolerance discards up to three lines (500 characters) of prose before the first finding, without fences or `lgtm`, only when every finding is valid; the result records a warning and the comment shows the findings only. List semantics reject prose between or after findings. | `ParserToleranceTests` (round-three shape accepted; long, fenced, `lgtm` and invalid-finding preambles and prose between or after rejected; lazy, indented, list and fenced continuations accepted) |
+| G0 L1: malformed heading after a valid finding | Any other Markdown heading, or a line starting with a severity tag and a location, makes the review malformed wherever it appears | `test_unknown_severity_and_malformed_findings_are_incomplete` (`### HIGH b.js:2`, `**HIGH** b.js:2`, lazy form, `## Summary`) |
+| Round-three MEDIUM, G0 L2: base retarget | `edited` triggers the workflows. The guard `github.event.action == 'edited' && !github.event.changes.base` skips setup, review and publish, and gives the gate job another name, so a skipped gate (which GitHub counts as success) can never satisfy the required `… review gate` check. A metadata edit joins a `-metadata` concurrency group and cannot cancel a review. A base change runs a full review against the new base. Setup also classifies a metadata edit as `metadata-edit` as a second line of defense. | `test_metadata_edit_classification`, `test_workflows_filter_title_and_body_edits_identically`, `test_stable_check_names` |
+| G0 M2 (guard) | Encodings: literal, JSON-escaped, reversed, hex (both cases), standard and URL-safe base64 at all three alignments, also with whitespace removed | `LeakGuardTests` |
+| G0 M2 (fork message) | The message says a maintainer must review fork changes manually and that only reviewed, trusted code may be mirrored | `test_fork_message_does_not_advise_mirroring_untrusted_code` |
+| G0 M3: bootstrap for any configuration-less base | `BOOTSTRAP_BASE_BRANCHES: main` in the selection step; any other base fails with "Bootstrap from the pull request head is allowed only for: main". PR #28's next run will therefore fail setup until the configuration is on `improve/integration`. | `test_bootstrap_is_allowed_only_for_listed_bases` (runs the workflow's own selection script) |
+| G0 L4 | The heading comes first, then the BOOTSTRAP notice | `test_bootstrap_uses_the_head_loudly` |
+| G0 L5 | The network probe runs the same HTTPS request outside the sandbox (must exit 0) and inside (must fail), and logs both curl exit codes. It proves the sandbox blocks a TCP and TLS connection the runner can make, not every protocol. | Workflow text; README |
+| G0 L6: Dependabot | PRs authored or sent by `dependabot[bot]` get policy `dependabot`, and the gate fails with "AI review unavailable for Dependabot PRs". Dependabot secrets are an organization decision. | `test_dependabot_pull_requests_fail_explicitly` |
+| G0 L7 | `review-helpers.yml` runs actionlint on `.github/workflows/*.yml` (read-only) | local actionlint on all workflows |
+| G0 I1 | README "Trust boundary" documents fork check-name spoofing under `pull_request`, and recommends fork-workflow approval, Actions-sourced required gates and code-owner review of `.github/**`. No settings changed. | README |
+| G0 M1 | Already fixed at `848bae6` | §6c |
+| G0 M4 | Tooling scope (`package.json`), not owned by this task | — |
+
+**Parser decision.** Failing closed on any preamble made an otherwise valid
+round-three review incomplete. That costs a rerun and adds no safety: prose
+before the first heading cannot add, remove or change a parsed finding or its
+severity. The tolerance is bounded (three lines, 500 characters, no fence, no
+`lgtm`), applies only when every finding is valid, is recorded as a warning,
+and the discarded text is not published. Prose between or after findings stays
+an error because it could carry review content outside the parsed records. The
+stronger prompt aims to make the tolerance rarely needed.
+
+**Audit of credential-bearing launches.**
+
+| Job and step | Credential | Process | Configuration that could come from the working directory or the checkout | Result |
+| --- | --- | --- | --- | --- |
+| Codex: check the credential | `CODEX_AUTH_DOT_JSON` | `python3 -I -c` | cwd modules: `-I` keeps cwd off `sys.path`; the workspace root holds only `src/` and `trusted/` | safe (`test_shadow_modules_in_the_working_directory_are_never_loaded`) |
+| Codex: run | `auth.json` in a fresh `CODEX_HOME` | bash (`--noprofile --norc`), `run-codex-review.sh`, `python3 -I -B`, `env -i` Node launcher, Codex | shell rc: none. Python: isolated. Node: no `.env` autoload; `NODE_OPTIONS` removed by `env -i`; `package.json` "type" applies to the launcher's own package. Codex: `.codex/` project layer not loaded (untrusted, fresh home); `AGENTS*.md` and skills disabled; `.env` only from `CODEX_HOME` (`codex-rs/arg0/src/lib.rs` `load_dotenv`). git in the sandbox uses the checkout-written `.git/config`; read commands run no hooks. | safe (exact-environment test; §6b probes) |
+| Codex: model commands | can read `auth.json` | PR code may run read-only, without network | — | residual (M2): output guard |
+| Codex: record result | `CODEX_AUTH_DOT_JSON` | `python3 -I -B` from `trusted/` | fingerprint verified first | safe |
+| Codex: install CLI | none | `npm ci --ignore-scripts` in `$RUNNER_TEMP/codex-cli` | the checkout's `.npmrc` and `package.json` scripts are never in scope | safe (`npmrc/summary.txt`: install succeeds with a dead-registry `.npmrc` in `src/`; the control inside `src/` fails with ECONNREFUSED; no checkout script ran) |
+| Claude: check the credential | `CLAUDE_CODE_OAUTH_TOKEN` | bash | — | safe |
+| Claude: base action | `CLAUDE_CODE_OAUTH_TOKEN` | `setup-node` (cache off, `package-manager-cache: false`), `setup-bun` (1.3.14, `no-cache: true`), `bun install --production` in `GITHUB_ACTION_PATH`, the official installer, `bun run` in `CLAUDE_WORKING_DIR`, Claude Code | Bun `bunfig.toml` and `.env*` were loaded from the checkout (H1); now an empty trusted directory. Claude settings, hooks, `CLAUDE.md`, rules, skills, commands, agents and `.mcp.json`: excluded by `--setting-sources user`, `--restricted` and `--strict-mcp-config`, with no `CLAUDE.md` from added directories. Environment presets as above. | fixed |
+| Claude: record result | `CLAUDE_CODE_OAUTH_TOKEN` | `python3 -I -B` from `trusted/` | fingerprint verified; execution-file path and session checked | safe |
+| Comment job | `GH_TOKEN` (pull-requests: write) | `python3 -I -B` from a fresh `trusted/` checkout, `gh` | `gh` reads `~/.config/gh` only; no checkout in this job | safe |
+| Every checkout | job token, `persist-credentials: false` | git | `.gitattributes` drivers need git config; LFS smudge is the runner's own binary | safe |
+| Caches | — | — | none used (no `actions/cache`; the action disables Node and Bun caches) | n/a |
+
 ## 7. Recommendations (not performed)
 
 - Ruleset: require `Codex review gate` and `Claude review gate` on `improve/integration` and `main` after a real run succeeds. This is a ruleset change that needs user authorization (D-002).
 - Dependabot (owned by the tooling agent): add `npm` for `/.github/scripts/codex-cli` and keep `github-actions` updates, so the pins move by pull request. When the Claude action moves, re-verify the flags and update `accepted_effort_levels` in the same pull request.
-- Keep "Require approval for fork pull request workflows" enabled. Under `pull_request` a fork's own YAML runs, so a fork can spoof a gate name; maintainer approval and review of workflow changes are the control.
+- Keep "Require approval for fork pull request workflows" enabled. Under `pull_request` a fork's own YAML runs, so a fork can spoof a gate name; maintainer approval and review of workflow changes are the control. Require the gates with GitHub Actions as the expected source, and require code-owner review of `.github/**` (G0 I1).
+- Land the review configuration on `improve/integration` (for example by merging T1 there) before relying on further PR #28 runs: bootstrap is now limited to base `main` (G0 M3).
+- Dependabot review credentials, an API-key Codex credential, or persisting refreshed Codex tokens are organization decisions.
 
 ## 8. Residual risks
 
 - Same-repository authors control the executed workflow YAML under `pull_request`; base-revision staging protects the review policy and helpers only while the YAML is unchanged.
-- The Codex read-only sandbox can read files on the runner, including `auth.json`. Network refusal, the minimal environment and the output credential guard mitigate exfiltration; the guard detects literal and JSON-escaped values, not other encodings.
+- The Codex read-only sandbox can read files on the runner, including `auth.json`. Network refusal, the minimal environment and the output credential guard mitigate exfiltration. The guard detects literal, JSON-escaped, reversed, hex and base64 copies (with whitespace removed); a copy split into pieces with other characters between them, a partial copy or another encoding is not detected.
+- The edit guard relies on GitHub naming a skipped gate job either with the rendered alternative name or with the raw expression; both differ from the required name. A real title edit (§6 item 11) confirms it.
+- The bounded preamble tolerance discards up to three lines of model prose; anything beyond fails closed.
 - The Claude effort vocabulary must track the pinned CLI by hand.
 - Strict output parsing can mark a substantively useful review incomplete if the model deviates from the format. That fails closed and shows the raw text.
 - Cross-provider aggregation relies on both gates being required checks.

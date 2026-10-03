@@ -23,6 +23,8 @@ sys.path.insert(0, str(SCRIPTS))
 import review_lib as lib  # noqa: E402
 
 REPO = "owner/tinysynth"
+# The workflows' guard for a title or body edit that did not change the base.
+METADATA_EDIT = "github.event.action == 'edited' && !github.event.changes.base"
 SETTINGS_ENV = {
     "CODEX_REVIEW_MODEL": "fixture-codex-model", "CODEX_REVIEW_EFFORT": "medium",
     "CLAUDE_REVIEW_MODEL": "fixture-claude-model", "CLAUDE_REVIEW_EFFORT": "low",
@@ -163,7 +165,14 @@ class OutputContractTests(unittest.TestCase):
             "missing line": finding().replace(":10 —", " —"),
             "missing field": finding().replace("- **Impact:** Impact.\n", ""),
             "empty field": finding(action=""),
-            "preamble": "Here is my review.\n\n" + finding(),
+            "long preamble": "One.\nTwo.\nThree.\nFour.\n\n" + finding(),
+            "preamble before an invalid finding": "Intro.\n\n" + finding(action=""),
+            "prose after the findings": finding() + "\nOverall the change looks fine.\n",
+            "prose between findings": finding() + "\nAlso, a thought.\n\n" + finding("LOW", line=20),
+            "unbracketed heading after a valid finding": finding("LOW") + "\n### HIGH b.js:2 — remote code execution\n",
+            "bold pseudo-heading after a valid finding": finding("LOW") + "\n**HIGH** b.js:2 — remote code execution\n",
+            "lazy bold pseudo-heading": finding("LOW").rstrip() + "\n**HIGH** b.js:2 — remote code execution\n",
+            "other heading": "## Summary\n\n" + finding(),
             "lgtm with findings": finding() + "\nlgtm\n",
             "absolute path": finding(path="/etc/passwd"),
             "unterminated fence": finding(evidence="See:\n```js\nx()"),
@@ -278,7 +287,9 @@ class SettingsTests(Workspace):
                 for override in ("project_doc_max_bytes=0", "skills.include_instructions=false"):
                     self.assertEqual(argv[argv.index(override) - 1], "-c")
                 self.assertEqual(call["stdin"], "PROMPT")
-                self.assertNotIn("CODEX_AUTH_DOT_JSON", call["env"])
+                # Only these variables reach Codex: no NODE_OPTIONS, BUN_*, PYTHON* or proxy settings.
+                self.assertEqual(set(call["env"]), {"HOME", "PATH", "CODEX_HOME", "LANG", "LC_ALL", "TERM",
+                                                    "NO_COLOR"})
                 self.assertEqual((out / "exit-code").read_text().strip(), "0")
 
     def test_codex_refuses_a_home_with_configuration(self):
@@ -396,7 +407,8 @@ class BootstrapTests(Workspace):
         repo.rename(workspace / "src")
         output = self.dir / f"selection-{with_config}"
         completed = subprocess.run(["bash", "-c", self.selection_script("codex-review.yml")], cwd=workspace,
-                                   env=self.base_env | {"BASE_SHA": base, "HEAD_SHA": head,
+                                   env=self.base_env | {"BASE_SHA": base, "HEAD_SHA": head, "BASE_REF": "main",
+                                                        "BOOTSTRAP_BASE_BRANCHES": "main",
                                                         "GITHUB_OUTPUT": str(output)},
                                    capture_output=True, text=True)
         self.assertEqual(completed.returncode, 0, completed.stderr)
@@ -416,7 +428,9 @@ class BootstrapTests(Workspace):
         comment = lib.render_comment(record, "", "Codex")
         self.assertIn("**BOOTSTRAP:**", comment)
         visible = [line for line in comment.splitlines() if line and not line.startswith("<!--")]
-        self.assertEqual(visible[1:], [lib.heading(record, "Codex"), "lgtm"])
+        self.assertEqual(visible[0], lib.heading(record, "Codex"))
+        self.assertTrue(visible[1].startswith("> **BOOTSTRAP:**"))
+        self.assertEqual(visible[2:], ["lgtm"])
         passed, messages = lib.evaluate_gate(
             policy="review", upstream=dict.fromkeys(("prepare", "review", "publish"), "success"),
             expected=[("codex", "tinysynth")], results={("codex", "tinysynth"): record},
@@ -489,7 +503,8 @@ class ResultTests(Workspace):
             "--step", "settings=success", env=SETTINGS_ENV | SECRETS_ENV | (env or {}), check=True)
         return json.loads((out / "result.json").read_text()), (out / "review.md").read_text(), completed
 
-    def claude_result(self, messages, *, outcome="success", conclusion="success", cwd=None, env=None):
+    def claude_result(self, messages, *, outcome="success", conclusion="success", cwd=None, env=None,
+                      session="sess-1", expected_execution=None):
         execution = self.dir / f"execution-{len(list(self.dir.glob('execution-*')))}.json"
         if messages is not None:
             execution.write_text(json.dumps(messages))
@@ -497,7 +512,8 @@ class ResultTests(Workspace):
         self.review("result", "--config-root", ROOT, "--provider", "claude", "--event", self.make_event(),
                     "--agent-id", "tinysynth", "--out-dir", out, "--config-sha", "a" * 40, "--bootstrap", "false",
                     "--execution-file", execution, "--action-outcome", outcome, "--conclusion", conclusion,
-                    "--expected-cwd", cwd or "/work/src", env=SETTINGS_ENV | SECRETS_ENV | (env or {}), check=True)
+                    "--expected-execution-file", expected_execution or execution, "--session-id", session,
+                    "--expected-cwd", cwd or "/work/cwd", env=SETTINGS_ENV | SECRETS_ENV | (env or {}), check=True)
         return json.loads((out / "result.json").read_text())
 
     def test_codex_lgtm_findings_and_identity(self):
@@ -507,7 +523,7 @@ class ResultTests(Workspace):
         self.assertEqual((result["model"], result["resolved_model"]), ("fixture-codex-model", "fixture-codex-model"))
         result, text, _ = self.codex_result(review=finding("HIGH"))
         self.assertEqual((result["status"], result["blocking"]), ("complete", True))
-        self.assertEqual(text, finding("HIGH"))
+        self.assertEqual(text, finding("HIGH").strip())
 
     def test_codex_failures_are_never_complete(self):
         cases = {
@@ -525,7 +541,7 @@ class ResultTests(Workspace):
                 result, text, _ = self.codex_result(**kwargs)
                 self.assertEqual(result["status"], "failed")
                 self.assertEqual(text, "")
-        result, _, _ = self.codex_result(review="Summary first.\n" + finding())
+        result, _, _ = self.codex_result(review=finding() + "\nOverall it looks fine.\n")
         self.assertEqual(result["status"], "incomplete")
 
     def test_codex_authentication_failures_are_actionable(self):
@@ -578,7 +594,8 @@ class ResultTests(Workspace):
 
     def test_claude_final_result_extraction(self):
         # Init fields as Claude Code 2.1.288 reported them for the generated arguments.
-        init = {"type": "system", "subtype": "init", "model": "fixture-claude-model", "cwd": "/work/src",
+        init = {"type": "system", "subtype": "init", "model": "fixture-claude-model", "cwd": "/work/cwd",
+                "session_id": "sess-1",
                 "permissionMode": "dontAsk", "tools": ["Glob", "Grep", "Read"]}
         ok = {"type": "result", "subtype": "success", "is_error": False, "result": "lgtm"}
         result = self.claude_result([init, ok])
@@ -597,7 +614,11 @@ class ResultTests(Workspace):
             "missing execution file": (None, {}),
             "action failed": ([init, ok], {"outcome": "failure"}),
             "conclusion failure": ([init, ok], {"conclusion": "failure"}),
-            "wrong working directory": ([init, ok], {"cwd": "/work"}),
+            "wrong working directory": ([init, ok], {"cwd": "/work/src"}),
+            "model differs from the variable": ([init | {"model": "fixture-other-model"}, ok], {}),
+            "session differs from the action's": ([init, ok], {"session": "sess-2"}),
+            "no session reported by the action": ([init, ok], {"session": ""}),
+            "execution file not the action's own": ([init, ok], {"expected_execution": "/tmp/elsewhere.json"}),
             "shell tool available": ([init | {"tools": ["Read", "Bash"]}, ok], {}),
             "MCP tool available": ([init | {"tools": ["Read", "mcp__github__add_comment"]}, ok], {}),
             "tool set not reported": ([{k: v for k, v in init.items() if k != "tools"}, ok], {}),
@@ -613,7 +634,7 @@ class ResultTests(Workspace):
         for model, effort in (("fixture-model-one", "low"), ("fixture-model-two", "high")):
             codex, _, _ = self.codex_result(header=(model, effort), env={
                 "CODEX_REVIEW_MODEL": model, "CODEX_REVIEW_EFFORT": effort})
-            init = {"type": "system", "subtype": "init", "model": model, "cwd": "/work/src",
+            init = {"type": "system", "subtype": "init", "model": model, "cwd": "/work/cwd", "session_id": "sess-1",
                     "permissionMode": "dontAsk", "tools": ["Glob", "Grep", "Read"]}
             claude = self.claude_result([init, {"type": "result", "subtype": "success", "is_error": False,
                                                 "result": "lgtm"}],
@@ -968,9 +989,271 @@ class WorkflowStructureTests(unittest.TestCase):
         texts = self.workflows()
         for provider, title in (("codex", "Codex"), ("claude", "Claude")):
             text = texts[f"{provider}-review.yml"]
-            for name in (f"{title} review gate", f"{title} review comment", f"{title} review setup",
+            for name in (f"{title} review comment", f"{title} review setup",
                          f"{title} review / ${{{{ matrix.agent_id }}}}"):
                 self.assertIn(f"name: {name}\n", text)
+            # The required gate keeps its exact name for every event except a title or body edit.
+            self.assertIn(f"name: ${{{{ {METADATA_EDIT} && '{title} review gate (title or body edit, not evaluated)' "
+                          f"|| '{title} review gate' }}}}\n", text)
+
+
+class ParserToleranceTests(unittest.TestCase):
+    ROUND_THREE = ("I've finished reading the files and the diff; here are my findings.\n\n"
+                   + finding("MEDIUM", title="Loop end drifts") + "\n" + finding("LOW", line=30))
+
+    def test_short_preamble_before_valid_findings_is_discarded_with_a_warning(self):
+        for text in (self.ROUND_THREE, "One.\nTwo.\nThree.\n\n" + finding()):
+            with self.subTest(text=text[:30]):
+                parsed = lib.parse_review(text)
+                self.assertEqual(parsed["kind"], "findings", parsed["errors"])
+                self.assertEqual(len(parsed["warnings"]), 1)
+                self.assertTrue(parsed["body"].startswith("### ["))
+        result = lib.build_result(identity={}, execution_ok=True, execution_errors=[], text=self.ROUND_THREE,
+                                  blocking_severities=["HIGH"])
+        self.assertEqual(result["status"], "complete")
+        self.assertIn("discarded 1 line(s) of text before the first finding", result["warnings"])
+
+    def test_preamble_is_never_accepted_with_lgtm_or_without_valid_findings(self):
+        for text in ("Done.\n\nlgtm", "lgtm\n\nNo issues found.", "Intro.\n" + "x" * 600 + "\n\n" + finding(),
+                     "Intro:\n```\ncode\n```\n\n" + finding(), "Intro.\n\n" + finding(impact=""),
+                     "Intro.\n\n" + finding() + "\nClosing remark.\n"):
+            with self.subTest(text=text[:30]):
+                self.assertEqual(lib.parse_review(text)["kind"], "malformed")
+
+    def test_field_continuations_follow_list_semantics(self):
+        accepted = {
+            "lazy continuation": finding(evidence="First line\nsecond line of the same paragraph"),
+            "indented paragraph": finding(evidence="First.\n\n  Second paragraph, indented."),
+            "list item": finding(evidence="Cases:\n\n- one\n- two"),
+            "code block": finding(evidence="Trigger:\n\n```js\nsynth.loadMIDI(bad);\n```"),
+        }
+        for name, text in accepted.items():
+            with self.subTest(name):
+                self.assertEqual(lib.parse_review(text)["kind"], "findings", lib.parse_review(text)["errors"])
+
+
+class LeakGuardTests(unittest.TestCase):
+    TOKEN = "eyJhbGciOiJSUzI1NiJ9.fixture-token-value_0123456789"
+
+    def test_encoded_copies_are_detected(self):
+        import base64
+        blob = json.dumps({"tokens": {"access_token": self.TOKEN}}).encode()
+        encodings = {
+            "literal": self.TOKEN,
+            "base64": base64.b64encode(self.TOKEN.encode()).decode(),
+            "url-safe base64": base64.urlsafe_b64encode(b"?>" + self.TOKEN.encode()).decode(),
+            "hex": self.TOKEN.encode().hex(),
+            "upper hex": self.TOKEN.encode().hex().upper(),
+            "reversed": self.TOKEN[::-1],
+            "split across lines": self.TOKEN[:20] + "\n  " + self.TOKEN[20:],
+        }
+        for offset in range(3):
+            encodings[f"base64 of a blob at offset {offset}"] = base64.b64encode(b"x" * offset + blob).decode()
+        values = lib.credential_values([json.dumps({"tokens": {"access_token": self.TOKEN}})])
+        for name, encoded in encodings.items():
+            with self.subTest(name):
+                self.assertTrue(lib.contains_credential(f"evidence: {encoded} end", values))
+        self.assertFalse(lib.contains_credential("an ordinary review with no secrets", values))
+
+
+class PolicyEventTests(Workspace):
+    def prepare(self, event):
+        return self.review("prepare", "--config-root", ROOT, "--repo-dir", self.dir, "--event", event,
+                           "--config-sha", "c" * 40, "--bootstrap", "false")
+
+    def event_with(self, **extra):
+        path = self.make_event()
+        event = json.loads(path.read_text())
+        for key, value in extra.items():
+            if key == "author":
+                event["pull_request"]["user"] = {"login": value}
+            else:
+                event[key] = value
+        path.write_text(json.dumps(event))
+        return path
+
+    def test_metadata_edit_classification(self):
+        cases = [({"action": "synchronize"}, False), ({"action": "edited", "changes": {"title": {"from": "x"}}}, True),
+                 ({"action": "edited", "changes": {"body": {"from": "x"}}}, True), ({"action": "edited"}, True),
+                 ({"action": "edited", "changes": {"base": {"ref": {"from": "main"}}}}, False),
+                 ({"action": "edited", "changes": {"base": {"ref": {"from": "main"}}, "title": {"from": "x"}}}, False)]
+        for event, expected in cases:
+            with self.subTest(event=event):
+                self.assertEqual(lib.is_metadata_edit(event), expected)
+        completed = self.prepare(self.event_with(action="edited", changes={"title": {"from": "old"}}))
+        self.assertEqual(completed.outputs["policy"], "metadata-edit")
+
+    def test_workflows_filter_title_and_body_edits_identically(self):
+        for workflow in ("codex-review.yml", "claude-review.yml"):
+            text = (WORKFLOWS / workflow).read_text()
+            with self.subTest(workflow=workflow):
+                self.assertIn("types: [opened, synchronize, reopened, ready_for_review, edited]", text)
+                self.assertIn(f"${{{{ {METADATA_EDIT} && '-metadata' || '' }}}}\n  cancel-in-progress: true", text)
+                self.assertIn(f"if: ${{{{ !({METADATA_EDIT}) }}}}", text)
+                self.assertIn(f"if: ${{{{ always() && !({METADATA_EDIT}) }}}}", text)
+                self.assertEqual(text.count(METADATA_EDIT), 4)
+
+    def test_dependabot_pull_requests_fail_explicitly(self):
+        for kwargs in ({"author": "dependabot[bot]"}, {"sender": {"login": "dependabot[bot]"}}):
+            with self.subTest(**{k: str(v) for k, v in kwargs.items()}):
+                event = self.event_with(**kwargs)
+                self.assertEqual(self.prepare(event).outputs["policy"], "dependabot")
+                gate = self.review("gate", "--config-root", ROOT, "--provider", "codex", "--event", event,
+                                   "--results-dir", self.dir / "none", "--policy", "dependabot",
+                                   "--prepare-result", "success", "--review-result", "skipped",
+                                   "--publish-result", "skipped")
+                self.assertEqual(gate.returncode, 1)
+                self.assertIn("AI review unavailable for Dependabot PRs", gate.stdout)
+
+    def test_fork_message_does_not_advise_mirroring_untrusted_code(self):
+        _, messages = lib.evaluate_gate(policy="fork", upstream={"prepare": "success"}, expected=[], results={},
+                                        event_head="b", event_base="a", blocking_severities=["HIGH"])
+        self.assertIn("must review the fork's changes manually", messages[0])
+        self.assertNotIn("re-open", messages[0])
+
+
+class TrustedScriptTests(Workspace):
+    def snippet(self, workflow, name):
+        text = (WORKFLOWS / workflow).read_text()
+        blocks = re.findall(rf"\n( +)# begin {name}\n(.*?)\n +# end {name}", text, re.S)
+        return [textwrap.dedent(indent + "#\n" + body) for indent, body in blocks]
+
+    def run_selection(self, base_ref, with_config):
+        files = {"lib.js": "1\n"} | ({".github/review-agents.json": "{}\n"} if with_config else {})
+        repo, base, head = self.make_repo(files, {"lib.js": "2\n", ".github/review-agents.json": "{}\n"},
+                                          name=f"repo-{base_ref.replace('/', '-')}-{with_config}")
+        workspace = self.dir / f"ws-{base_ref.replace('/', '-')}-{with_config}"
+        workspace.mkdir()
+        repo.rename(workspace / "src")
+        output = workspace / "output"
+        output.touch()
+        completed = subprocess.run(["bash", "-c", self.snippet("codex-review.yml", "trusted-config-selection")[0]],
+                                   cwd=workspace, capture_output=True, text=True,
+                                   env=self.base_env | {"BASE_SHA": base, "HEAD_SHA": head, "BASE_REF": base_ref,
+                                                        "BOOTSTRAP_BASE_BRANCHES": "main",
+                                                        "GITHUB_OUTPUT": str(output)})
+        values = dict(line.split("=", 1) for line in output.read_text().split())
+        return completed, values, base, head
+
+    def test_bootstrap_is_allowed_only_for_listed_bases(self):
+        completed, values, _, head = self.run_selection("main", False)
+        self.assertEqual((completed.returncode, values), (0, {"config_sha": head, "bootstrap": "true"}))
+        for base_ref in ("improve/integration", "feature"):
+            with self.subTest(base_ref=base_ref):
+                completed, values, _, _ = self.run_selection(base_ref, False)
+                self.assertEqual(completed.returncode, 1)
+                self.assertEqual(values, {})
+                self.assertIn(f"Base branch '{base_ref}'", completed.stdout)
+                self.assertIn("allowed only for: main", completed.stdout)
+        completed, values, base, _ = self.run_selection("improve/integration", True)
+        self.assertEqual(values, {"config_sha": base, "bootstrap": "false"})
+        for workflow in ("codex-review.yml", "claude-review.yml"):
+            self.assertIn("BOOTSTRAP_BASE_BRANCHES: main\n", (WORKFLOWS / workflow).read_text())
+
+    def test_trusted_configuration_is_fingerprinted_and_verified(self):
+        snippets = {w: self.snippet(w, "trusted-fingerprint") for w in ("codex-review.yml", "claude-review.yml")}
+        self.assertEqual(len(set(sum(snippets.values(), []))), 1)
+        for workflow in snippets:
+            text = (WORKFLOWS / workflow).read_text()
+            self.assertEqual(len(snippets[workflow]), 2)
+            self.assertIn("if: ${{ !cancelled() && steps.verify.outcome == 'success' }}", text)
+        trusted = self.dir / "trusted" / ".github" / "scripts"
+        trusted.mkdir(parents=True)
+        (trusted / "review.py").write_text("print('trusted')\n")
+        script = snippets["codex-review.yml"][0] + '\necho "$digest"\n'
+
+        def digest():
+            return subprocess.run(["bash", "-c", script], cwd=self.dir, capture_output=True, text=True,
+                                  check=True).stdout.strip()
+        first = digest()
+        self.assertEqual(digest(), first)
+        (trusted / "review.py").write_text("print('tampered')\n")
+        self.assertNotEqual(digest(), first)
+        (trusted / "review.py").write_text("print('trusted')\n")
+        (trusted / "__pycache__").mkdir()
+        (trusted / "__pycache__" / "review_lib.cpython-312.pyc").write_bytes(b"planted")
+        self.assertNotEqual(digest(), first)
+
+    def test_credential_steps_run_python_isolated(self):
+        for workflow in ("codex-review.yml", "claude-review.yml"):
+            text = (WORKFLOWS / workflow).read_text()
+            invocations = re.findall(r"python3 [^\n]*", text)
+            with self.subTest(workflow=workflow):
+                self.assertTrue(invocations)
+                for line in invocations:
+                    self.assertTrue(line.startswith(("python3 -I -B trusted/", "python3 -I -c ")), line)
+        self.assertIn('python3 -I -B "$script_dir/review.py"', (SCRIPTS / "run-codex-review.sh").read_text())
+
+    def test_shadow_modules_in_the_working_directory_are_never_loaded(self):
+        hostile = self.dir / "hostile"
+        hostile.mkdir()
+        marker = self.dir / "SHADOW_LOADED"
+        payload = f"open({str(marker)!r}, 'a').write(__name__ + '\\n')\n"
+        for module in ("json", "review_lib", "sitecustomize", "usercustomize", "argparse", "re"):
+            (hostile / f"{module}.py").write_text(payload)
+        env = SETTINGS_ENV | {"PYTHONPATH": str(hostile), "PYTHONSTARTUP": str(hostile / "json.py")}
+        completed = subprocess.run([sys.executable, "-I", "-B", str(SCRIPTS / "review.py"), "config",
+                                    "--config-root", str(ROOT), "--provider", "codex"],
+                                   cwd=hostile, env=self.base_env | env, capture_output=True, text=True)
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertFalse(marker.exists())
+        # Control: without -I the same environment loads the shadow modules.
+        subprocess.run([sys.executable, "-B", "-c", "import json"], cwd=hostile, env=self.base_env | env,
+                       capture_output=True)
+        self.assertTrue(marker.exists())
+
+    def test_claude_runs_from_an_empty_trusted_directory(self):
+        text = (WORKFLOWS / "claude-review.yml").read_text()
+        step = text.split("      - name: Run the Claude review\n")[1].split("\n      - name:")[0]
+        self.assertIn("CLAUDE_WORKING_DIR: ${{ steps.workdir.outputs.dir }}", step)
+        self.assertNotIn("src", step.split("with:")[0])
+        self.assertIn('dir="$RUNNER_TEMP/claude-cwd"', text)
+        self.assertIn('if [ -n "$(ls -A "$dir")" ]; then', text)
+        self.assertIn('--add-dir "$GITHUB_WORKSPACE/src" --add-dir "$CONTEXT_DIR"', text)
+        self.assertIn('--expected-cwd "$WORKDIR"', text)
+        self.assertIn('--expected-execution-file "$RUNNER_TEMP/claude-execution-output.json"', text)
+        presets = {"ANTHROPIC_MODEL": "${{ steps.settings.outputs.model }}", "CLAUDE_CODE_EFFORT_LEVEL": '""',
+                   "CLAUDE_CONFIG_DIR": "${{ steps.workdir.outputs.config_dir }}",
+                   "CLAUDE_CODE_DISABLE_AUTO_MEMORY": '"1"', "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD": '"0"',
+                   "HTTPS_PROXY": '""', "HTTP_PROXY": '""', "ALL_PROXY": '""', "NO_PROXY": '""',
+                   "NODE_OPTIONS": '""', "NODE_EXTRA_CA_CERTS": '""', "BUN_OPTIONS": '""',
+                   "BUN_CONFIG_REGISTRY": '""', "BUN_CONFIG_TOKEN": '""'}
+        for name, value in presets.items():
+            with self.subTest(name=name):
+                self.assertIn(f"\n          {name}: {value}\n", step)
+
+    def test_codex_cli_installs_from_trusted_files_only(self):
+        text = (WORKFLOWS / "codex-review.yml").read_text()
+        step = text.split("      - name: Install the pinned Codex CLI\n")[1].split("\n      - name:")[0]
+        self.assertIn('cp trusted/.github/scripts/codex-cli/package.json '
+                      'trusted/.github/scripts/codex-cli/package-lock.json "$cli/"', step)
+        self.assertIn('(cd "$cli" && npm ci --ignore-scripts --no-audit --no-fund)', step)
+        self.assertNotIn("secrets.", step)
+        self.assertNotIn("npx", text)
+
+    @unittest.skipUnless(os.environ.get("REVIEW_TEST_BUN"), "set REVIEW_TEST_BUN to the pinned Bun binary")
+    def test_bun_does_not_load_checkout_configuration(self):
+        # The pinned base action's step: cd "$CLAUDE_WORKING_DIR"; bun run <action>/src/index.ts.
+        action = self.dir / "action" / "src"
+        action.mkdir(parents=True)
+        (action / "index.ts").write_text("console.log(JSON.stringify({env: process.env.PWNED_ENV ?? null, "
+                                         "preload: (globalThis as any).__PWNED__ ?? null}));\n")
+        checkout, empty = self.dir / "src", self.dir / "claude-cwd"
+        checkout.mkdir()
+        empty.mkdir()
+        (checkout / "bunfig.toml").write_text('preload = ["./pwn.ts"]\n')
+        (checkout / "pwn.ts").write_text("(globalThis as any).__PWNED__ = 'ran';\n")
+        (checkout / ".env").write_text("PWNED_ENV=from-dotenv\n")
+        step = 'if [ -n "$CLAUDE_WORKING_DIR" ]; then cd "$CLAUDE_WORKING_DIR"; fi; "$BUN" run "$ENTRY"'
+
+        def run(directory):
+            completed = subprocess.run(["bash", "-c", step], cwd=self.dir, capture_output=True, text=True,
+                                       check=True, env=self.base_env | {
+                                           "BUN": os.environ["REVIEW_TEST_BUN"], "ENTRY": str(action / "index.ts"),
+                                           "CLAUDE_WORKING_DIR": str(directory)})
+            return json.loads(completed.stdout.strip().splitlines()[-1])
+        self.assertEqual(run(empty), {"env": None, "preload": None})
+        self.assertEqual(run(checkout), {"env": "from-dotenv", "preload": "ran"})  # the hazard, for contrast
 
 
 if __name__ == "__main__":
