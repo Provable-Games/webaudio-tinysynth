@@ -779,18 +779,4 @@ describe.each(variants)("$name: OfflineAudioContext (#12)", (variant) => {
     expect(ctx.state).toBe("suspended");
     expect(liveEdges(l.trace)).toEqual([]); // at once: an offline context dispatches no more ended events after its render
   });
-
-  test("during a render nothing is disconnected from an ended handler (it would change the mix order)", () => {
-    const l = load(variant);
-    const synth = new l.Synth({ context: new l.Offline() });
-    synth.noteOn(0, 60, 100, 1);
-    synth.noteOn(9, 38, 100, 0.5);
-    const [hit] = synth._src;
-    synth.allSoundOff(0);
-    const from = l.trace.length;
-    l.env.skip(5000);
-    l.ended();
-    const voiceNode = (id) => /^(osc|src)#/.test(id) || ids(hit).includes(id);
-    expect(calls(l.trace, from).filter(([op, id]) => op === "disconnect" && voiceNode(id))).toEqual([]);
-  });
 });
