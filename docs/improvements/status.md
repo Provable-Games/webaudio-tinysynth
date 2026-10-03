@@ -31,7 +31,8 @@ States: `pending`, `running`, `review`, `accepted`, `blocked`.
 | T9A | #19 #20 (read-only audit) | `t9/audit` | 1e6184c | accepted | 3e9d013 | Findings and T9 plan in tasks/T9A.md; D-011 |
 | T2 | #4 #6 | `t2/parser` | 25d2a3d | accepted | cdb2228 (merge e128330) | The independent review accepted after fuzzing about 940k cases (`tasks/T2-review.md`). PR #32 was green at 4efcd64 with Codex and Claude `lgtm`. min.js is `45cc9778…`, 36,975 / 9,875 B (+1.66 % raw / +4.81 % gzip vs 782e9b92). D-013 and D-016. |
 | T3 | #8 #9 #10 #21 | `t3/transport` | 09922b9 | accepted | 99177f4 | The independent review accepted after two rounds (`tasks/T3-review.md`, 0cf4495). PR #34 green, Codex and Claude `lgtm`. min.js `b49e8ceb…`, 36,960 / 9,948 B. D-005, D-019. F11 is a T6-B test; F12 is a documented residual. |
-| T4 | #11 #12 | `t4/lifecycle` | e5866e1 | running | | D-018. Source, unit and node tests first; browser specs after T6 phase A lands (staging note in dispatch). |
+| T4 | #11 #12 | `t4/lifecycle` | e5866e1 | running | | D-018, plus the D-023 caller stop (stops drums and queued automation). Browser specs after T6 phase A, which has landed. |
+| T3.1 | #21 (consumer D-023) | `t3/leading-rest` | after T4 | pending | | Leading rest on the first `loopEnd` pass, plus `getPlayStatus().startTime`. Runs in parallel with T5. |
 | T5 | #13 #14 | `t5/api` | after T4 | pending | | |
 | T6 | #16 #7 (validation) | `t6/validation` | 25d2a3d | phase A integrated (merge 346b782, head 0de038f); phase A.1 follow-up running; phase B after T5 | | PR #33 green, including the arm64 matrix in 3 engines. The integrated tree passes `test:browser:matrix` locally (42 cases). Two deferred Codex MEDIUM test-strength fixes are in A.1. Full acceptance at G1. |
 | T7 | #17 | `t7/architecture` | after G1 | pending | | |
@@ -72,7 +73,8 @@ Local checks at f01ca19 all exit 0: `npm ci`, lint, verify, `pack:check`, `npm t
 ## Consumer coordination
 
 - 2026-10-03: interim pinning was offered to the onchain-tinysynth agent (session `webaudio-tinysynth-15`): pin an `improve/integration` SHA plus its min.js sha256, with no class declaration against interim pins. The current pin candidate is `4b29ff1` / min.js `b49e8ceb…`. A reply is pending.
-- Whenever #7, #26 or #27 integrates, send that session the new integration SHA and min.js sha256.
+- Whenever T4 (caller stop), T3.1 (leading rest, `startTime`), #7, #26 or #27 integrates, send that session the new integration SHA and min.js sha256, and flag any change to `playTime`, `playTick`, `chvol`, `chmod` or `chpan` (D-023).
+- The consumer replied that interim pinning works technically; adopting it is the user's call. Its contract points are answered in D-021, D-023, D-004 and D-007.
 
 ## Next actions
 
