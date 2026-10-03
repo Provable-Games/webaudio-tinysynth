@@ -622,17 +622,17 @@ function WebAudioTinySynthCore(target) {
     _drop:(close)=>{
       /* Tear down the installed graph (#11): stop every voice and one-shot source, replace
          their callbacks, disconnect them and every graph node, and release them. Returns a
-         promise that settles after the context is closed, when `close` is set. On a context
-         that stays open, a source and its gain are disconnected when the source ends
+         promise that settles after the context is closed, when `close` is set. On a realtime
+         context that stays open, a source and its gain are disconnected when the source ends
          (Chromium can keep an oscillator disconnected right after stop() from ever ending). */
-      const c=this.actx,n=x=>x && x.disconnect();
+      const c=this.actx,n=x=>x && x.disconnect(),now=close || this._off;
       if(c){
         this.notetab.concat(this._src,Array.from(this._gone),{o:[this.lfo],g:[]}).forEach(v=>{
           v.o.forEach((s,i)=>{
             const off=()=>{ n(s); n(v.g[i]); };
-            s.onended=close ? null : off;
+            s.onended=now ? null : off;
             try{ s.stop(); }catch(e){ /* stop() again: some engines throw */ }
-            if(close)
+            if(now)
               off();
           });
         });
@@ -950,9 +950,10 @@ function WebAudioTinySynthCore(target) {
         nt.g[k].gain.value = 0;
         /* Release the voice's routes once it has ended (#11). Disconnecting earlier can keep
            Chromium from ever ending (and releasing) a stopped oscillator. Until then the
-           voice stays in _gone, so a teardown still reaches it. */
+           voice stays in _gone, so a teardown still reaches it. Not during an offline render,
+           where a disconnection changes the mix's summation order (WebKit): dispose() then. */
         const o=nt.o[k],g=nt.g[k];
-        o.onended=()=>{ o.disconnect(); g.disconnect(); this._gone.delete(nt); };
+        o.onended=this._off ? null : ()=>{ o.disconnect(); g.disconnect(); this._gone.delete(nt); };
       }
       this._gone.add(nt);
     },
@@ -1032,7 +1033,8 @@ function WebAudioTinySynthCore(target) {
         if(this.rhythm[ch]){
 
           o[i].onended = ()=>{
-            o[i].disconnect(); g[i].disconnect(); // release the hit's routes (#11)
+            if(!this._off) // release the hit's routes (#11), but not during an offline render
+              o[i].disconnect(), g[i].disconnect();
             try {
               if (o[i].detune) this.chmod[ch].disconnect(o[i].detune);
             }
