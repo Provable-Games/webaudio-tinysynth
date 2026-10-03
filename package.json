@@ -26,8 +26,12 @@
     "url": "https://github.com/g200kg/webaudio-tinysynth/issues"
   },
   "homepage": "https://github.com/g200kg/webaudio-tinysynth#readme",
+  "engines": {
+    "node": ">=24.21.0 <25",
+    "npm": ">=11.19.0 <12"
+  },
   "devDependencies": {
-    "terser": "^5.14.0"
+    "terser": "5.51.2"
   },
   "dependencies": {}
 }
