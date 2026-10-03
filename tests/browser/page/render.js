@@ -101,9 +101,10 @@
     // The constructor always creates its own context with `new AudioContext()`.
     // Unless spec.realtimeInternal is set, that context is a never-rendered
     // OfflineAudioContext, so no realtime audio thread (playing the
-    // constructor's warm-up note) runs while the offline render runs. On
-    // arm64 CI, WebKit's quality-1 drum renders differed by up to 0.56 between
-    // identical runs with a realtime internal context per render.
+    // constructor's warm-up note) runs while the offline render runs. This
+    // removes one source of concurrency; it does not change the rendered PCM.
+    // WebKit's occasional differing renders persist without it (cause not
+    // isolated) and are reconciled by specs/render.js.
     var RealAudioContext = window.AudioContext;
     if (!spec.realtimeInternal) {
       window.AudioContext = function () { return new OfflineAudioContext(nch, 128, spec.sr); };

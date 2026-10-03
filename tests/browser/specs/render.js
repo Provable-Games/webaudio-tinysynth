@@ -53,10 +53,27 @@ async function render(p, spec) {
  * `slots` (peak and RMS over item.slot, measured here), and the items'
  * rejections and NaN/Infinity counts added up.
  */
-async function renderScenario(p, s, ctx, variant = {}) {
+/* One part of a scenario: item k of an item scenario, or the whole scenario. */
+function renderPart(p, s, ctx, variant, k) {
   if (!s.items) return render(p, renderSpec(s, ctx, variant));
+  return render(p, renderSpec(Object.assign({}, s, { spec: s.items[k].spec }), ctx, variant));
+}
+
+async function renderParts(p, s, ctx, variant = {}) {
   const parts = [];
-  for (const item of s.items) parts.push(await render(p, renderSpec(Object.assign({}, s, { spec: item.spec }), ctx, variant)));
+  for (let k = 0; k < (s.items ? s.items.length : 1); ++k) parts.push(await renderPart(p, s, ctx, variant, k));
+  return parts;
+}
+
+/*
+ * Combined result of a scenario's parts. A scenario with `items` (the GM
+ * sweeps) renders each item alone, with a fresh synth and context; the
+ * combined result has the items' channels concatenated, per-item slot
+ * summaries in `slots` (peak and RMS over item.slot, measured here), and the
+ * items' rejections and NaN/Infinity counts added up.
+ */
+function combine(s, parts) {
+  if (!s.items) return parts[0];
   const nch = parts[0].channels.length;
   const channels = [];
   for (let c = 0; c < nch; ++c) {
@@ -83,23 +100,17 @@ async function renderScenario(p, s, ctx, variant = {}) {
   };
 }
 
-/* For a combined item result: the item with the largest difference and where it starts. */
-function worstItem(a, b) {
-  if (!a.items || !b.items || !a.channels || !b.channels) return "";
-  let at = 0, worst = null;
-  a.items.forEach((it) => {
-    let m = 0, first = -1;
-    for (let c = 0; c < a.channels.length; ++c) {
-      for (let i = at; i < at + it.length; ++i) {
-        const d = Math.abs(a.channels[c][i] - b.channels[c][i]);
-        if (d > 0 && (first < 0 || i - at < first)) first = i - at;
-        if (d > m) m = d;
-      }
-    }
-    if (m > 0 && (!worst || m > worst.m)) worst = { label: it.label, m, first };
-    at += it.length;
-  });
-  return worst ? "; worst " + worst.label + " (" + worst.m.toExponential(3) + ", first difference at sample " + worst.first + ")" : "";
+async function renderScenario(p, s, ctx, variant = {}) {
+  return combine(s, await renderParts(p, s, ctx, variant));
+}
+
+/* Index of the first differing sample between two renders, or -1. */
+function firstDifference(a, b) {
+  let first = -1;
+  for (let c = 0; c < Math.min(a.channels.length, b.channels.length); ++c)
+    for (let i = 0; i < Math.min(a.channels[c].length, b.channels[c].length); ++i)
+      if (a.channels[c][i] !== b.channels[c][i]) { if (first < 0 || i < first) first = i; break; }
+  return first;
 }
 
 /* Largest absolute sample difference between two renders (Infinity if their shapes differ). */
@@ -116,6 +127,8 @@ function maxDiff(a, b) {
   }
   return m;
 }
+
+const MAX_RECONCILE = 3;
 
 function cases(shared) {
   const { matrix, options, engine } = shared;
@@ -144,30 +157,82 @@ function cases(shared) {
           const buffers = {};
           const sameEngine = { bitIdentical: [], differing: {} };
           const kept = {};
-          for (const s of SCENARIOS) {
-            const variants = s.variants || [];
-            const res = {};
-            for (const build of matrix.builds) {
-              res[build] = [];
-              for (const v of [{}, ...variants]) {
-                const r = await renderScenario(pg[build], s, { seed, sr, quality }, v);
-                renders += r.renders || 1;
-                const c = classifyRejections(r.rejections);
-                for (const [k, n] of Object.entries(c.counts)) rejectionCounts[k] = (rejectionCounts[k] || 0) + n;
-                unknownRejections.push(...c.unknown.map((u) => s.name + "/" + build + ": " + u.name + ": " + u.message));
-                if (r.whole.nan || r.whole.inf) finiteProblems.push(s.name + "/" + build + " " + JSON.stringify(r.whole));
-                if (r.whole.peak > 1) overFullScale.push(s.name + "/" + build + " " + r.whole.peak.toFixed(4));
-                if (r.internalContext !== "offline") realtimeInternal.push(s.name + "/" + build + " " + r.internalContext);
-                res[build].push(r);
+          // Every render, including re-renders and the repeat and alternate-seed
+          // renders, is checked for NaN/Infinity, realtime contexts and rejections.
+          const audit = (r, label) => {
+            renders += r.renders || 1;
+            const c = classifyRejections(r.rejections);
+            for (const [k, n] of Object.entries(c.counts)) rejectionCounts[k] = (rejectionCounts[k] || 0) + n;
+            unknownRejections.push(...c.unknown.map((u) => label + ": " + u.name + ": " + u.message));
+            if (r.whole.nan || r.whole.inf) finiteProblems.push(label + " " + JSON.stringify(r.whole));
+            if (r.internalContext !== "offline") realtimeInternal.push(label + " " + r.internalContext);
+            return r;
+          };
+          /*
+           * Same-engine reconciliation. WebKit occasionally renders a segment
+           * that differs from an otherwise identical render (up to 0.56 on
+           * arm64 CI, 0.19 locally; reproduced under main-thread GC pressure,
+           * about 1 in 50 renders; cause not isolated). A real difference
+           * reproduces on every render, a glitch does not. When two renders
+           * that must agree differ beyond the tolerance, the part is
+           * re-rendered (at most twice per side): it is reconciled only if a
+           * render of one side agrees with a render of the other within the
+           * tolerance, and that pair is used from then on. At most
+           * MAX_RECONCILE parts per case may be reconciled; every
+           * reconciliation is recorded.
+           */
+          const reconciled = [];
+          const reconcile = async (label, k, a, b, rerenderA, rerenderB, sides) => {
+            const As = [a], Bs = [b];
+            const first = firstDifference(a, b), d0 = maxDiff(a, b);
+            if (reconciled.length >= MAX_RECONCILE) return { ok: false, why: "more than " + MAX_RECONCILE + " reconciliations in this case" };
+            for (let tries = 0; tries < 2; ++tries) {
+              if (rerenderA) As.push(audit(await rerenderA(), label + " re-render"));
+              if (rerenderB) Bs.push(audit(await rerenderB(), label + " re-render"));
+              for (const x of As) for (const y of Bs) {
+                if (maxDiff(x, y) <= tol.sameEngineSample) {
+                  reconciled.push({ part: label, maxDiff: d0, firstDifferingSample: first, renders: As.length + Bs.length, differingRender: x === a ? sides[1] : y === b ? sides[0] : "both" });
+                  return { ok: true, x, y };
+                }
               }
             }
+            const stable = (list) => list.some((x, i) => list.some((y, j) => j > i && maxDiff(x, y) <= tol.sameEngineSample));
+            return { ok: false, why: "max |diff| " + d0.toExponential(3) + " at sample " + first + ", reproduced in " + (As.length + Bs.length) + " renders" + (stable(As) && stable(Bs) ? "" : " (engine output unstable)") };
+          };
+
+          for (const s of SCENARIOS) {
+            const variants = s.variants || [];
+            const parts = {};
+            for (const build of matrix.builds) {
+              parts[build] = [];
+              for (const v of [{}, ...variants]) {
+                const ps = await renderParts(pg[build], s, { seed, sr, quality }, v);
+                ps.forEach((r, k) => audit(r, s.name + "/" + build + (s.items ? " " + s.items[k].label : "")));
+                parts[build].push(ps);
+              }
+            }
+            const persistent = [];
+            const allVariants = [{}, ...variants];
+            for (let vi = 0; vi < allVariants.length; ++vi) {
+              for (let k = 0; k < parts.source[vi].length; ++k) {
+                const a = parts.source[vi][k], b = parts.min[vi][k];
+                if (maxDiff(a, b) <= tol.sameEngineSample) continue;
+                const label = s.name + (s.items ? " " + s.items[k].label : "") + (vi ? " variant " + vi : "") + " source/min";
+                const r = await reconcile(label, k, a, b,
+                  () => renderPart(pg.source, s, { seed, sr, quality }, allVariants[vi], k),
+                  () => renderPart(pg.min, s, { seed, sr, quality }, allVariants[vi], k), ["source", "min"]);
+                if (r.ok) { parts.source[vi][k] = r.x; parts.min[vi][k] = r.y; } else persistent.push(label + ": " + r.why);
+              }
+            }
+            const res = { source: parts.source.map((ps) => combine(s, ps)), min: parts.min.map((ps) => combine(s, ps)) };
+            for (const build of matrix.builds) for (const r of res[build]) if (r.whole.peak > 1) overFullScale.push(s.name + "/" + build + " " + r.whole.peak.toFixed(4));
             const identical = res.source.every((r, i) => r.hash === res.min[i].hash);
             const diff = Math.max(...res.source.map((r, i) => maxDiff(r, res.min[i])));
             if (identical) sameEngine.bitIdentical.push(s.name + " source/min");
             else sameEngine.differing[s.name + " source/min"] = diff;
-            const parity = diff <= tol.sameEngineSample;
+            const parity = !persistent.length;
             t.check(s.name + ": min renders the same PCM as source (max |diff| <= " + tol.sameEngineSample + ")", parity,
-              identical ? "bit-identical" : "max |diff| " + diff.toExponential(3) + (parity ? "" : worstItem(res.source[0], res.min[0])));
+              parity ? (identical ? "bit-identical" : "max |diff| " + diff.toExponential(3)) : persistent.slice(0, 2).join(" | "));
             for (const build of parity ? ["source"] : matrix.builds) {
               const prefix = s.name + (parity ? "" : " [" + build + "]") + ": ";
               const check = (name, ok, detail) => t.check(prefix + name, ok, detail);
@@ -183,35 +248,33 @@ function cases(shared) {
             }
             hashes[s.name] = res.source.map((r) => r.hash);
             buffers[s.name] = res.source[0].buffers;
-            if (["pitch-sine", "gm-drums", "reverb"].includes(s.name)) kept[s.name] = res.source[0];
+            if (["pitch-sine", "gm-drums", "reverb"].includes(s.name)) kept[s.name] = { parts: parts.source[0], combined: res.source[0] };
           }
-          // Every render, including the repeat and alternate-seed renders below,
-          // is checked for NaN/Infinity, realtime contexts and rejections.
-          const audit = (r, label) => {
-            renders += r.renders || 1;
-            const c = classifyRejections(r.rejections);
-            for (const [k, n] of Object.entries(c.counts)) rejectionCounts[k] = (rejectionCounts[k] || 0) + n;
-            unknownRejections.push(...c.unknown.map((u) => label + ": " + u.name + ": " + u.message));
-            if (r.whole.nan || r.whole.inf) finiteProblems.push(label + " " + JSON.stringify(r.whole));
-            if (r.internalContext !== "offline") realtimeInternal.push(label + " " + r.internalContext);
-            return r;
-          };
 
           // Repeatability in a fresh page (same engine, seed and rate) and seed sensitivity.
           const again = await openRenderPage(t, "source", seed);
           for (const name of Object.keys(kept)) {
             const s = SCENARIOS.find((x) => x.name === name);
-            const r = audit(await renderScenario(again, s, { seed, sr, quality }), name + "/repeat");
-            const d = maxDiff(r, kept[name]);
-            if (r.hash === kept[name].hash) sameEngine.bitIdentical.push(name + " repeat");
+            const ps = await renderParts(again, s, { seed, sr, quality });
+            ps.forEach((r, k) => audit(r, name + "/repeat" + (s.items ? " " + s.items[k].label : "")));
+            const persistent = [];
+            for (let k = 0; k < ps.length; ++k) {
+              if (maxDiff(ps[k], kept[name].parts[k]) <= tol.sameEngineSample) continue;
+              const label = name + (s.items ? " " + s.items[k].label : "") + " repeat";
+              const r = await reconcile(label, k, ps[k], kept[name].parts[k], () => renderPart(again, s, { seed, sr, quality }, {}, k), null, ["repeat", "first render"]);
+              if (r.ok) ps[k] = r.x; else persistent.push(label + ": " + r.why);
+            }
+            const r = combine(s, ps);
+            const d = maxDiff(r, kept[name].combined);
+            if (r.hash === kept[name].combined.hash) sameEngine.bitIdentical.push(name + " repeat");
             else sameEngine.differing[name + " repeat"] = d;
-            t.check(name + ": a repeat render in a fresh page matches (max |diff| <= " + tol.sameEngineSample + ")", d <= tol.sameEngineSample,
-              r.hash === kept[name].hash ? "bit-identical" : "max |diff| " + d.toExponential(3) + (d <= tol.sameEngineSample ? "" : worstItem(kept[name], r)));
+            t.check(name + ": a repeat render in a fresh page matches (max |diff| <= " + tol.sameEngineSample + ")", !persistent.length && d <= tol.sameEngineSample,
+              persistent.length ? persistent.slice(0, 2).join(" | ") : r.hash === kept[name].combined.hash ? "bit-identical" : "max |diff| " + d.toExponential(3));
           }
           for (const name of ["gm-drums", "reverb"]) {
             const s = SCENARIOS.find((x) => x.name === name);
             const r = audit(await renderScenario(again, s, { seed: (seed + 1) >>> 0, sr, quality }), name + "/seed+1");
-            const d = maxDiff(r, kept[name]);
+            const d = maxDiff(r, kept[name].combined);
             t.check(name + ": seed " + ((seed + 1) >>> 0) + " changes the noise-based output (the seeding is effective)", Number.isFinite(d) && d >= tol.seedEffect, "max |diff| " + d.toExponential(3));
           }
           t.check("all " + renders + " renders finite (no NaN or Infinity), including repeat and alternate-seed renders", !finiteProblems.length, finiteProblems.slice(0, 3).join(" | "));
@@ -220,6 +283,7 @@ function cases(shared) {
           t.check("no unrecognized unhandled rejections", !unknownRejections.length, unknownRejections.slice(0, 3).join(" | "));
           t.observe("known baseline unhandled rejections (#12, removed by T4)", rejectionCounts);
           t.observe("same-engine comparisons (bit-identical, or max |diff|)", sameEngine);
+          t.observe("reconciled same-engine differences (re-rendered; see the reconcile comment)", reconciled);
           t.observe("measurements", measurements);
           t.observe("render hashes (source build)", hashes);
           t.observe("generated buffer hashes (convBuf, n0, n1)", buffers[SCENARIOS[0].name]);
@@ -230,4 +294,4 @@ function cases(shared) {
   return out;
 }
 
-module.exports = { cases, renderSpec, renderScenario, openRenderPage, render, decode, maxDiff };
+module.exports = { cases, renderSpec, renderScenario, renderParts, combine, openRenderPage, render, decode, maxDiff };

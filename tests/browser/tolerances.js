@@ -17,7 +17,12 @@
  *     WebKit's percussion renders change when the library's onended handlers
  *     disconnect detune inputs mid-render. Those differences are
  *     rendered-audio tolerance: sameEngineSample below. Firefox was
- *     bit-identical throughout.
+ *     bit-identical throughout. Separately, WebKit occasionally renders a
+ *     segment that differs by up to 0.56 from an otherwise identical render
+ *     (arm64 CI and x64; reproduced under main-thread GC pressure; cause not
+ *     isolated). Such a difference does not reproduce, so specs/render.js
+ *     re-renders and reconciles it, records it, and fails a difference that
+ *     reproduces.
  *   - Across engines, renders are never compared sample by sample: each
  *     engine is checked against the same independent expectations. At the
  *     test level (masterVol 0.05, compressor below threshold) the engines
@@ -55,7 +60,7 @@ const DEFAULT = {
 const PER_ENGINE = {
   chromium: { sameEngineSample: 5e-4 }, // max 5.45e-5 (GM batches, compressor active); 1.2e-7 at linear levels
   firefox: { sameEngineSample: 0 }, // bit-identical in every comparison
-  webkit: { sameEngineSample: 1e-6 }, // max 9.3e-8 (q1 drums)
+  webkit: { sameEngineSample: 1e-6 }, // max 9.3e-8 for reproducible differences; occasional glitches up to 0.56 (about 1 in 50 renders under GC pressure) are re-rendered and reconciled in specs/render.js
 };
 
 function tolerances(engine) {
