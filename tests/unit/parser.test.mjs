@@ -182,4 +182,16 @@ describe.each(variants)("$name: loadMIDI on valid files", (variant) => {
     expect(p.text).toBe(longText);
     expect(p.maxTick).toBe(0x0fffffff);
   });
+
+  // Text is decoded in 8,192-byte chunks: patterned bytes (period 251, all of 0-250) around and across the chunk boundary.
+  test.each([8191, 8192, 8193, 2 * 8192 + 1])("text and copyright metas of %i patterned bytes decode exactly", (n) => {
+    const bytes = Array.from({ length: n }, (_, i) => i % 251);
+    const expected = Buffer.from(bytes).toString("latin1");
+    const meta = (type) => ({ tick: 0, bytes: [0xff, type, ...H.vlq(n), ...bytes] });
+    const p = parsed(variant, H.smf(0, PPQ, [H.trackBytes([meta(0x01), meta(0x02), noteOn(0, 0, 60, 100)])]));
+    // The first differing character, or -1 (a whole-string diff of 16 KB would be unreadable).
+    const firstDiff = (s) => { for (let i = 0; i < Math.max(s.length, n); ++i) if (s[i] !== expected[i]) return i; return -1; };
+    expect(firstDiff(p.text)).toBe(-1);
+    expect(firstDiff(p.copyright)).toBe(-1);
+  });
 });
