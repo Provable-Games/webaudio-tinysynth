@@ -265,3 +265,14 @@ T3.1 is dispatched after T4 integrates, in parallel with T5. Integration SHAs se
 The consumer adopted `improve/integration` `4b29ff1` (min.js `b49e8ceb…`) as an interim pin on its main (onchain-tinysynth PR #24, page version `tinysynth-4b29ff1+page.6`), with no class declaration against it. Its player embeds the engine gzipped (fflate level 9), so the relevant onchain size metric is the min.js `gzip -9` size, not the raw size. This corrects the "onchain pays raw bytes" reasoning used at T2 (D-016 context).
 
 Measured by the consumer: gzip went from 9,444 B (T0) to 9,948 B (+5.3 %, just over the 5 % review trigger). That costs about 0.3M L2 gas on a full Beast `token_uri` (286.2M to 286.5M, against a 1B budget). The consumer states it has no engine size budget. The supervisor keeps reporting cumulative raw and gzip growth against T0 at each gate, treats the 5 % trigger as a review prompt rather than a limit, and prefers gzip-efficient choices when two options are otherwise equal.
+
+## D-025 T4 review outcome (2026-10-03)
+
+The independent review (`t4/review` 93053e3) passed #11 and #12 and the D-023 stop itself. It requested changes for F1. The caller-stop cancellation left the transport and channel state ahead of the audio, so Stop then Play resumed about 24 dB louder and centred, in every engine. PR #37's AI reviews flagged the same cause.
+
+Decisions:
+- Fix F1 while keeping D-023.
+- Adopt size variant C7: C5 compaction (which also restores guarded methods' `length`/`name`, F4), plus the fixes for F1, F2 (resume coalescing must not skip a context installed in the same task) and F3 (dispose on a caller-closed context).
+- Keep the `_gone` tracking (C8 rejected): it is the Chromium workaround for oscillators that never end after an early disconnect.
+- Guard repeated `init()` (F9).
+- Document F5 and F6 (in lazy mode, `reset()` and `loadMIDI()` create the context), F7 (offline renders steal voices by count, so raise `setVoices()`) and F8 (a context replaced mid-play does not rebase the clock; pre-existing).
