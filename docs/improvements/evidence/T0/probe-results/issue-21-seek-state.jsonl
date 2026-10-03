@@ -1,0 +1,13 @@
+{"probe":"issue-21","node":"v24.19.0","root":"/workspace/webaudio-tinysynth-worktrees/t0-baseline","commit":"b70ba90d63c5ea657cb67ca98de90d7f778c29bd"}
+{"build":"webaudio-tinysynth.js","case":"manual-program-survives","pgAfterLoad":0,"pgAfterSetProgram40ThenLocate0":40,"pgAfterReload":0}
+{"build":"webaudio-tinysynth.js","case":"backward-seek-tempo","controlFreshPlay":{"noteOns":3,"firstInterval":0.25,"firstNoteTimbreIsProgram":0},"songTempoAfterLocate1300":60,"songTempoAfterLocate0":60,"afterBackwardSeek":{"noteOns":3,"firstInterval":0.5,"firstNoteTimbreIsProgram":0}}
+{"build":"webaudio-tinysynth.js","case":"backward-seek-program","controlFirstNoteProgram":0,"pgAfterLocate1300":40,"pgAfterLocate0":40,"firstNoteProgramAfterBackwardSeek":40}
+{"build":"webaudio-tinysynth.js","case":"backward-seek-bend","bendCentsAfterPlayback":100.787402,"bendCentsAfterLocate0":100.787402}
+{"build":"webaudio-tinysynth.js","case":"forward-seek-bend","bendCentsAfterLocate1300FromFresh":0,"expectedIfReconstructed":100.787402}
+{"build":"webaudio-tinysynth.js","case":"no-song-seek","outcome":"threw","error":"Cannot read properties of undefined (reading 'ev')"}
+{"build":"webaudio-tinysynth.min.js","case":"manual-program-survives","pgAfterLoad":0,"pgAfterSetProgram40ThenLocate0":40,"pgAfterReload":0}
+{"build":"webaudio-tinysynth.min.js","case":"backward-seek-tempo","controlFreshPlay":{"noteOns":3,"firstInterval":0.25,"firstNoteTimbreIsProgram":0},"songTempoAfterLocate1300":60,"songTempoAfterLocate0":60,"afterBackwardSeek":{"noteOns":3,"firstInterval":0.5,"firstNoteTimbreIsProgram":0}}
+{"build":"webaudio-tinysynth.min.js","case":"backward-seek-program","controlFirstNoteProgram":0,"pgAfterLocate1300":40,"pgAfterLocate0":40,"firstNoteProgramAfterBackwardSeek":40}
+{"build":"webaudio-tinysynth.min.js","case":"backward-seek-bend","bendCentsAfterPlayback":100.787402,"bendCentsAfterLocate0":100.787402}
+{"build":"webaudio-tinysynth.min.js","case":"forward-seek-bend","bendCentsAfterLocate1300FromFresh":0,"expectedIfReconstructed":100.787402}
+{"build":"webaudio-tinysynth.min.js","case":"no-song-seek","outcome":"threw","error":"Cannot read properties of undefined (reading 'ev')"}
