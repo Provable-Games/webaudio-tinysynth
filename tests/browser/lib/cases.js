@@ -62,12 +62,8 @@ class EngineSession {
     };
     const opened = [];
     const extraBrowsers = [];
-    const t = {
-      engine: this.engine,
-      version: this.version,
-      browser: this.browser,
-      shared,
-      out: this.out,
+    let abandoned = false;
+    const record = {
       check: (name, ok, detail) => {
         const rec = { name, ok: !!ok, detail: detail === undefined ? "" : String(detail) };
         result.checks.push(rec);
@@ -79,7 +75,24 @@ class EngineSession {
         const text = JSON.stringify(value);
         this.log("  obs  " + c.id + ": " + name + " = " + (text.length > 400 ? text.slice(0, 400) + "... (" + text.length + " chars, full value in the results JSON)" : text));
       },
-      note: (text) => { result.notes.push(text); this.log("  note " + c.id + ": " + text); },
+    };
+    const t = {
+      engine: this.engine,
+      version: this.version,
+      browser: this.browser,
+      shared,
+      out: this.out,
+      // After the deadline the abandoned run() may still finish (for example when
+      // closing its page rejects a pending evaluate); its late results are ignored.
+      check: (name, ok, detail) => {
+        if (abandoned) return false;
+        return record.check(name, ok, detail);
+      },
+      observe: (name, value) => {
+        if (!abandoned) record.observe(name, value);
+      },
+      note: (text) => { if (!abandoned) { result.notes.push(text); this.log("  note " + c.id + ": " + text); } },
+
       /*
        * A new context and page. offline: abort every request (and count it).
        * Returns {page, context, requests, pageErrors, consoleErrors, console}.
@@ -117,17 +130,19 @@ class EngineSession {
     const deadline = c.deadline * 1000;
     const r = await withTimeout(Promise.resolve().then(() => c.run(t)), deadline);
     if (r.timedOut) {
+      abandoned = true;
       if (c.expectHang) {
         result.status = "observed";
-        t.observe("hang", "page did not return within the " + c.deadline + " s deadline; page closed from Node");
+        record.observe("hang", "page did not return within the " + c.deadline + " s deadline; page closed from Node");
       } else {
         result.status = "fail";
-        t.check("finished before the " + c.deadline + " s deadline", false, "deadline exceeded; page closed from Node");
+        record.check("finished before the " + c.deadline + " s deadline", false, "deadline exceeded; page closed from Node");
       }
     } else if (!r.ok) {
       result.status = "fail";
-      t.check("ran without an exception", false, short(r.error));
+      record.check("ran without an exception", false, short(r.error));
     }
+    abandoned = true;
     // Close everything the case opened. A context that does not close in time
     // means the browser is wedged: close it and relaunch.
     let wedged = false;
@@ -137,7 +152,7 @@ class EngineSession {
       if (!cr.ok && !cr.error) wedged = true;
     }
     for (const b of extraBrowsers) await withTimeout(b.close(), 15000);
-    if (r.timedOut) t.observe("cleanup", wedged ? "context did not close; browser relaunched" : "pages and contexts closed");
+    if (r.timedOut) record.observe("cleanup", wedged ? "context did not close; browser relaunched" : "pages and contexts closed");
     if (wedged) {
       await this.closeBrowser();
       await this.launch();
