@@ -629,7 +629,10 @@ function WebAudioTinySynthCore(target) {
         this.allSoundOff(i);
     },
     playMIDI:()=>{
-      if(!this.song)
+      /* A song with no events other than tempo (empty, metadata-only or tempo-only)
+         stays stopped (#9). */
+      const s=this.song;
+      if(!s || !s.ev.some(e=>e.m[0]!=0xff51))
         return;
       const dummy=this.actx.createOscillator();
       dummy.connect(this.actx.destination);
@@ -639,7 +642,7 @@ function WebAudioTinySynthCore(target) {
       if(this.playTick>=this.maxTick)
         this.playTick=0,this.playIndex=0;
       this.playTime=this.actx.currentTime+.1;
-      this.tick2Time=4*60/this.song.tempo/this.song.timebase;
+      this.tick2Time=4*60/s.tempo/s.timebase;
       this.playing=1;
     },
     loadMIDI:(data)=>{
