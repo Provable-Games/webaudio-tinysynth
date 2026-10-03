@@ -1,0 +1,82 @@
+name: Browser matrix
+
+# The declared browser and rendered-audio matrix (tests/browser/matrix.js,
+# scripts/browser-matrix.js): one job per engine, each running both builds,
+# both quality modes and both sample rates. A browser that cannot be
+# installed or launched fails its job; nothing is skipped. Each job writes its
+# result table to the job summary.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  browser:
+    name: browser (${{ matrix.engine }})
+    # Playwright 1.63.0 publishes linux-arm64 builds of all three engines
+    # (Chromium 153, Firefox 155, WebKit 26.6; see docs/improvements/tasks/T6.md).
+    # An x64 exception for one engine needs recorded evidence; never drop an engine.
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - engine: chromium
+            runner: ubuntu-24.04-arm
+            install: --only-shell chromium
+          - engine: firefox
+            runner: ubuntu-24.04-arm
+            install: firefox
+          - engine: webkit
+            runner: ubuntu-24.04-arm
+            install: webkit
+    env:
+      ENGINE: ${{ matrix.engine }}
+      INSTALL: ${{ matrix.install }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - name: Build and fail on artifact drift
+        run: |
+          npm run build
+          git diff --exit-code -- webaudio-tinysynth.min.js webaudio-tinysynth.min.js.map
+      - name: Install the pinned Playwright's browser and system libraries
+        run: |
+          read -r -a args <<< "$INSTALL"
+          npx playwright-core install --with-deps "${args[@]}"
+      # Firefox starts a realtime AudioContext only when an audio output exists.
+      # A PulseAudio null sink provides one; the gesture spec fails without it.
+      - name: Audio output for Firefox (PulseAudio null sink)
+        if: matrix.engine == 'firefox'
+        run: |
+          sudo apt-get install -y --no-install-recommends pulseaudio pulseaudio-utils
+          pulseaudio --daemonize=yes --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=t6null
+          pactl set-default-sink t6null
+          pactl info
+      - name: Browser matrix (assert specs)
+        run: npm run "test:browser:${ENGINE}" -- --out="$RUNNER_TEMP/browser-matrix"
+      - name: Observe-only specs (hangs under deadlines, run-to-run variation)
+        if: ${{ !cancelled() }}
+        run: npm run test:browser:observe -- --engines="$ENGINE" --out="$RUNNER_TEMP/browser-observe"

@@ -194,6 +194,28 @@ function crossEngine(all) {
   return checks;
 }
 
+/* Markdown summary for a GitHub Actions job (GITHUB_STEP_SUMMARY), when set. */
+function stepSummary(all, cross, o, status) {
+  const file = process.env.GITHUB_STEP_SUMMARY;
+  if (!file) return;
+  const specs = selectedSpecs(o);
+  const lines = ["### Browser matrix: " + status, "", "| engine | " + specs.join(" | ") + " |", "| --- | " + specs.map(() => "---").join(" | ") + " |"];
+  for (const [engine, r] of Object.entries(all)) {
+    if (!r.version) { lines.push("| " + engine + " | not launched: " + String(r.launchError || r.failure || "").split("\n")[0].replace(/\|/g, "/") + " |"); continue; }
+    lines.push("| " + engine + " " + r.version + " (" + r.platform + ") | " + specs.map((sp) => {
+      const cs = r.cases.filter((c) => c.spec === sp);
+      const failedCases = cs.filter((c) => c.status === "fail").length;
+      const checks = cs.reduce((a, c) => a + c.checks.length, 0), ok = cs.reduce((a, c) => a + c.checks.filter((k) => k.ok).length, 0);
+      return cs.length ? (failedCases ? "FAIL " : "ok ") + ok + "/" + checks + " checks, " + cs.length + " cases" : "missing";
+    }).join(" | ") + " |");
+  }
+  for (const c of cross) lines.push("", (c.ok ? "ok" : "FAIL") + ": " + c.name + " (" + c.detail + ")");
+  const failedChecks = [];
+  for (const r of Object.values(all)) for (const c of r.cases || []) for (const k of c.checks) if (!k.ok) failedChecks.push("- " + r.engine + " / " + c.id + ": " + k.name + " (" + k.detail + ")");
+  if (failedChecks.length) lines.push("", "Failed checks:", ...failedChecks.slice(0, 50));
+  fs.appendFileSync(file, lines.join("\n") + "\n");
+}
+
 async function orchestrate(o, argv) {
   printMatrix(o);
   if (o.list) return 0;
@@ -236,9 +258,12 @@ async function orchestrate(o, argv) {
   const failedCases = Object.values(all).reduce((a, r) => a + r.cases.filter((c) => c.status === "fail").length, 0);
   if (o.out) console.log("results: " + path.join(o.out, "results.json"));
   if (failed || launched !== engines.length) {
-    console.log("FAIL: browser matrix: " + launched + " of " + engines.length + " engines launched, " + failedCases + " of " + cases + " cases failed");
+    const msg = "browser matrix: " + launched + " of " + engines.length + " engines launched, " + failedCases + " of " + cases + " cases failed";
+    stepSummary(all, cross, o, "FAIL (" + msg + ")");
+    console.log("FAIL: " + msg);
     return 1;
   }
+  stepSummary(all, cross, o, "PASS (" + cases + " cases)");
   console.log("PASS: browser matrix: " + engines.join(", ") + "; " + cases + " cases");
   return 0;
 }
