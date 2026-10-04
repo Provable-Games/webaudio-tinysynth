@@ -27,7 +27,8 @@
     "web/beast_sound/chip.js": "df9e8c61545b44562a0668156310de117a93e5e17e6eb0f87e3b9861d0ac12d7"
    }
   },
-  "generator": "_evidence/t11-waveforms/scratch/make-waves-setup.cjs"
+  "generator": "_evidence/t11-waveforms/scratch/make-waves-setup.cjs",
+  "schemaNote": "nNOI (32,767 samples) is not representable at the pinned consumer commit (WaveDef::Samples is 2..=256, MAX_SAMPLES = 256); it relies on the consumer mirroring D-028. Every other wave is within the consumer's limits (8 to 93 samples, 8 and 15 harmonics, 13 waves <= 16)."
  },
  "conversion": {
   "Samples": "i8 s -> s/128 (D-006: -128 -> -1.0, 0 -> 0, 127 -> 0.9921875); float shapes are quantized to i8 with Math.round(v * 128)",

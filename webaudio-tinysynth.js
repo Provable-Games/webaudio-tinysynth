@@ -1051,15 +1051,16 @@ function WebAudioTinySynthCore(target) {
       const f=440*Math.pow(2,(n-69 + this.masterTuningC + this.tuningC[ch] + (this.masterTuningF + this.tuningF[ch]/8192 + this.scaleTuning[ch][n%12]))/12);
       /* Every operator's wave is resolved first (#26): when one is missing from this context (a
          timbre written past setTimbre), the note is dropped before a voice is stolen or a node made.
-         A buffer plays at fp/b[i]: a registered wave's home pitch sampleRate/(N*k) (D-027), looping
-         its N*k frames (l[i] seconds, before the guard frame _mk adds), else 440 (n0, n1). Only n*
-         and w* names are looked up, and no Object.prototype key starts so. */
+         A buffer plays at fp/b[i]: the home pitch _mk tagged a registered wave's buffer with (D-027),
+         looping its N*k frames (l[i] seconds, before the guard frame); else 440 (n0, n1, buffers a
+         caller wrote, even over a registered name). Only n* and w* names are looked up, and no
+         Object.prototype key starts so. */
       for(let i=0;i<p.length;++i){
-        const w=p[i].w,x=w[0]=="n" && this.noiseBuf[w],m=x && this._wv.has(w) && x.length-1;
+        const w=p[i].w,x=w[0]=="n" && this.noiseBuf[w];
         if(w[0]=="n" ? !x : w[0]=="w" && !this.wave[w])
           return;
-        l[i]=m && m/x.sampleRate;
-        b[i]=m ? x.sampleRate/m : 440;
+        l[i]=x && x._l;
+        b[i]=x && x._b || 440;
       }
       this._limitVoices(ch,n);
       for(let i=0;i<p.length;++i){
@@ -1397,41 +1398,53 @@ function WebAudioTinySynthCore(target) {
       /* Checks the name (D-006: k, a letter or _, then up to 30 of [A-Za-z0-9_]; a digit second is
          reserved for built-ins), then the arrays a: each an Array or typed array of at least m
          numbers that pass f, as long as the first (else a TypeError s if not an array, a RangeError
-         s otherwise). Copies them as Float32Arrays, with a PeriodicWave's DC set to 0, and builds
-         the wave in the installed context. Only then is it stored, so a failure changes nothing.
-         Re-registering a name replaces it: sounding voices keep the old wave, later notes get the
-         new one. */
+         s otherwise), each read once. Copies them as Float32Arrays. A PeriodicWave's DC is set to 0,
+         and coefficients whose largest magnitude is extreme are scaled by a power of two, which the
+         browser's normalization undoes (browsers render NaN from 1e36 or a lone subnormal, and
+         Firefox keeps the NaN in the graph). Then builds the wave in the installed context; only
+         then is anything stored, so a failure changes nothing. Re-registering a name replaces it:
+         sounding voices keep the old wave, later notes get the new one. */
       if(typeof w!="string" || w[0]!=k || !/^.[A-Za-z_]\w{0,30}$/.test(w))
         throw new TypeError("wave name: "+w);
       const d=a.map(x=>{
         if(!Array.isArray(x) && !ArrayBuffer.isView(x))
           throw new TypeError(s);
-        if(!(x.length>=m && x.length==a[0].length && Array.from(x).every(v=>typeof v=="number" && f(v))))
+        x=Array.from(x);
+        if(!(x.length>=m && x.length==a[0].length && x.every(v=>typeof v=="number" && f(v))))
           throw new RangeError(s);
         return Float32Array.from(x);
       });
-      if(d[1])
+      if(d[1]){
+        let e=0;
         d[0][0]=d[1][0]=0;
-      if(this.actx)
-        this._mk(w,d);
-      this._wv.set(w,d);
-    },
-    _mk:(w,d)=>{
-      /* Builds registered wave w in the installed context: a PeriodicWave from [real, imag], or
-         the table [samples] with each of its N samples held for k = max(1, round(sampleRate/(440*N)))
-         frames, so its home pitch sampleRate/(N*k) is near 440 Hz and notes play near rate 1 with
-         sharp steps (D-027). One guard frame, the first sample again, follows the N*k frames, and
-         _note loops only those: Chromium otherwise misplays the loop's first frame for some
-         lengths (tasks/T11.md); the other engines play the same either way. */
-      const c=this.actx,s=d[0],N=s.length,k=Math.max(1,Math.round(c.sampleRate/(440*N)));
-      if(d[1])
-        this.wave[w]=c.createPeriodicWave(s,d[1]);
-      else{
-        const b=c.createBuffer(1,N*k+1,c.sampleRate),x=b.getChannelData(0);
-        for(let i=0;i<=N;++i) // i = N writes the guard frame (fill stops at the end)
-          x.fill(s[i%N],i*k,i*k+k);
-        this.noiseBuf[w]=b;
+        d.forEach(a=>a.forEach(v=>e=Math.max(e,Math.abs(v))));
+        if(e>1e9 || e && e<1e-9){
+          e=Math.pow(2,-Math.round(Math.log2(e)));
+          d.forEach(a=>a.forEach((v,i)=>a[i]=v*e));
+        }
       }
+      const o=this.actx && this._mk(d,this.actx);
+      this._wv.set(w,d);
+      if(o)
+        (k=="n" ? this.noiseBuf : this.wave)[w]=o;
+    },
+    _mk:(d,c)=>{
+      /* Returns registered wave d built in context c: a PeriodicWave from [real, imag], or an
+         AudioBuffer of the table [samples] with each of its N samples held for
+         k = max(1, round(sampleRate/(440*N))) frames, so its home pitch sampleRate/(N*k) is near
+         440 Hz and notes play near rate 1 with sharp steps (D-027). One guard frame, the first
+         sample again, follows the N*k frames, and _note loops only those: Chromium otherwise
+         misplays the loop's first frame for some lengths (D-031); the other engines play the same
+         either way. The buffer is tagged with its home pitch (_b) and loop end (_l). */
+      const s=d[0],N=s.length,k=Math.max(1,Math.round(c.sampleRate/(440*N)));
+      if(d[1])
+        return c.createPeriodicWave(s,d[1]);
+      const b=c.createBuffer(1,N*k+1,c.sampleRate),x=b.getChannelData(0);
+      for(let i=0;i<=N;++i) // i = N writes the guard frame (fill stops at the end)
+        x.fill(s[i%N],i*k,i*k+k);
+      b._b=c.sampleRate/(N*k);
+      b._l=N*k/c.sampleRate;
+      return b;
     },
     getAudioContext:()=>{
       return this.actx;
@@ -1444,6 +1457,9 @@ function WebAudioTinySynthCore(target) {
       if(this._dead)
         return;
       this._check(actx,dest);
+      /* The registered waves are built for the new context first, so a failure leaves the
+         installed graph as it was (#26). */
+      const r=[...this._wv].map(([w,d])=>[w,this._mk(d,actx)]);
       const own=this._own && actx==this.actx;
       this._drop(this._own && !own);
       this._own=own;
@@ -1496,7 +1512,7 @@ function WebAudioTinySynthCore(target) {
       this.comp.connect(this.dest);
       this.chvol=[]; this.chmod=[]; this.chpan=[];
       this.wave={"w9999":this._createWave("w9999")};
-      this._wv.forEach((d,w)=>this._mk(w,d)); // the registered waves, for this context (#26)
+      r.forEach(([w,x])=>(w[0]=="n" ? this.noiseBuf : this.wave)[w]=x);
       this.lfo=this.actx.createOscillator();
       this.lfo.frequency.value=5;
       this.lfo.start(0);

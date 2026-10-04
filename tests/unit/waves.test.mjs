@@ -130,7 +130,7 @@ describe.each(variants)("$name: registering waves (#26)", (variant) => {
     for (const [re, im] of [[[0, 0], [0, 1]], [[0, 1, 0], [0, 0, 1]], [new Float64Array(3), new Float32Array([0, 1, 1])], [long, long], [[0, -3e38], [0, 3e38]]])
       expect(thrown(() => s.synth.setHarmonicWave("wX", re, im))).toBe(null);
     const msg = "real, imag: equal-length arrays of >= 2 finite numbers";
-    for (const [re, im] of [[[0], [0]], [[], []], [[0, 0], [0, 0, 1]], [[0, NaN], [0, 1]], [[0, 1], [0, Infinity]], [[0, 1e300], [0, 1]], [[0, 1], [0, -4e38]], [[0, "1"], [0, 1]], [[0, 1], [0, , 1]]]) // eslint-disable-line no-sparse-arrays -- a hole is not a number
+    for (const [re, im] of [[[0], [0]], [[], []], [[0, 0], [0, 0, 1]], [[0, NaN], [0, 1]], [[0, 1], [0, Infinity]], [[0, 1e300], [0, 1]], [[0, 1], [0, -4e38]], [[0, "1"], [0, 1]], [[0, 1, 1], [0, , 1]]]) // eslint-disable-line no-sparse-arrays -- a hole is not a number
       expect(thrown(() => s.synth.setHarmonicWave("wY", re, im))).toEqual({ name: "RangeError", message: msg });
     for (const [re, im] of [[null, [0, 1]], [[0, 1], "01"], [{ length: 2 }, [0, 1]], [[0, 1]]])
       expect(thrown(() => s.synth.setHarmonicWave("wY", re, im))).toEqual({ name: "TypeError", message: msg });
@@ -148,6 +148,26 @@ describe.each(variants)("$name: registering waves (#26)", (variant) => {
     s.synth.setHarmonicWave("wNine", [0, 0, 0, 0, 0], [0, 9, 9, 9, 9]);
     const builtin = calls(s.trace).find((c) => c[0] === "createPeriodicWave");
     expect(calls(s.trace, t2)[0].slice(2)).toEqual(builtin.slice(2));
+  });
+
+  test("extreme harmonic magnitudes are scaled by a power of two before createPeriodicWave (review M1); ordinary ones are not", () => {
+    const s = make(variant);
+    const call = (re, im) => {
+      const from = s.trace.length;
+      s.synth.setHarmonicWave("wX", re, im);
+      return calls(s.trace, from).find((c) => c[0] === "createPeriodicWave").slice(2);
+    };
+    for (const [re, im] of [[[0, 0], [0, 3e38]], [[0, 0, 0, 0], [0, 3e38, -3e38, 3e38]], [[0, -2e36], [0, 1]], [[0, 0], [0, 1e-44]], [[0, 0], [0, 1e-40]], [[0, 1e-12], [0, -3e-12]], [[0, 2e9], [0, 0]]]) {
+      const [r2, i2] = call(re, im);
+      const peak = Math.max(...r2.map(Math.abs), ...i2.map(Math.abs));
+      expect(peak >= 0.5 && peak < 2 && r2.concat(i2).every(Number.isFinite)).toBe(true);
+      // An exact power of two: the ratios are kept (up to float rounding of the input).
+      const k = Math.max(...re.map(Math.abs), ...im.map(Math.abs)) / peak;
+      expect(Math.log2(Math.abs(Math.fround(re.concat(im).find((v, j) => j % re.length && v) || 1) / (r2.concat(i2).find((v, j) => j % re.length && v) || 1)))).toBe(Math.round(Math.log2(k)));
+    }
+    for (const [re, im] of [[[0, 0], [0, 1e9]], [[0, 0], [0, 2e-9]], [[0, 65535], [0, 3]], [[0, 0, 0, 0, 0], [0, 9, 9, 9, 9]]])
+      expect(call(re, im)).toEqual([re.map((v, j) => (j ? Math.fround(v) : 0)), im.map((v, j) => (j ? Math.fround(v) : 0))]);
+    expect(call([0, 0], [0, 0])).toEqual([[0, 0], [0, 0]]); // all zero: silent, nothing to scale
   });
 
   test.each([44100, 48000, 22050, 96000, 44100.5])("a sample wave is stored held (D-027) at %s Hz: k, frames and contents", (sr) => {
@@ -190,7 +210,7 @@ describe.each(variants)("$name: registering waves (#26)", (variant) => {
     const from = s.trace.length;
     s.synth.setAudioContext(s.Ctx(44100));
     expect(Array.from(s.synth.noiseBuf.nTRI.getChannelData(0))).toEqual(Array.from(want));
-    expect(calls(s.trace, from).filter((c) => c[0] === "createPeriodicWave").map((c) => c.slice(2))).toEqual([[[0, 0, 0, 0, 0], [0, 9, 9, 9, 9]], [[0, 0, 0], [0, 1, 0.5]]]);
+    expect(calls(s.trace, from).filter((c) => c[0] === "createPeriodicWave").map((c) => c.slice(2))).toEqual([[[0, 0, 0], [0, 1, 0.5]], [[0, 0, 0, 0, 0], [0, 9, 9, 9, 9]]]); // registry first (review L2)
     // The stored copy is not the caller's array either.
     expect(s.synth._wv.get("nTRI")[0]).not.toBe(samples);
   });
@@ -278,7 +298,21 @@ describe.each(variants)("$name: playing registered waves (#26)", (variant) => {
     expect(thrown(() => s.synth.setTimbre(1, 38, [{ w: "nDirect" }]))).toMatchObject({ name: "TypeError" });
     // Before the context exists (lazy), only built-in and registered names are known.
     const lazy = make(variant, { lazy: true });
-    expect(thrown(() => lazy.synth.setTimbre(1, 38, [{ w: "nDirect" }]))).toMatchObject({ name: "TypeError" });
+    expect(thrown(() => lazy.synth.setTimbre(1, 38, [{ w: "nDirect" }]))).toEqual({ name: "TypeError", message: "unknown wave: nDirect" });
+  });
+
+  test("a caller's buffer written over a registered name plays as a caller's buffer: 440 basis, whole buffer (review L1)", () => {
+    const s = make(variant);
+    s.synth.setSampleWave("nTRI", TRI64);
+    s.synth.setTimbre(1, 36, [{ w: "nTRI", t: 0, f: 160 }]);
+    // TinyChip's registerWaves() on a page that also registered nTRI: a 1 s buffer holding 440 cycles.
+    s.synth.noiseBuf.nTRI = s.synth.getAudioContext().createBuffer(1, 44100, 44100);
+    const [hit] = sourcesBy(s, (y) => y.noteOn(9, 36, 100, 1));
+    expect([hit.buffer, hit.rate, hit.loopEnd]).toEqual([s.synth.noiseBuf.nTRI._id, 160 / 440, undefined]);
+    // Registering again restores the held table and its home pitch.
+    s.synth.setSampleWave("nTRI", TRI64);
+    const [again] = sourcesBy(s, (y) => y.noteOn(9, 36, 100, 2));
+    expect([again.rate, again.loopEnd]).toEqual([expect.closeTo(160 / heldTable(TRI64, 44100).base, 12), heldTable(TRI64, 44100).loop]);
   });
 
   test("a drum override on a registered wave: p 0.28 from 160 Hz", () => {
@@ -374,11 +408,33 @@ describe.each(variants)("$name: the registry across contexts (#26, D-018)", (var
     const from = s.trace.length;
     s.synth.setAudioContext(s.Ctx(48000));
     const made = calls(s.trace, from);
-    expect(made.filter((c) => c[0] === "createBuffer").map((c) => c.slice(2))).toEqual([[2, 24000, 48000], [1, 24000, 48000], [1, 24000, 48000], [1, 129, 48000]]);
-    expect(made.filter((c) => c[0] === "createPeriodicWave").map((c) => c.slice(2))).toEqual([[[0, 0, 0, 0, 0], [0, 9, 9, 9, 9]], [[0, 0], [0, 1]]]);
+    expect(made.filter((c) => c[0] === "createBuffer").map((c) => c.slice(2))).toEqual([[1, 129, 48000], [2, 24000, 48000], [1, 24000, 48000], [1, 24000, 48000]]);
+    expect(made.filter((c) => c[0] === "createPeriodicWave").map((c) => c.slice(2))).toEqual([[[0, 0], [0, 1]], [[0, 0, 0, 0, 0], [0, 9, 9, 9, 9]]]); // the registry first (review L2)
     expect(s.synth.noiseBuf.nTRI).not.toBe(old[0]);
     expect(s.synth.wave.wOrg).not.toBe(old[1]);
     expect(Array.from(s.synth.noiseBuf.nTRI.getChannelData(0))).toEqual(Array.from(heldTable(TRI64, 48000).frames));
+  });
+
+  test("a wave the new context refuses leaves the installed graph as it was (review L2), and a refused registration stores nothing", () => {
+    const s = make(variant);
+    s.synth.setSampleWave("nTRI", TRI64);
+    s.synth.setHarmonicWave("wOrg", [0, 0], [0, 1]);
+    s.synth.setTimbre(0, 0, lead("nTRI"));
+    const before = { ctx: s.synth.getAudioContext(), out: s.synth.out, chvol: s.synth.chvol.slice(), noiseBuf: s.synth.noiseBuf, wave: s.synth.wave };
+    const bad = s.Ctx(48000);
+    bad.createPeriodicWave = () => { throw new Error("refused"); };
+    const from = s.trace.length;
+    expect(thrown(() => s.synth.setAudioContext(bad))).toEqual({ name: "Error", message: "refused" });
+    expect(calls(s.trace, from).filter((c) => !["createBuffer"].includes(c[0]))).toEqual([]); // nothing torn down or built in the old graph
+    expect({ ctx: s.synth.getAudioContext(), out: s.synth.out, chvol: s.synth.chvol, noiseBuf: s.synth.noiseBuf, wave: s.synth.wave }).toEqual(before);
+    const [o] = sourcesBy(s, (y) => y.noteOn(0, 69, 100, 1));
+    expect(o.buffer).toBe(s.synth.noiseBuf.nTRI._id);
+    // _reg builds before it stores: a context that refuses the new wave leaves the registry and the old wave.
+    s.synth.getAudioContext().createBuffer = () => { throw new Error("refused"); };
+    const tri = s.synth.noiseBuf.nTRI, def = s.synth._wv.get("nTRI");
+    expect(thrown(() => s.synth.setSampleWave("nTRI", PULSE8))).toEqual({ name: "Error", message: "refused" });
+    expect(thrown(() => s.synth.setSampleWave("nNew", PULSE8))).toEqual({ name: "Error", message: "refused" });
+    expect([s.synth.noiseBuf.nTRI, s.synth._wv.get("nTRI"), s.synth._wv.has("nNew"), "nNew" in s.synth.noiseBuf]).toEqual([tri, def, false, false]);
   });
 
   test("dispose() releases the context's waves and keeps the definitions; later calls change nothing audible", async () => {

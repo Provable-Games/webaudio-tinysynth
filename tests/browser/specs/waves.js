@@ -30,6 +30,8 @@
  *   - harmonic waves: the harmonic levels of the fixture organ are the
  *     coefficients' ratios; a registered copy of w9999's coefficients renders
  *     as w9999 does;
+ *   - extreme coefficients (3e38, a lone subnormal) render finite audio, and a
+ *     later note too (review M1);
  *   - lifecycle: waves registered before setAudioContext() are rebuilt for the
  *     new context's rate and render as if registered on it; the registry
  *     survives setQuality() (timbres reinstalled); a re-registered name leaves
@@ -414,6 +416,17 @@ function cases(shared) {
           t.check("a harmonic wave's harmonics have its coefficients' levels (+-" + WAVES.harmonicDb + " dB; zero below " + WAVES.harmonicFloorDb + " dB)", !hBad.length,
             ms.map((m, i) => m + ": " + got[i].toFixed(3)).join(", "));
           measurements.harmonics = Object.fromEntries(ms.map((m, i) => [m, +got[i].toFixed(4)]));
+          // Review M1: coefficients that are finite as floats but extreme (3e38, a lone subnormal) rendered
+          // NaN, and Firefox kept the NaN for later notes. The engine scales them by a power of two.
+          const extreme = await render({ label: "extreme harmonics", dur: 1.6, calls: [
+            ["setHarmonicWave", "wBig", [0, 0, 0, 0], [0, 3e38, -3e38, 3e38]], ["setHarmonicWave", "wTiny", [0, 0], [0, 1e-44]],
+            ["setTimbre", 0, 1, [op("wBig")]], ["setTimbre", 0, 2, [op("wTiny")]],
+            ["send", [0xc0, 1]], ["noteOn", 0, 69, 100, ON], ["noteOff", 0, 69, 0.55],
+            ["send", [0xc1, 2]], ["noteOn", 1, 69, 100, 0.65], ["noteOff", 1, 69, 0.95],
+            ["send", [0xc2, 1]], ["setTimbre", 0, 3, [op("sine")]], ["send", [0xc2, 3]], ["noteOn", 2, 72, 100, 1.1], ["noteOff", 2, 72, 1.4]] });
+          const exNf = A.nonFinite(extreme.x), exPeaks = [[ON, 0.55], [0.65, 0.95], [1.1, 1.4]].map(([a, b]) => A.peak(seg(extreme.x, sr, a, b)));
+          t.check("extreme harmonic coefficients (3e38, 1e-44) render finite audio, and a later note stays finite (review M1)", !exNf.nan && !exNf.inf && exPeaks.every((p) => p > tol.audiblePeak),
+            JSON.stringify(exNf) + ", peaks " + exPeaks.map((p) => p.toFixed(4)).join("/"));
           const nine = await render({ label: "wNine", dur: 0.8, calls: [["setHarmonicWave", "wNine", [0, 0, 0, 0, 0], [0, 9, 9, 9, 9]], ...melodic([op("wNine")], 69, 0.7)] });
           const w9999 = await render({ label: "w9999", dur: 0.8, calls: melodic([op("w9999")], 69, 0.7) });
           const d9 = maxDiff(nine.x, w9999.x);
