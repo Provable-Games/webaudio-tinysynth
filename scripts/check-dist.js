@@ -4,60 +4,58 @@
  * and webaudio-tinysynth.min.js.map (CI's build-verify job).
  *
  * After each merge into improve/integration, .github/workflows/dist.yml
- * rebuilds the generated files with the pinned build and commits them.
- * Nothing rebuilds them on main. So:
+ * rebuilds the generated files with the pinned build and commits them. main
+ * is not automated: there they change only in a manual release pull request
+ * (a release/* branch), followed by a tag and a GitHub Release, and between
+ * releases main's committed copy may be older than its source. So, on a pull
+ * request:
  *
- *   unchanged  A pull request into any branch other than main must leave
- *              both files as they are on its base branch: they reach
- *              improve/integration, where CI regenerates them. With --github
- *              this compares the checked-out merge commit with its first
- *              parent (the base tip). Locally, --unchanged-from=REF passes
- *              when HEAD's copy equals REF's or the merge base's (the branch
- *              did not touch it), and the working tree has no uncommitted
- *              change to either file.
- *   fresh      The committed files must equal a fresh pinned build:
- *              scripts/verify-dist.js (`npm run verify`). For every pull
- *              request into main (normally improve/integration -> main, which
- *              carries CI's rebuild), pushes to main and manual runs.
+ *   - both files unchanged from the base: pass. With --github this compares
+ *     the checked-out merge commit with its first parent (the base tip).
+ *     Locally, --unchanged-from=REF passes when HEAD's copy equals REF's or
+ *     the merge base's (the branch did not touch it), and the working tree
+ *     has no uncommitted change to either file;
+ *   - changed, from this repository's improve/integration (CI's rebuild) or a
+ *     release/* branch: pass only if both equal a fresh pinned build;
+ *   - any other change: fail, with the command that restores them.
  *
- * Either way it also builds the current source (scripts/test-build.js) and
- * requires that build and the source to be safe to inline in a <script>
- * element, so a pull request cannot break inlining before CI commits the build.
+ * Pushes and manual runs check no committed copy (--inline-only). Whatever the
+ * rule, it builds the current source (scripts/test-build.js) and requires that
+ * build and the source to be safe to inline in a <script> element.
  *
  * Usage: node scripts/check-dist.js --github           (in GitHub Actions)
  *        node scripts/check-dist.js --unchanged-from=origin/improve/integration
- *        node scripts/check-dist.js --fresh
+ *        node scripts/check-dist.js --fresh            (npm run verify: committed equals fresh)
  *        node scripts/check-dist.js --inline-only      (only the inline-safety checks)
  */
 "use strict";
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const { spawnSync } = require("child_process");
 
 const ROOT = path.resolve(__dirname, "..");
 const INTEGRATION_BRANCH = "improve/integration";
-const MAIN_BRANCH = "main";
+const RELEASE_BRANCH = /^release\//;
 const GENERATED = ["webaudio-tinysynth.min.js", "webaudio-tinysynth.min.js.map"];
 
 /*
  * Which rule applies. `pr` describes a pull_request event: {headRef,
- * headRepo, baseRef}; `repo` is the repository the workflow runs in. main is
- * not rebuilt by CI, so everything merged into it must already carry a fresh
- * build. Only the improve/integration branch of this repository carries CI's
- * rebuild; a fork's branch of the same name is a feature branch.
+ * headRepo, baseRef}; `repo` is the repository the workflow runs in. Only
+ * this repository's improve/integration and release/* branches may carry a
+ * build; a fork's branch of the same name is a feature branch.
  */
 function decide({ eventName, repo, pr }) {
   if (eventName === "pull_request") {
-    if (pr.baseRef === MAIN_BRANCH)
-      return { rule: "fresh", reason: "pull request into " + MAIN_BRANCH + ": CI does not rebuild it, so the committed files must equal a fresh build" };
-    if (pr.headRef === INTEGRATION_BRANCH && pr.headRepo === repo)
-      return { rule: "fresh", reason: "pull request from " + INTEGRATION_BRANCH + ": it carries CI's rebuild, which must equal a fresh build" };
+    const mayCarryBuild = pr.headRepo === repo && (pr.headRef === INTEGRATION_BRANCH || RELEASE_BRANCH.test(pr.headRef));
     return {
-      rule: "unchanged", base: "HEAD^1", fixRef: "origin/" + pr.baseRef,
-      reason: "feature pull request into " + pr.baseRef + ": CI regenerates these files after merging, so the pull request must not change them",
+      rule: "pull-request", base: "HEAD^1", fixRef: "origin/" + pr.baseRef, mayCarryBuild,
+      reason: "pull request " + pr.headRef + " -> " + pr.baseRef + ": " + (mayCarryBuild
+        ? "the files may change, but only to a fresh build"
+        : "the files must stay as the base has them"),
     };
   }
-  return { rule: "fresh", reason: eventName + " event: the committed files must equal a fresh build" };
+  return { rule: "inline-only", reason: eventName + " event: the committed files are not compared (main's may lag the source between releases)" };
 }
 
 /* decide()'s input from the GitHub Actions environment and event payload. */
@@ -117,12 +115,36 @@ function fixCommand(ref) {
   return "git checkout " + ref + " -- " + GENERATED.join(" ");
 }
 
+/* HEAD's committed copy of each file against the same file in `freshDir`. Returns a list of problems. */
+function compareWithFresh(freshDir, { cwd = ROOT, files = GENERATED } = {}) {
+  const problems = [];
+  for (const file of files) {
+    const r = spawnSync("git", ["cat-file", "blob", "HEAD:" + file], { cwd, maxBuffer: 1 << 26 });
+    if (r.status !== 0) problems.push(file + " is missing at HEAD");
+    else if (!r.stdout.equals(fs.readFileSync(path.join(freshDir, file)))) problems.push(file + " differs from a fresh build of this source");
+  }
+  return problems;
+}
+
+/*
+ * The pull request rule: unchanged from `base`, or (only when mayCarryBuild)
+ * equal to the fresh build in `freshDir()`, which is called only if needed.
+ * Returns {ok, via, problems}.
+ */
+function checkPullRequest({ base, mayCarryBuild, freshDir, cwd = ROOT, files = GENERATED }) {
+  const changed = checkUnchanged(base, { cwd, files });
+  if (!changed.length) return { ok: true, via: "unchanged", problems: [] };
+  if (!mayCarryBuild) return { ok: false, via: "changed", problems: changed };
+  const stale = compareWithFresh(freshDir(), { cwd, files });
+  return { ok: !stale.length, via: "fresh", problems: stale };
+}
+
 async function main(argv) {
   let rule = null;
   for (const a of argv) {
     let m;
     if (a === "--github") rule = decide(fromGithub(process.env));
-    else if ((m = /^--unchanged-from=(.+)$/.exec(a))) rule = { rule: "unchanged", base: m[1], fixRef: m[1], reason: "--unchanged-from=" + m[1] };
+    else if ((m = /^--unchanged-from=(.+)$/.exec(a))) rule = { rule: "pull-request", base: m[1], fixRef: m[1], mayCarryBuild: false, reason: "--unchanged-from=" + m[1] };
     else if (a === "--fresh") rule = { rule: "fresh", reason: "--fresh" };
     else if (a === "--inline-only") rule = { rule: "inline-only", reason: "--inline-only: the committed files are not checked" };
     else throw new Error("unknown argument " + a);
@@ -138,20 +160,34 @@ async function main(argv) {
   checkInlineSafe((built.built ? "fresh " : "") + path.relative(ROOT, built.min), built.min, failures);
   checkInlineSafe("webaudio-tinysynth.js", path.join(ROOT, "webaudio-tinysynth.js"), failures);
 
-  if (rule.rule === "unchanged") {
-    const problems = checkUnchanged(rule.base);
-    if (problems.length) {
-      failures.push("this pull request changes the generated files. CI rebuilds them on " + INTEGRATION_BRANCH +
-        " after merging (.github/workflows/dist.yml), so pull requests must leave them as the base branch has them:\n" +
-        problems.map((p) => "       " + p).join("\n") + "\n" +
+  if (rule.rule === "pull-request") {
+    // The comparison build goes to its own directory: TINYSYNTH_MIN may name some other file.
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tinysynth-check-dist-"));
+    let result;
+    try {
+      const freshDir = () => {
+        const b = spawnSync(process.execPath, [path.join(__dirname, "build.js"), tmp], { cwd: ROOT, stdio: "inherit" });
+        if (b.status !== 0) throw new Error("the pinned build failed");
+        return tmp;
+      };
+      result = checkPullRequest({ base: rule.base, mayCarryBuild: rule.mayCarryBuild, freshDir });
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+    const list = result.problems.map((p) => "       " + p).join("\n");
+    if (result.ok) console.log("ok   " + GENERATED.join(" and ") + (result.via === "unchanged" ? " unchanged from " + rule.base : " equal a fresh build"));
+    else if (result.via === "changed") {
+      failures.push("this pull request changes the generated files. Only " + INTEGRATION_BRANCH + " (CI's rebuild, .github/workflows/dist.yml) " +
+        "and release/* branches may change them, and only to a fresh build:\n" + list + "\n" +
         "     Restore them, then commit:\n       " + fixCommand(rule.fixRef));
     } else {
-      console.log("ok   " + GENERATED.join(" and ") + " unchanged from " + rule.base);
+      failures.push("this branch may change the generated files, but they must equal a fresh build:\n" + list + "\n" +
+        "     On a release/* branch, run `npm run build` and commit both files. On " + INTEGRATION_BRANCH +
+        ", CI's rebuild commit (dist.yml) brings them up to date after each merge.");
     }
   } else if (rule.rule === "fresh") {
     const r = spawnSync(process.execPath, [path.join(__dirname, "verify-dist.js")], { cwd: ROOT, stdio: "inherit" });
-    if (r.status !== 0) failures.push("the committed files do not match a fresh build (npm run verify, above). On " + INTEGRATION_BRANCH +
-      ", CI's rebuild commit (dist.yml) brings them up to date after each merge");
+    if (r.status !== 0) failures.push("the committed files do not match a fresh build (npm run verify, above)");
   }
 
   if (process.env.GITHUB_STEP_SUMMARY) {
@@ -167,7 +203,7 @@ async function main(argv) {
   return 0;
 }
 
-module.exports = { INTEGRATION_BRANCH, MAIN_BRANCH, GENERATED, decide, fromGithub, checkUnchanged, fixCommand };
+module.exports = { INTEGRATION_BRANCH, RELEASE_BRANCH, GENERATED, decide, fromGithub, checkUnchanged, compareWithFresh, checkPullRequest, fixCommand };
 
 if (require.main === module) {
   main(process.argv.slice(2)).then((status) => process.exit(status), (e) => {
