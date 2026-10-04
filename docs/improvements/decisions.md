@@ -259,3 +259,86 @@ The T7 refactor will move these internals. The fork therefore provides public be
 3. **Pass start time (T3.1, additive).** `getPlayStatus()` gains `startTime`: the AudioContext time at which tick 0 of the current pass sounds. It updates at each wrap and is `null` when stopped or when nothing is loaded. This is a public replacement for reading `playTime`.
 
 T3.1 is dispatched after T4 integrates, in parallel with T5. Integration SHAs sent to the consumer must call out any change to these behaviors or to the internals they touch until the consumer has switched.
+
+## D-024 The consumer's size metric is gzip, with no engine size budget (2026-10-03)
+
+The consumer adopted `improve/integration` `4b29ff1` (min.js `b49e8ceb…`) as an interim pin on its main (onchain-tinysynth PR #24, page version `tinysynth-4b29ff1+page.6`), with no class declaration against it. Its player embeds the engine gzipped (fflate level 9), so the relevant onchain size metric is the min.js `gzip -9` size, not the raw size. This corrects the "onchain pays raw bytes" reasoning used at T2 (D-016 context).
+
+Measured by the consumer: gzip went from 9,444 B (T0) to 9,948 B (+5.3 %, just over the 5 % review trigger). That costs about 0.3M L2 gas on a full Beast `token_uri` (286.2M to 286.5M, against a 1B budget). The consumer states it has no engine size budget. The supervisor keeps reporting cumulative raw and gzip growth against T0 at each gate, treats the 5 % trigger as a review prompt rather than a limit, and prefers gzip-efficient choices when two options are otherwise equal.
+
+## D-025 T4 review outcome (2026-10-03)
+
+The independent review (`t4/review` 93053e3) passed #11 and #12 and the D-023 stop itself. It requested changes for F1. The caller-stop cancellation left the transport and channel state ahead of the audio, so Stop then Play resumed about 24 dB louder and centred, in every engine. PR #37's AI reviews flagged the same cause.
+
+Decisions:
+- Fix F1 while keeping D-023.
+- Adopt size variant C7: C5 compaction (which also restores guarded methods' `length`/`name`, F4), plus the fixes for F1, F2 (resume coalescing must not skip a context installed in the same task) and F3 (dispose on a caller-closed context).
+- Keep the `_gone` tracking (C8 rejected): it is the Chromium workaround for oscillators that never end after an early disconnect.
+- Guard repeated `init()` (F9).
+- Document F5 and F6 (in lazy mode, `reset()` and `loadMIDI()` create the context), F7 (offline renders steal voices by count, so raise `setVoices()`) and F8 (a context replaced mid-play does not rebase the clock; pre-existing).
+
+## D-026 T11 (#26) moves to right after T4 (2026-10-03)
+
+The consumer reported that TinyChip's Tier 2 (Casey's chip pack: 20 presets and 19 chip drums built on sampled single-cycle waves) is now on its critical path. On 2026-10-03 the user approved running T11 immediately after T4 integrates, ahead of T5, T6-B, G1, T7 and T8. This amends D-022 for T11 only.
+
+- T11 brings its own wave-name validation in `setTimbre`: built-in or registered names, with transactional rejection. T5 (#13) later generalizes `setTimbre` validation around it. T5 therefore runs after T11, because both touch `setTimbre`.
+- T3.1 (leading rest, `startTime`) may run in parallel with T11, since their files are disjoint.
+- T12 (#27) and T8 (#7) keep their plan positions unless the user re-prioritizes them.
+- The later T7 refactor must carry the registry code.
+
+## D-027 Sample-wave storage: one cycle held to a home pitch near 440 Hz (2026-10-03; posted to #26 as a refinement comment)
+
+This refines D-021, with the user's choice made after the supervisor showed the fidelity trade-off. Under D-021 as written, a table of N samples is stored as N frames and played at rate `f·N/sampleRate`, for example about 0.07 for an 8-sample pulse at A4. Browsers interpolate between frames (Chromium linearly, Firefox with a band-limited resampler). At such low rates each step edge is smeared across a whole step, so pulse and saw tables lose their stepped character. TinyChip avoids this by playing 440 Hz-based buffers near rate 1.
+
+Decision:
+- `setSampleWave(name, samples)` stores one cycle with each sample held for `k = max(1, round(sampleRate / (440 · N)))` frames, giving `N·k` frames at the context sample rate. The home pitch is `base = sampleRate / (N · k)`. `_note` uses `base` for `playbackRate = fp / base`, for the pitch-envelope target and for FM depth scaling, exactly as D-021 says. `n0` and `n1` keep `base = 440`.
+- Consequences: playback stays near rate 1 for typical notes, so only step edges are interpolated and steps stay sharp. Every step is exactly `k` frames, with none of the uneven step widths of the original 1 s / 440-cycle proposal. Pitch is exact. Memory is about `sampleRate / 440` frames per wave (≈ 109 at 48 kHz). `k` and `base` are deterministic functions of `N` and the sample rate, and the generated tables are hashed per sample rate.
+- Tests (amending D-021): a 64-step 4-bit triangle at A4 measures 440 Hz within 1 cent. Step widths at the home pitch are exactly `k` frames, and at other notes `sampleRate / (f · N)` ± 1 frame. 8-, 16-, 32-, 93- and 256-sample tables play at the right pitch. Edge sharpness is measured against an independent sample-and-hold reference, with T6 tolerances. All other D-021 and D-006 tests still apply.
+- The Beast `chip.js` reference uses `k = 1`. For tables shorter than `sampleRate/440` samples, this engine's output will have sharper steps than `chip.js`, which brings it closer to stepped chip hardware. The consumer is informed.
+- Consumer notes: TinyChip's `nMET`/`nNOI` noise tables are currently one sample per frame at the engine's 440 basis, which makes their texture sample-rate dependent. Under #26 they become sample-rate independent, so the consumer should retune those drum operators. `nNOI` (32,767 samples) exceeds the limits and falls back to `n0`, which needs #7 for determinism. TinyChip also writes `synth.program[129+]` and `noiseBuf` directly. Those are internals with no supported equivalent, and the consumer's carriage of presets through program slots 0–127 is unaffected.
+
+## D-028 Natural limits only for #26 and #27 (2026-10-03)
+
+The user applied the project principle "check format, not cost": validate only what the engine and the data format require, mirror engine caps exactly, impose no throttles, and document measured cost instead. This supersedes the count, size and range caps in D-006, D-007 and D-027. The #26 engine-review text asked to bound sizes and registry memory; the user's decision replaces that request.
+
+- **`setHarmonicWave`:** `real` and `imag` are arrays of finite numbers of equal length, at least 2 (the DC slot plus at least one harmonic). No upper bound.
+- **`setSampleWave`:** a non-empty array of finite numbers in [−1, 1], which is the format's normalized range. No upper bound. Held storage (D-027) gives `k = 1` for long tables, so TinyChip's 32,767-step LFSR is registrable directly.
+- **Names:** the D-006 grammar (prefix, second character a letter, at most 32 characters) and reserved built-in names stay. They are format rules.
+- **Registry:** no count limit and no memory bound. T11 measures and documents memory per wave and per sample rate.
+- **Filters (#27):** `fl` is one of the three types. `ff` is finite and > 0: Hz with `fk:0`, a note-frequency multiple with `fk:1`. `fq` is finite and > 0, converted to dB Q for low-pass and high-pass. `fk` is 0 or 1. The engine still applies a defined, sample-rate-aware handling of cutoffs at or above Nyquist (D-007): the computed cutoff is clamped into (0, Nyquist), with T12 setting the margin from evidence. That is engine behavior, not a throttle. Filter fields without `fl`, or on modulators, are still rejected (format).
+- The consumer mirrors these caps exactly and is informed.
+
+## D-029 Concurrent execution within the approved order (2026-10-03)
+
+At the user's request for more concurrency, five agents now run in parallel, all within the order already approved (D-022, D-026):
+- T4 (fix round).
+- T11 and T3.1, both based on T4's head `d1f0e26`. They merge `improve/integration` once T4 lands.
+- T9-D, the engine-independent #19 demo fixes, which the plan allows in parallel.
+- T6-B.1, browser assertions for the integrated T2 and T3 behavior.
+
+Binding rules are in `_evidence/assignments/CONCURRENCY.md`:
+- Never kill processes you did not start.
+- Use the shared browsers read-only.
+- Use ephemeral ports only.
+- Do not edit README or NOTICE; the supervisor adds those bullets at integration.
+- Recompute test floors after each merge.
+
+Integration stays in dependency order: T4, then T3.1, then T11, then T6-B.1 and T9-D, then T5. Overlapping T5 with T11, and moving T8 (#7 seed) or T12 (#27) ahead of T7, are re-sequences put to the user separately.
+
+## D-030 Maximum safe parallelism, and Opus for all subagents (2026-10-03)
+
+The user asked for "as many as can be safely/neatly run in parallel … If all of the above can be run without major merge conflicts, do it. Use Opus 5.5 for all subagents." That approves T5 overlapping T11, T8-seed (#7) and T12 (#27) running ahead of T7, which amends D-022 and D-026 for these tasks. Everything runs in parallel from T4's head `d1f0e26`, except T9-D and T6-B.1, which started from integration.
+
+How merges stay mechanical:
+- T11 and T12 each add one private validation helper (wave name, filter fields), called from `setTimbre` with one line.
+- T5 integrates last among the engine tasks and folds both helpers into its general validator.
+- T12 confines its `_note` change to the gain→output connection; T11 confines its change to the wave lookup and the `n*` branch.
+- T8-seed stays in `setAudioContext` buffer generation and the `seed` constructor option.
+- The non-finite computed-value guard (consumer FM-chain and `k` cases) moves out of T5 into a small follow-up, T5.2, after T12 integrates. That keeps three agents out of `_note` at once.
+- Consumer fixtures use separate files.
+
+Integration order: T4 → T3.1 → T11 → T8-seed → T12 → T5 → T5.2. T6-B.1 and T9-D integrate whenever they are ready, since their files are disjoint. T6 phase-B rows for T4, T5, T8, T11 and T12 follow those tasks.
+
+Unchanged: the refactor (T7), the #18 performance work, the T9 documentation pass, T1B, and T10 keep their order after these. New subagents are dispatched with `model: opus`. Earlier subagents inherited this session's model.
+- T4 fix-round outcome (2026-10-03): F1 was fixed with a different approach than the C7 rewind. Applying the rewind lost CC changes before a tempo event and replayed notes with a later program; PR #37 round 2 caught it. Now a caller's `stopMIDI()` still cancels queued automation (D-023), and `playMIDI()` first re-applies each channel's latest volume, expression, pan and modulation. Size: min.js `6f5b1f79…` is 40,245 B raw and 10,991 B gzip (+8.9 % / +10.5 % against the T3 build; +16.4 % gzip against T0). This is documented, not capped, under D-024 and D-028. The Codex LOW on the 500 ms render-time floor in the offline spec is deferred to T6 phase B (test-only). A delta re-review is required before integration.
+- T3.1 outcome (2026-10-03): with `loopEnd > 0`, a pass starting at tick 0 keeps its leading rest. `getPlayStatus().startTime` is the AudioContext time at which tick 0 of the pass sounds; after a seek or resume it is computed back along the tempo map, and it is `null` when not playing. The supervisor rejected a non-enumerable `startTime`: the field is an ordinary additive property, and the existing exact-shape assertions are updated. A one-line edit in `locateMIDI` and the updated first-pass timing expectation in T3's scheduler test are accepted, and the timing change is ledger entry L-14. The consumer must drop its `playTick`/`playTime` rewrite when it moves to this engine; left in place, it doubles the rest.
