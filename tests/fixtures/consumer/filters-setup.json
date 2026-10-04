@@ -1,0 +1,258 @@
+{
+ "_comment": "T12 (#27) consumer filter fixture. Hand-built from onchain-tinysynth's Filter type at consumer.commit (its v1 validation still rejects filters, so its tooling cannot generate this) by _evidence/t12-filters/scratch/gen-filters-fixture.mjs. settings uses the consumer's fixed-point units (x / 10000); settings_text is its SETTINGS grammar; tinysynth lists the setTimbre(m, n, operators) calls its player's conversion plus D-007's filter mapping gives.",
+ "consumer": {
+  "repository": "https://github.com/Provable-Games/onchain-tinysynth",
+  "commit": "d7357936754b5753ee4e9cc9134a0d373b75c099",
+  "files": [
+   "src/types.cairo: Filter, FilterKind, Operator.filter",
+   "src/settings.cairo: SETTINGS grammar (filter = \"0\" | \"1\" \",\" kind \",\" cutoff \",\" key_track \",\" q)",
+   "player/settings.js: FIXED_POINT_SCALE, OPERATOR_FIELDS, toTinySynthOps"
+  ],
+  "note": "feat/raise-settings-limits (dfa1b34) has the same Filter and FilterKind."
+ },
+ "mapping": {
+  "fl": "FilterKind LowPass/HighPass/BandPass -> \"lowpass\"/\"highpass\"/\"bandpass\"",
+  "ff": "cutoff / 10000 (Hz, or a multiple of the note frequency when key_track)",
+  "fk": "key_track ? 1 : 0",
+  "fq": "q / 10000 (linear Q)"
+ },
+ "settings": {
+  "quality": 1,
+  "reverb": 0,
+  "master_vol": 40,
+  "voices": 64,
+  "waves": [],
+  "timbres": [
+   {
+    "drum": true,
+    "slot": 42,
+    "operators": [
+     {
+      "route": 0,
+      "wave": "MetallicNoise",
+      "volume": 3000,
+      "ratio": 0,
+      "offset_hz": 4400000,
+      "attack": 0,
+      "hold": 0,
+      "decay": 400,
+      "sustain": 0,
+      "release": 400,
+      "pitch_ratio": 10000,
+      "pitch_time": 10000,
+      "key_scale": 0,
+      "filter": {
+       "kind": "HighPass",
+       "cutoff": 30000000,
+       "key_track": false,
+       "q": 7071
+      }
+     }
+    ]
+   },
+   {
+    "drum": false,
+    "slot": 81,
+    "operators": [
+     {
+      "route": 0,
+      "wave": "Sawtooth",
+      "volume": 1500,
+      "ratio": 10000,
+      "offset_hz": 0,
+      "attack": 100,
+      "hold": 0,
+      "decay": 3000,
+      "sustain": 6000,
+      "release": 1000,
+      "pitch_ratio": 10000,
+      "pitch_time": 10000,
+      "key_scale": 0,
+      "filter": {
+       "kind": "LowPass",
+       "cutoff": 40000,
+       "key_track": true,
+       "q": 20000
+      }
+     },
+     {
+      "route": 1,
+      "wave": "Sine",
+      "volume": 50,
+      "ratio": 0,
+      "offset_hz": 50000,
+      "attack": 0,
+      "hold": 0,
+      "decay": 10000,
+      "sustain": 10000,
+      "release": 1000,
+      "pitch_ratio": 10000,
+      "pitch_time": 10000,
+      "key_scale": 0,
+      "filter": null
+     },
+     {
+      "route": 0,
+      "wave": "Sawtooth",
+      "volume": 1500,
+      "ratio": 10050,
+      "offset_hz": 0,
+      "attack": 100,
+      "hold": 0,
+      "decay": 3000,
+      "sustain": 6000,
+      "release": 1000,
+      "pitch_ratio": 10000,
+      "pitch_time": 10000,
+      "key_scale": 0,
+      "filter": {
+       "kind": "LowPass",
+       "cutoff": 40000,
+       "key_track": true,
+       "q": 20000
+      }
+     }
+    ]
+   },
+   {
+    "drum": false,
+    "slot": 121,
+    "operators": [
+     {
+      "route": 0,
+      "wave": "WhiteNoise",
+      "volume": 4000,
+      "ratio": 10000,
+      "offset_hz": 0,
+      "attack": 500,
+      "hold": 0,
+      "decay": 5000,
+      "sustain": 8000,
+      "release": 2000,
+      "pitch_ratio": 10000,
+      "pitch_time": 10000,
+      "key_scale": 0,
+      "filter": {
+       "kind": "BandPass",
+       "cutoff": 12000000,
+       "key_track": false,
+       "q": 40000
+      }
+     }
+    ]
+   }
+  ]
+ },
+ "settings_text": "1,1,0,40,64,0,3,1,42,1,0,5,3000,0,4400000,0,0,400,0,400,10000,10000,0,1,1,30000000,0,7071,0,81,3,0,2,1500,10000,0,100,0,3000,6000,1000,10000,10000,0,1,0,40000,1,20000,1,0,50,0,50000,0,0,10000,10000,1000,10000,10000,0,0,0,2,1500,10050,0,100,0,3000,6000,1000,10000,10000,0,1,0,40000,1,20000,0,121,1,0,4,4000,10000,0,500,0,5000,8000,2000,10000,10000,0,1,2,12000000,0,40000",
+ "tinysynth": [
+  [
+   1,
+   42,
+   [
+    {
+     "g": 0,
+     "w": "n1",
+     "v": 0.3,
+     "t": 0,
+     "f": 440,
+     "a": 0,
+     "h": 0,
+     "d": 0.04,
+     "s": 0,
+     "r": 0.04,
+     "p": 1,
+     "q": 1,
+     "k": 0,
+     "fl": "highpass",
+     "ff": 3000,
+     "fk": 0,
+     "fq": 0.7071
+    }
+   ]
+  ],
+  [
+   0,
+   81,
+   [
+    {
+     "g": 0,
+     "w": "sawtooth",
+     "v": 0.15,
+     "t": 1,
+     "f": 0,
+     "a": 0.01,
+     "h": 0,
+     "d": 0.3,
+     "s": 0.6,
+     "r": 0.1,
+     "p": 1,
+     "q": 1,
+     "k": 0,
+     "fl": "lowpass",
+     "ff": 4,
+     "fk": 1,
+     "fq": 2
+    },
+    {
+     "g": 1,
+     "w": "sine",
+     "v": 0.005,
+     "t": 0,
+     "f": 5,
+     "a": 0,
+     "h": 0,
+     "d": 1,
+     "s": 1,
+     "r": 0.1,
+     "p": 1,
+     "q": 1,
+     "k": 0
+    },
+    {
+     "g": 0,
+     "w": "sawtooth",
+     "v": 0.15,
+     "t": 1.005,
+     "f": 0,
+     "a": 0.01,
+     "h": 0,
+     "d": 0.3,
+     "s": 0.6,
+     "r": 0.1,
+     "p": 1,
+     "q": 1,
+     "k": 0,
+     "fl": "lowpass",
+     "ff": 4,
+     "fk": 1,
+     "fq": 2
+    }
+   ]
+  ],
+  [
+   0,
+   121,
+   [
+    {
+     "g": 0,
+     "w": "n0",
+     "v": 0.4,
+     "t": 1,
+     "f": 0,
+     "a": 0.05,
+     "h": 0,
+     "d": 0.5,
+     "s": 0.8,
+     "r": 0.2,
+     "p": 1,
+     "q": 1,
+     "k": 0,
+     "fl": "bandpass",
+     "ff": 1200,
+     "fk": 0,
+     "fq": 4
+    }
+   ]
+  ]
+ ]
+}

@@ -160,6 +160,20 @@ function createEnvironment(trace) {
     set buffer(b) { this._buffer = b; rec("buffer", this._id, b ? b._id : null); }
   }
 
+  /* Added for T12 (#27): BiquadFilterNode, with its four AudioParams at their Web Audio defaults. */
+  class BiquadFilter extends AudioNode {
+    constructor() {
+      super("biquad");
+      this.frequency = new AudioParam(this._id + ".frequency", 350);
+      this.Q = new AudioParam(this._id + ".Q", 1);
+      this.gain = new AudioParam(this._id + ".gain", 0);
+      this.detune = new AudioParam(this._id + ".detune", 0);
+      this._type = "lowpass";
+    }
+    get type() { return this._type; }
+    set type(t) { this._type = t; rec("type", this._id, t); }
+  }
+
   class AudioBuffer {
     constructor(ch, len, sr) {
       this._id = "buf#" + nextNode++;
@@ -187,6 +201,7 @@ function createEnvironment(trace) {
     createStereoPanner() { return new StereoPanner(); }
     createDynamicsCompressor() { return new AudioNode("comp"); }
     createConvolver() { return new Convolver(); }
+    createBiquadFilter() { return new BiquadFilter(); } // T12 (#27)
     createPeriodicWave(real, imag) {
       const id = "wave#" + nextNode++;
       rec("createPeriodicWave", id, Array.from(real), Array.from(imag));
