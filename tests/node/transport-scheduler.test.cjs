@@ -99,10 +99,11 @@ const CASES = {
     return { status: s.status(), sends: s.sent.length, notes: noteOnTimes(s) };
   },
   "one-tick loop with a negative loopEnd": (v) => {
-    const s = instrument(v, H.makeMidi(PPQ, [noteOn(0, 0, 60, 100), noteOff(0, 0, 60)]), (y) => { y.setLoop(1); y.setLoopEnd(-480); });
+    let rejected = null; // #13 (D-019 F8): setLoopEnd() rejects it, so the loop runs with loopEnd 0
+    const s = instrument(v, H.makeMidi(PPQ, [noteOn(0, 0, 60, 100), noteOff(0, 0, 60)]), (y) => { y.setLoop(1); try { y.setLoopEnd(-480); } catch (e) { rejected = e.name; } });
     s.synth.playMIDI();
     for (let i = 0; i < 50; ++i) s.step();
-    return { status: s.status(), sends: s.sent.length, notes: noteOnTimes(s) };
+    return { status: s.status(), sends: s.sent.length, notes: noteOnTimes(s), rejected, loopEnd: s.synth.loopEnd };
   },
   "tempo and program change at tick 0 only, looping": (v) => {
     const s = instrument(v, H.makeMidi(PPQ, [tempo(0, 400000), { tick: 0, bytes: [0xc0, 5] }]), (y) => y.setLoop(1));
@@ -318,6 +319,7 @@ function parent() {
         assert.deepEqual([trailing.status, trailing.sends, trailing.notes], [H.playStatus(0, 1920, 1920), 2, [0.1]]);
         const negative = get("one-tick loop with a negative loopEnd");
         assert.deepEqual([negative.status, negative.sends, negative.notes], [H.playStatus(0, 0, 0), 2, [0.1]]);
+        assert.deepEqual([negative.rejected, negative.loopEnd], ["RangeError", 0]);
       });
 
       test("a looping one-tick song of tempo and state events plays once, then stops (#8)", () => {

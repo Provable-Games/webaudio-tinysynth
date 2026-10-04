@@ -673,15 +673,30 @@ function WebAudioTinySynthCore(target) {
       }
       return new Promise(r=>r(c && close && c.state!="closed" && c.close())).then(()=>{},()=>{});
     },
+    _num:(k,v,hi,i,lo)=>{
+      /* The public numeric contract (#13, D-013): a number, or a non-blank numeric string read
+         with Number(), that is finite, from lo (default 0) to hi, and an integer when i is set.
+         Returns the number. Callers check every argument before changing anything, so a
+         TypeError (not a number) or RangeError (out of range) leaves the synth as it was. */
+      const x=typeof v=="string" && v.trim() ? +v : v;
+      if(typeof x!="number")
+        throw new TypeError(k+" is not a number");
+      if(!(x>=(lo||0) && x<=hi && isFinite(x)) || i && x%1)
+        throw new RangeError(k+" out of range: "+x);
+      return x;
+    },
+    _time:(t)=>t==null ? t : this._num("time",t,1/0), // undefined, null or 0 mean now
+    _ch:(c)=>this._num("channel",c,15,1),
+    _cv:(ch,v,t,k,hi,i)=>[this._ch(ch),this._num(k,v,hi,i),this._time(t)],
     setMasterVol:(v)=>{
       if(v!=undefined)
-        this.masterVol=v;
+        this.masterVol=this._num("masterVol",v,3.4e38); // within float32, as AudioParam values are
       if(this.out)
         this.out.gain.value=this.masterVol;
     },
     setReverbLev:(v)=>{
       if(v!=undefined)
-        this.reverbLev=v;
+        this.reverbLev=this._num("reverbLev",v,4.25e37); // float32 / 8: the reverb gain is 8x
       var r=parseFloat(this.reverbLev);
       if(this.rev&&!isNaN(r))
         this.rev.gain.value=r*8;
@@ -690,10 +705,10 @@ function WebAudioTinySynthCore(target) {
       this.loop=f;
     },
     setLoopEnd:(t)=>{
-      this.loopEnd=t;
+      this.loopEnd=this._num("loopEnd",t,1/0,1); // whole ticks (D-019 F8)
     },
     setVoices:(v)=>{
-      this.voices=v;
+      this.voices=this._num("voices",v,0xffffffff,1,1);
     },
     getPlayStatus:()=>{
       /* startTime (D-023): the AudioContext time at which tick 0 of the current pass sounds
@@ -736,27 +751,64 @@ function WebAudioTinySynthCore(target) {
         this.playMIDI();
     },
     getTimbreName:(m,n)=>{
-      if(m==0)
-        return this.program[n].name;
-      else
-        return this.drummap[n-35].name;
+      return this._slot(m,n).name;
     },
     loadMIDIfromSrc:()=>{
-      this.loadMIDIUrl(this.src);
+      return this.loadMIDIUrl(this.src);
     },
-    loadMIDIUrl:(url)=>{
-      if(!url)
-        return;
-      var xhr=new XMLHttpRequest();
-      xhr.open("GET",url,true);
-      xhr.responseType="arraybuffer";
-      xhr.loadMIDI=this.loadMIDI.bind(this);
-      xhr.onload=function(){
-        if(this.status==200){
-          this.loadMIDI(this.response);
-        }
-      };
-      xhr.send();
+    loadMIDIUrl:(url,o)=>{
+      /* Load a Standard MIDI File from a URL (#14). Returns a promise that resolves with the
+         response's ArrayBuffer once loadMIDI() has installed it. Otherwise it rejects and the
+         song is unchanged: a TypeError for a missing url or an opts.signal that is not an
+         AbortSignal; SYNTH_DISPOSED; opts.signal's reason; LOAD_SUPERSEDED when a newer
+         loadMIDIUrl() starts or a direct loadMIDI() installs a song first; HTTP_STATUS (with
+         status) for a status outside 200-299; NETWORK_ERROR; or loadMIDI()'s error. It never
+         throws, and an ignored rejection is handled. A newer call or the signal aborts the
+         request; dispose() settles the promise and discards the response when it arrives. */
+      const s=o ? o.signal : null,r=new Promise((res,rej)=>{
+        // The signal's reason, or an AbortError when it has none (or a falsy one)
+        const why=()=>s.reason || (window.DOMException ? new window.DOMException("Aborted","AbortError") : Object.assign(Error("Aborted"),{name:"AbortError"}));
+        if(!url || s!=null && !(typeof s.aborted=="boolean" && typeof s.addEventListener=="function" && typeof s.removeEventListener=="function"))
+          throw new TypeError(url ? "signal" : "url"); // an AbortSignal (by its shape), undefined or null
+        if(this._dead)
+          throw CodedError("SYNTH_DISPOSED");
+        if(s && s.aborted)
+          throw why();
+        const x=new XMLHttpRequest(),s0=this.song,
+          f=(e,v)=>{ // settles once and unhooks the load
+            if(this._pend.delete(d)){
+              s && s.removeEventListener("abort",a);
+              v ? res(v) : rej(e); // v, the response, is an ArrayBuffer
+            }
+          },
+          d=(e)=>{ // dispose() calls it without e; a newer load with e, and aborts the request
+            f(CodedError(e ? "LOAD_SUPERSEDED" : "SYNTH_DISPOSED"));
+            e && x.abort();
+          },
+          a=()=>{ f(why()); x.abort(); };
+        x.open("GET",url);
+        x.responseType="arraybuffer";
+        s && s.addEventListener("abort",a);
+        x.onload=()=>{
+          if(this._pend.has(d)){
+            try{
+              if(this.song!==s0) // a direct loadMIDI() came first
+                throw CodedError("LOAD_SUPERSEDED");
+              if(x.status<200 || x.status>299)
+                throw Object.assign(CodedError("HTTP_STATUS"),{status:x.status});
+              this.loadMIDI(x.response);
+              f(0,x.response);
+            }catch(e){ f(e); }
+          }
+        };
+        x.onerror=x.onabort=()=>f(CodedError("NETWORK_ERROR"));
+        this._pend.forEach(g=>g.u && g(1)); // the newest load wins
+        d.u=1;
+        this._pend.add(d);
+        x.send();
+      });
+      r.catch(()=>{}); // fire-and-forget calls cause no unhandled rejection
+      return r;
     },
     reset:()=>{
       for(let i=0;i<16;++i){
@@ -989,7 +1041,7 @@ function WebAudioTinySynthCore(target) {
     },
     setQuality:(q)=>{
       if(q!=undefined)
-        this.quality=q;
+        this.quality=this._num("quality",q,1,1);
       for(let i=0;i<128;++i)
         this.setTimbre(0,i,this.program0[i]);
       for(let i=0;i<this.drummap0.length;++i)
@@ -1003,63 +1055,71 @@ function WebAudioTinySynthCore(target) {
         }
       }
     },
-    _checkFilter:(o)=>{
-      /* setTimbre's filter check (#27, D-007 and D-028) for operator o: throws a TypeError or
-         RangeError, and changes nothing. Without fl, none of ff, fq and fk is given. With fl
-         ("lowpass", "highpass" or "bandpass"), o outputs audio (g absent or 0), ff is a number,
-         fq is absent or a number, both normal positive 32-bit floats (the AudioParam type:
-         from 2^-126; a smaller low- or high-pass fq gives NaN coefficients, and a smaller ff a
-         0 Hz or subnormal cutoff), and fk is absent, 0 or 1. Undefined counts as absent. */
-      const u=k=>o[k]===undefined,c=(k,ok)=>{
-        if(typeof o[k]!="number")
-          throw new TypeError(k+": "+String(o[k]));
-        if(!ok)
-          throw new RangeError(k+": "+o[k]);
-      };
-      if(u("fl")){
-        for(const k of ["ff","fq","fk"])
-          if(!u(k))
-            throw new TypeError(k+" without fl");
-        return;
-      }
-      if(!["lowpass","highpass","bandpass"].includes(o.fl))
-        throw new TypeError("fl: "+String(o.fl));
-      if(!u("g") && o.g!=0)
-        throw new TypeError("fl on a modulator");
-      for(const k of ["ff","fq"])
-        if(k=="ff" || !u(k))
-          c(k,o[k]>=2**-126 && isFinite(Math.fround(o[k])));
-      if(!u("fk"))
-        c("fk",o.fk==0 || o.fk==1);
-    },
     setTimbre:(m,n,p)=>{
-      for(let i=0;i<p.length;) this._checkFilter(p[i++]); // filter fields (#27), before any change
-      const defp={g:0,w:"sine",t:1,f:0,v:0.5,a:0,h:0.01,d:0.01,s:0,r:0.05,p:1,q:1,k:0};
-      function filldef(p){
-        for(n=0;n<p.length;++n){
-          for(let k in defp){
-            // eslint-disable-next-line no-prototype-builtins -- legacy timbre filling; validation is reworked in #13
-            if(!p[n].hasOwnProperty(k) || typeof(p[n][k])=="undefined")
-              p[n][k]=defp[k];
+      /* Install a copy of timbre p (#13, ledger L-09): program n (m 0, n 0-127) or drum n
+         (m 1, n 35-81). p is a non-empty array of operators (_op). Everything is checked
+         before anything changes, and the caller's array and objects are not modified. */
+      const s=this._slot(m,n);
+      if(!Array.isArray(p) || !p.length)
+        throw new TypeError("timbre is not a non-empty array");
+      s.p=Array.from(p,this._op);
+    },
+    _slot:(m,n)=>{
+      return this._num("m",m,1,1) ? this.drummap[this._num("drum",n,81,1,35)-35] : this.program[this._num("program",n,127,1)];
+    },
+    _op:(o,i)=>{
+      /* A normalized copy of operator i. Missing or undefined fields take the defaults below,
+         and other keys are copied and ignored. w is a known wave (below). g is 0 (output),
+         1-10 (FM into operator g-1) or 11 and up (AM into operator g-11), and that operator
+         comes earlier. a, h, d, r and q (times) are finite and >= 0; t, f, v, s, p and k
+         are finite. The filter fields fl, ff, fq and fk are checked last (#27). */
+      const d={g:0,w:"sine",t:1,f:0,v:0.5,a:0,h:0.01,d:0.01,s:0,r:0.05,p:1,q:1,k:0},e="operator "+i+" ";
+      if(typeof o!="object" || !o)
+        throw new TypeError(e+"is not an object");
+      const c=Object.assign(Object.create(null),o); // an own __proto__ key stays data
+      for(const k in d){
+        if(c[k]===undefined)
+          c[k]=d[k];
+        if(k!="w")
+          c[k]=this._num(e+k,c[k],k=="g" ? 10+i : 1/0,k=="g","ghadrq".includes(k) ? 0 : -1/0);
+        else{
+          /* A built-in, a name registered with setHarmonicWave/setSampleWave (#26), or, as an
+             unsupported compatibility path, an n* or w* name a caller wrote into noiseBuf or wave
+             itself, as TinyChip does (D-031); _note plays that one as before (440 basis). */
+          const w=c.w,b=typeof w=="string" && (w[0]=="n" ? this.noiseBuf : w[0]=="w" && this.wave);
+          if(!"sine square sawtooth triangle w9999 n0 n1".split(" ").includes(w) && !this._wv.has(w) && !(b && {}.hasOwnProperty.call(b,w)))
+            throw new TypeError("unknown wave: "+w);
+        }
+      }
+      if(c.g>i && c.g<11)
+        throw new RangeError(e+"g: "+c.g+" is not an earlier operator");
+      /* Fixed filter (#27, D-007, D-028; T12's checks and messages). Without fl, none of ff, fq
+         and fk. With fl ("lowpass", "highpass" or "bandpass"), an audio output (g 0), and ff,
+         and fq if given, normal positive 32-bit floats (the AudioParam type: from 2^-126; a
+         smaller low- or high-pass fq gives NaN coefficients, a smaller ff a 0 Hz or subnormal
+         cutoff); fk, if given, 0 or 1. Numeric strings are read with Number() (D-033). */
+      if(c.fl===undefined){
+        for(const k of ["ff","fq","fk"])
+          if(c[k]!==undefined)
+            throw new TypeError(k+" without fl");
+      }
+      else{
+        if(!["lowpass","highpass","bandpass"].includes(c.fl))
+          throw new TypeError("fl: "+String(c.fl));
+        if(c.g)
+          throw new TypeError("fl on a modulator");
+        for(const k of ["ff","fq","fk"]){
+          const v=c[k],x=typeof v=="string" && v.trim() ? +v : v;
+          if(k=="ff" || v!==undefined){
+            if(typeof x!="number")
+              throw new TypeError(k+": "+String(v));
+            if(!(k=="fk" ? x==0 || x==1 : x>=2**-126 && isFinite(Math.fround(x))))
+              throw new RangeError(k+": "+x);
+            c[k]=x;
           }
         }
-        return p;
       }
-      for(let i=0;i<p.length;++i) // every wave is known before anything changes (#26)
-        this._checkWave(p[i].w);
-      if(m && n>=35 && n<=81)
-        this.drummap[n-35].p=filldef(p);
-      if(m==0 && n>=0 && n<=127)
-        this.program[n].p=filldef(p);
-    },
-    _checkWave:(w)=>{
-      /* setTimbre's wave check (#26, D-006): an operator's w is undefined (the default, sine), a
-         built-in or a registered name. Anything else throws a TypeError; nothing else happens.
-         Unsupported compatibility path: a name a caller wrote into noiseBuf (n*) or wave (w*)
-         itself, as TinyChip does, is accepted too; _note plays it as before (440 basis). */
-      const o=typeof w=="string" && (w[0]=="n" ? this.noiseBuf : w[0]=="w" && this.wave);
-      if(w!==undefined && !"sine square sawtooth triangle w9999 n0 n1".split(" ").includes(w) && !this._wv.has(w) && !(o && {}.hasOwnProperty.call(o,w)))
-        throw new TypeError("unknown wave: "+w);
+      return c;
     },
     _pruneNote:(nt)=>{
       for(let k=nt.o.length-1;k>=0;--k){
@@ -1229,29 +1289,34 @@ function WebAudioTinySynthCore(target) {
       nt.f=1;
     },
     setModulation:(ch,v,t)=>{
+      [ch,v,t]=this._cv(ch,v,t,"value",127);
       if(!this._live())
         return;
       this.chmod[ch].gain.setValueAtTime(this._m[ch]=v*100/127,this._tsConv(t));
     },
     setChVol:(ch,v,t)=>{
+      [ch,v,t]=this._cv(ch,v,t,"value",127);
       if(!this._live())
         return;
       this.vol[ch]=3*v*v/(127*127);
       this.chvol[ch].gain.setValueAtTime(this.vol[ch]*this.ex[ch],this._tsConv(t));
     },
     setPan:(ch,v,t)=>{
+      [ch,v,t]=this._cv(ch,v,t,"value",127);
       if(!this._live())
         return;
       if(this.chpan[ch])
         this.chpan[ch].pan.setValueAtTime(this._p[ch]=(v-64)/64,this._tsConv(t));
     },
     setExpression:(ch,v,t)=>{
+      [ch,v,t]=this._cv(ch,v,t,"value",127);
       if(!this._live())
         return;
       this.ex[ch]=v*v/(127*127);
       this.chvol[ch].gain.setValueAtTime(this.vol[ch]*this.ex[ch],this._tsConv(t));
     },
     setSustain:(ch,v,t)=>{
+      [ch,v,t]=this._cv(ch,v,t,"value",127);
       if(!this._live())
         return;
       this.sustain[ch]=v;
@@ -1265,6 +1330,7 @@ function WebAudioTinySynthCore(target) {
       }
     },
     allSoundOff:(ch)=>{
+      ch=this._ch(ch);
       for(let i=this.notetab.length-1;i>=0;--i){
         const nt=this.notetab[i];
         if(nt.ch==ch){
@@ -1274,6 +1340,7 @@ function WebAudioTinySynthCore(target) {
       }
     },
     resetAllControllers:(ch)=>{
+      ch=this._ch(ch);
       this.bend[ch]=0; this.ex[ch]=1.0;
       this.rpnidx[ch]=0x3fff; this.sustain[ch]=0;
       if(this.chvol[ch]){
@@ -1282,11 +1349,17 @@ function WebAudioTinySynthCore(target) {
       }
     },
     setBendRange:(ch,v)=>{
+      [ch,v]=this._cv(ch,v,0,"bend range",16383);
       if(!this._live())
         return;
       this.brange[ch]=v;
     },
     setProgram:(ch,v)=>{
+      /* v indexes the program table: 0-127, or a slot a caller added to it itself, as TinyChip
+         does (unsupported compatibility path, D-031). */
+      [ch,v]=this._cv(ch,v,0,"program",1/0,1);
+      if(!(this.program[v]||0).p)
+        throw new RangeError("program out of range: "+v);
       if(!this._live())
         return;
       if(this.debug)
@@ -1306,6 +1379,7 @@ function WebAudioTinySynthCore(target) {
       return t;
     },
     setBend:(ch,v,t)=>{
+      [ch,v,t]=this._cv(ch,v,t,"bend",16383);
       if(!this._live())
         return;
       t=this._tsConv(t);
@@ -1322,6 +1396,7 @@ function WebAudioTinySynthCore(target) {
       }
     },
     noteOff:(ch,n,t)=>{
+      [ch,n,t]=this._cv(ch,n,t,"note",127,1);
       if(this.rhythm[ch])
         return;
       t=this._tsConv(t);
@@ -1335,6 +1410,8 @@ function WebAudioTinySynthCore(target) {
       }
     },
     noteOn:(ch,n,v,t)=>{
+      [ch,n,t]=this._cv(ch,n,t,"note",127,1);
+      v=this._num("velocity",v,127);
       if(!this._live())
         return;
       if(v==0){
@@ -1353,11 +1430,23 @@ function WebAudioTinySynthCore(target) {
       this.tsmode=tsmode;
     },
     send:(msg,t)=>{    /* send midi message */
-      if(!this._live())
+      /* A message that is too short for its status (3 bytes for 0x8n, 0x9n, 0xAn, 0xBn, 0xEn and
+         0xF2; 2 for 0xCn, 0xDn, 0xF1 and 0xF3), has no status byte or no integer length,
+         or has a data byte that is not a number 0-127 (a SysEx may end with the number 0xf7)
+         does nothing (#13). A msg that is not an object, a byte that cannot become a number
+         (Symbol, BigInt), or a bad time throws a TypeError or RangeError, before anything
+         changes. */
+      t=this._time(t);
+      if(typeof msg!="object" || !msg)
+        throw new TypeError("msg is not an array");
+      const s=msg[0],L=msg.length,ch=s&0xf,cmd=s&~0xf,
+        n=s===0xf0 ? L : cmd>0xef ? (s===0xf2 ? 3 : s===0xf1 || s===0xf3 ? 2 : 1) : (cmd&0xe0)==0xc0 ? 2 : 3; // bytes the status needs
+      if(s>>>0!==s || s>>7!=1 || L>>>0!==L || L<n) // status: an integer number 0x80-0xff
         return;
-      const ch=msg[0]&0xf;
-      const cmd=msg[0]&~0xf;
-      if(cmd<0x80||cmd>=0x100)
+      for(let i=1,b;i<n;++i)
+        if(!((b=msg[i])>>>0===b && b<0x80 || b===0xf7 && i==n-1 && s===0xf0))
+          return;
+      if(!this._live())
         return;
       this._wake();
       switch(cmd){
