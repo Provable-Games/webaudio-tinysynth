@@ -279,6 +279,9 @@ for (const variant of variants) {
         if (e || snapshot(s) !== before) fails.push(name + (e ? ": " + e.message : ": changed"));
       }
       expect(fails).toEqual([]);
+      const lazy = synthFor(variant, { lazy: true }); // decided before anything else: no context is created either
+      for (const [, msg] of MALFORMED) lazy.synth.send(msg);
+      expect([lazy.synth.getAudioContext(), lazy.trace.length]).toEqual([null, 0]);
     });
 
     test("no malformed message puts a non-finite value into the WebAudio graph", () => {
