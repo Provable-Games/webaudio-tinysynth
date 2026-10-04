@@ -283,6 +283,15 @@ for (const variant of variants) {
       ["SysEx master fine tuning with NaN", [0xf0, 0x7f, 0x7f, 0x04, 0x03, NaN, 0x40, 0xf7]],
       ["GS scale tuning with undefined", [0xf0, 0x41, 0x10, 0x42, 0x12, 0x40, 0x11, 0x40, undefined, 0x00, 0xf7]],
       ["GS rhythm part with 0xf7 inside", [0xf0, 0x41, 0x10, 0x42, 0x12, 0x40, 0x11, 0x15, 0xf7, 0x00, 0xf7]],
+      // PR #48 round 3: bytes are integer numbers, the terminator included, and the length is an integer
+      ["SysEx terminated by the string \"247\"", [0xf0, 0x7f, 0x7f, 0x04, 0x04, 0x00, 0x42, "247"]],
+      ["SysEx terminated by the string \"0xf7\"", [0xf0, 0x7f, 0x7f, 0x04, 0x04, 0x00, 0x42, "0xf7"]],
+      ["GS SysEx terminated by a boxed 0xf7", [0xf0, 0x41, 0x10, 0x42, 0x12, 0x40, 0x12, 0x40, 0x50, 0x00, Object(0xf7)]],
+      ["array-like without a length", { 0: 0x90, 1: 60, 2: 100 }],
+      ["array-like with a string length", { 0: 0x90, 1: 60, 2: 100, length: "3" }],
+      ["array-like with a fractional length", { 0: 0x90, 1: 60, 2: 100, length: 3.5 }],
+      ["SysEx array-like with a NaN length", { 0: 0xf0, 1: 0x7f, 2: 0x7f, 3: 0x04, 4: 0x04, 5: 0x00, 6: 0x42, 7: 0xf7, length: NaN }],
+      ["SysEx array-like with no length", { 0: 0xf0, 1: 0x7f, 2: 0x7f, 3: 0x04, 4: 0x04, 5: 0x00, 6: 0x42, 7: 0xf7 }],
     ];
     test("a malformed message does nothing: no state change and no WebAudio call", () => {
       const s = synthFor(variant);
@@ -297,6 +306,18 @@ for (const variant of variants) {
       const lazy = synthFor(variant, { lazy: true }); // decided before anything else: no context is created either
       for (const [, msg] of MALFORMED) lazy.synth.send(msg);
       expect([lazy.synth.getAudioContext(), lazy.trace.length]).toEqual([null, 0]);
+    });
+
+    test("a SysEx whose terminator is the string \"247\" is a no-op: no tuning change, no context (PR #48 round 3)", () => {
+      const lazy = synthFor(variant, { lazy: true });
+      const before = snapshot(lazy);
+      lazy.synth.send([0xf0, 0x7f, 0x7f, 0x04, 0x04, 0x00, 0x42, "247"]); // master coarse tuning +2, if it were well formed
+      expect([snapshot(lazy) === before, lazy.synth.masterTuningC, lazy.synth.getAudioContext(), lazy.trace.length]).toEqual([true, 0, null, 0]);
+      const s = synthFor(variant);
+      s.synth.send([0xf0, 0x7f, 0x7f, 0x04, 0x04, 0x00, 0x42, "247"]);
+      expect(s.synth.masterTuningC).toBe(0);
+      s.synth.send([0xf0, 0x7f, 0x7f, 0x04, 0x04, 0x00, 0x42, 0xf7]); // the same message with the number 0xf7 applies
+      expect(s.synth.masterTuningC).toBe(2);
     });
 
     test("no malformed message puts a non-finite value into the WebAudio graph", () => {

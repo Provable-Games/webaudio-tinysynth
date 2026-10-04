@@ -1430,18 +1430,19 @@ function WebAudioTinySynthCore(target) {
       this.tsmode=tsmode;
     },
     send:(msg,t)=>{    /* send midi message */
-      /* A message that is too short for its status, has no status byte, or has a data byte
-         that is not a number 0-127 (a SysEx may end with 0xf7) does nothing (#13). A msg that
-         is not an object, a byte that cannot become a number (Symbol, BigInt), or a bad time
-         throws a TypeError or RangeError, before anything changes. */
+      /* A message that is too short for its status, has no status byte or no integer length,
+         or has a data byte that is not a number 0-127 (a SysEx may end with the number 0xf7)
+         does nothing (#13). A msg that is not an object, a byte that cannot become a number
+         (Symbol, BigInt), or a bad time throws a TypeError or RangeError, before anything
+         changes. */
       t=this._time(t);
       if(typeof msg!="object" || !msg)
         throw new TypeError("msg is not an array");
-      const s=msg[0],ch=s&0xf,cmd=s&~0xf,n=s==0xf0 ? msg.length : cmd>0xef ? 1 : (cmd&0xe0)==0xc0 ? 2 : 3;
-      if(s>>>0!==s || s>>7!=1 || msg.length<n) // the status is an integer number 0x80-0xff
+      const s=msg[0],L=msg.length,ch=s&0xf,cmd=s&~0xf,n=s===0xf0 ? L : cmd>0xef ? 1 : (cmd&0xe0)==0xc0 ? 2 : 3;
+      if(s>>>0!==s || s>>7!=1 || L>>>0!==L || L<n) // status: an integer number 0x80-0xff
         return;
       for(let i=1,b;i<n;++i)
-        if(!((b=msg[i])>>>0===b && b<0x80 || b==0xf7 && i==n-1 && s==0xf0))
+        if(!((b=msg[i])>>>0===b && b<0x80 || b===0xf7 && i==n-1 && s===0xf0))
           return;
       if(!this._live())
         return;
