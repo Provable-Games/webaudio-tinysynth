@@ -297,3 +297,66 @@ Validation of C5 and C7 (scratch copies, `size/test-C5`, `size/test-C7`): `node 
 3. Variants on the choice of messages and `ready()`: R1a instead of R1b keeps descriptive messages (+23 B gzip against C5); dropping R2 keeps `ready()`'s ~100 ms delay (+63 B gzip).
 4. Not recommended: R5 (no gain), X2 and X3 (dominated by X1). L1 (+75 / +18 B) only if the supervisor wants F6 changed.
 5. What remains is the D-018 surface itself (teardown 188 B, option validation 181 B, `resume()` 113 B, percussion tracking 107 B gzip). No further cut was found that keeps the contract.
+
+## 7. Fix-round re-review (`2fe1882..25c4f79`)
+
+| Item | Value |
+| --- | --- |
+| Candidate | `t4/lifecycle` at `25c4f79` (PR #37, 16/16 checks green), delta `2fe1882..25c4f79` (12 commits: C7 in `c8b3354`, the resume resync in `1accd98`, tests, docs, rebuild) |
+| Evidence | `_evidence/t4-review/rereview/`: `wt/` (detached worktree at `25c4f79`), `repo/` (the same plus the reviewer's spec, sha256 `29ef0f1d…` unchanged), `probe-f1.cjs`, `run-mutations.py`, `mutants/`, `logs/`, `results/` |
+| min.js | `6f5b1f79…`, 40,245 B raw / 10,991 B gzip: −65 / −84 B against `2fe1882`, +3,285 / +1,043 B (+10.5 % gzip) against `b49e8ceb` |
+
+**Verdict: accept.** F1 is fixed under the new approach. C7 and the F2, F3, F4 and F9 fixes are correct, and F5–F8 are documented in the README. There are no regressions. One LOW test gap (R1) and two INFO notes remain; none of them blocks.
+
+### 7.1 F1 under the resume resync
+
+`stopMIDI()` still cancels the queued volume, pan and modulation automation and sets `_rs`. The next `playMIDI()` sets each channel's `vol*ex`, `_p` and `_m` at `currentTime` before anything else. What the cancel can drop is exactly the automation on those three parameters. The setters store the new state when the transport dispatches an event (up to 0.2 s ahead) or when the caller calls them. So the stored "latest" values are the state after every dispatched event, which is the resume position: the transport resumes at `playIndex`, the first event it has not sent. Nothing is replayed, so nothing runs ahead. No later event is applied, so nothing lags behind either. Program, bend, bend range, RPN tuning and sustain are instance state that is never cancelled, so they already match.
+
+The history probe (`rereview/probe-f1.cjs`, mock, both builds) uses random songs with CC7, CC11, CC10, CC1, program changes, pitch bend, RPN 0/1/2, sustain on and off, notes, drums and tempo events, plus a CC7/CC10 pair just before a tempo event. Each history stops at a random time, seeks while stopped in 30 % of cases, waits in 50 %, then plays. Right after `playMIDI()` it compares the heard parameter values with values computed independently from the dispatched events, compares the instance state with a fresh synth that sent the same events, and checks that the final values after the song ends match a straight play.
+
+| Build | Histories | Heard ≠ expected at the resume | Instance state differs | Still wrong at the song's end |
+| --- | ---: | ---: | ---: | ---: |
+| `25c4f79` | 450 | **0** | 0 | **0** |
+| `2fe1882` (control) | 450 | 158 | 0 | 99 |
+
+A first run without the skip produced 15 apparent mismatches. Each of them was a stop where only events at `maxTick` remained, so `playMIDI()` starts a new pass (T3's #10 rule: `playTick>=maxTick`) instead of resuming. That rule is pre-existing and those histories are now skipped (INFO R3).
+
+Caller-timed changes: a change the caller scheduled for later, and which the stop cancelled, now applies at the resume instead of at its time (`probe-codex` F1b: the stored `vol` 0 is applied). The README `stopMIDI()` entry states this, so state and sound agree from the resume on. INFO.
+
+Browser, reviewer spec (49 checks), all three engines and both builds (`results/full`): **98/98 per engine**. S5 passes: the resumed note has the straight play's level (0.0149 against 0.0150 in Chromium and WebKit, 0.01314 against 0.01317 in Firefox) and hard-left pan (right channel 0). On `2fe1882` it was 16× louder and centred. T4's own dispose spec, which now includes the stop-then-play check with a tempo event, passes 96/96 per engine.
+
+### 7.2 C7, F2, F3, F4 and F9; regressions
+
+| Item | Check | Result |
+| --- | --- | --- |
+| F2 resume per context | `probe-codex` | A, then B asked within one task (the base asks B; `2fe1882` did not) |
+| F3 closed caller context | `probe-codex` | 0 connections left (was 30) |
+| F4 arity and names | `probe-mock` | all 13 methods have upstream `length` and `name` in both builds (per-method `_live()` guards) |
+| F9 `init()` again | `probe-mock` | still one interval; `dispose()` clears it and closes the synth's context |
+| F10 `_gone` counter | unit; mutant `f10-first-ended-untracks` | killed |
+| F5–F8 | README | `reset()`/`loadMIDI()` as lazy first use, offline `voices`, and context switching during playback are documented |
+| Exports and detached methods | `scratch/exports.cjs` | CommonJS, AMD, global, detached `dispose`/`resume`; both builds |
+| T2/T3 tests | `git diff --stat` | parser, transport, parser-compat, differential, tempo, loop-end and harness unchanged |
+| `npm run lint` / `verify` / `pack:check` / `npm test` / `test:browser` | `rereview/logs/commands.tsv` | 0 / 0 / 0 / 0 (unit 6/436, node 7/115, regressions 3/3; the differential is identical to upstream plus the tempo patch, so the load trace is kept) / 0 |
+| Declared matrix + review spec, 3 engines (`results/full`) | | all specs pass in Firefox and WebKit; in Chromium all but 3 `render` cases, which ended with "Target crashed" while host load was about 30. A single-engine rerun of Chromium `render` passed 4 of 4 cases (`results/render-chromium-rerun`). This three-engine run started before the shared-lock rule (rule 8) was announced, so it ran without the lock. |
+
+### 7.3 Mutants
+
+Unit, node and differential tests were run for all 23 mutants: the 13 earlier ones (patches adapted to the new text), 6 against the new resync code and 4 against the F2/F3/F9/F10 fixes (`logs/mutation-node-only.txt`). Nine were also run in Chromium, one spec per run, `dispose` and `review` (`logs/mutation-browser.txt`).
+
+| Mutant | Unit failed | Differential | Browser (Chromium) |
+| --- | ---: | --- | --- |
+| the 13 earlier mutants | 2–14 each (all killed) | `load-full-stop` fails | `perc-dispose-skip`, `perc-stop-sounding-only`, `own-caller-marked-owned` killed; `cancel-volume-only` is now killed by T4's own dispose spec (F11 fixed) |
+| `rs-not-set` (no resync) | 6 | pass | killed (dispose stop-then-play, review S5) |
+| `rs-no-pan` | 6 | pass | killed |
+| `p-not-stored` | 6 | pass | killed |
+| `rs-no-mod` | 2 | pass | survives (no browser check uses modulation); probe-f1: 12 of 156 histories differ |
+| **`rs-vol-without-ex`** (resync ignores expression) | **0** | pass | **survives**; probe-f1: 117 of 156 histories differ |
+| `halt-keeps-rs` (a load does not clear `_rs`) | 0 | pass | not run; probe-f1: 0 differ (equivalent: after a load the latest values are the reset values) |
+| `f2-rq-per-instance`, `f3-closed-not-immediate`, `f9-init-twice`, `f10-first-ended-untracks` | 2 each | pass | not run |
+
+### 7.4 Remaining notes (none blocking)
+
+- **R1 (LOW, tests):** no T4 test covers the expression part of the resync. The mutant that drops `ex` from the resynced gain passes every unit, node, regression and browser test, but changes the resumed level in 117 of 156 random histories. Fix: add a CC11 case to the stop-then-play unit test, e.g. CC11=40 sent ahead of the stop, with the resumed gain checked as `vol*ex`.
+- **R2 (INFO):** `halt-keeps-rs` is equivalent in sound. Clearing `_rs` in `_halt()` only avoids redundant `setValueAtTime` calls after a stop, a load and a play.
+- **R3 (INFO, T3, pre-existing):** stopping when only events at `maxTick` remain makes the next `playMIDI()` start a new pass instead of finishing the song (`playIndex && playTick>=maxTick`). This happens in 33 of 483 random histories. T6 phase B or T7 can decide whether that is intended.
