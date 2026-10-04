@@ -17,11 +17,13 @@ function CodedError(code){
 
 /* Built-in buffers (#7, D-004), generation version 1 (bufferVersion): the reverb impulse
    (convBuf), white noise (n0) and metallic noise (n1) are generated from the seed, never
-   from Math.random. Each buffer has its own mulberry32 stream: stream k (convBuf 0, n0 1,
-   n1 2) starts at state seed+k*2^30, which is the seed's sequence 2^30*k draws on, so
-   the streams never overlap and no buffer's samples depend on another's. The same seed,
-   version and sample rate give the same Float32 data. Any change to the generated data
-   must increment the version. */
+   from Math.random. The seed is mixed with fmix32 (murmur3's finalizer, a bijection on
+   32-bit integers that maps 0 to 0) into h. Each buffer has its own mulberry32 stream:
+   stream k (convBuf 0, n0 1, n1 2) starts at state h+k*2^30, which is h's sequence 2^30*k
+   draws on, so the streams never overlap and no buffer's samples depend on another's. The
+   mix keeps seeds that differ by mulberry32's increment or by 2^30 from giving shifted
+   copies of each other's buffers. The same seed, version and sample rate give the same
+   Float32 data. Any change to the generated data must increment the version. */
 function mulberry32(a){
   return ()=>{
     a=a+0x6d2b79f5|0;
@@ -1553,7 +1555,11 @@ function WebAudioTinySynthCore(target) {
       var d2=this.convBuf.getChannelData(1);
       var dn=this.noiseBuf.n0.getChannelData(0);
       var dr=this.noiseBuf.n1.getChannelData(0);
-      const rnd=k=>mulberry32(this.seed+k*0x40000000); // stream k (see mulberry32)
+      let h=this.seed; // fmix32, then stream k (see mulberry32)
+      h=Math.imul(h^h>>>16,0x85ebca6b);
+      h=Math.imul(h^h>>>13,0xc2b2ae35);
+      h^=h>>>16;
+      const rnd=k=>mulberry32(h+k*0x40000000);
       let g=rnd(0);
       for(let i=0;i<blen;++i){
         if(i/blen<g()){
@@ -1630,7 +1636,9 @@ class WebAudioTinySynth {
       this._check(c,d);
     /* The buffer seed (#7, D-004), also checked first: an integer from 0 to 2^32-1, default
        0. The seed and the buffer generation version are read-only properties. */
-    const {seed:s=0}=opt||{};
+    let {seed:s}=opt||{};
+    if(s==undefined) // null or undefined: the default, as for the other options
+      s=0;
     if(typeof s!="number")
       throw new TypeError("seed must be a number");
     if(!(s>=0 && s<=4294967295 && s%1==0))
