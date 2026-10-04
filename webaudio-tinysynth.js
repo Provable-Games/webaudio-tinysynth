@@ -1435,15 +1435,16 @@ function WebAudioTinySynthCore(target) {
     send:(msg,t)=>{    /* send midi message */
       /* A message that is too short for its status, has no status byte, or has a data byte
          that is not a number 0-127 (a SysEx may end with 0xf7) does nothing (#13). A msg that
-         is not an object, or a bad time, throws. */
+         is not an object, a byte that cannot become a number (Symbol, BigInt), or a bad time
+         throws a TypeError or RangeError, before anything changes. */
       t=this._time(t);
       if(typeof msg!="object" || !msg)
         throw new TypeError("msg is not an array");
-      const s=msg[0],ch=s&0xf,cmd=s&~0xf,n=s==0xf0 ? msg.length : cmd==0xc0 || cmd==0xd0 ? 2 : cmd<0xf0 ? 3 : 1;
-      if(typeof s!="number" || !(s>=0x80 && s<0x100) || s%1 || msg.length<n)
+      const s=msg[0],ch=s&0xf,cmd=s&~0xf,n=s==0xf0 ? msg.length : cmd>0xef ? 1 : (cmd&0xe0)==0xc0 ? 2 : 3;
+      if(s>>>0!==s || s>>7!=1 || msg.length<n) // the status is an integer number 0x80-0xff
         return;
       for(let i=1,b;i<n;++i)
-        if(!(typeof (b=msg[i])=="number" && b>=0 && b<0x80 && b%1==0 || b==0xf7 && i==n-1 && s==0xf0))
+        if(!((b=msg[i])>>>0===b && b<0x80 || b==0xf7 && i==n-1 && s==0xf0))
           return;
       if(!this._live())
         return;
