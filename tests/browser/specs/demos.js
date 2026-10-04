@@ -170,6 +170,9 @@ async function openDemo(t, srv, demo, { initScripts = [], contextOptions = {} } 
   for (const [fn, arg] of initScripts) await rec.page.addInitScript(fn, arg);
   await rec.page.goto(srv.origin + "/" + demo + ".html", { waitUntil: "load" });
   await rec.page.waitForFunction(READY, null, { timeout: 15000 });
+  // With a Web MIDI stand-in the MIDI status settles at once; wait for it, so no line changes under a click.
+  if (initScripts.some(([fn]) => fn === MIDI_STUB))
+    await rec.page.waitForFunction(() => { const m = document.getElementById("midistatus"); return !m || !/^Requesting/.test(m.textContent); }, null, { timeout: 15000 }); // eslint-disable-line no-undef -- runs in the page
   return rec;
 }
 
