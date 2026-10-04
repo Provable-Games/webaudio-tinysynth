@@ -32,6 +32,7 @@ This is [g200kg/webaudio-tinysynth](https://github.com/g200kg/webaudio-tinysynth
 - `stopMIDI()` now also stops drums and queued controller changes: every drum hit, sounding or already scheduled, stops, and channel volume, pan and modulation changes scheduled for later are cancelled. A seek (`locateMIDI()`) stops the same way. Upstream let drum hits scheduled up to 0.2 s ahead, and queued controller changes, play on after a stop.
 - An instance can start from a user gesture and release everything it uses: the constructor options `context`, `destination` and `lazy`, `resume()` and `dispose()` are new (see [Functions](#functions)). `setAudioContext()` now stops and disconnects the previous graph, and closes the previous context if the synth created it. Ended voices are disconnected, `send()` no longer leaves unhandled promise rejections, and on an `OfflineAudioContext`, `playMIDI()` throws an `Error` with `code` `AUDIO_CONTEXT_OFFLINE` (schedule notes with explicit times instead). Upstream kept every context, graph and timer alive.
 - `setTimbre()` checks waveform names and filter fields before changing anything. It throws a `TypeError` or `RangeError` for an operator whose `w` is neither built in nor registered, a filter field without `fl`, an unknown `fl`, a filter on a modulator (`g` ≠ 0), or an `ff`, `fq` or `fk` out of range. Timbres that use only built-in waveforms and no filter fields are accepted as before.
+- The reverb and noise sounds are the same on every load. The reverb impulse and the two noise buffers (`n0`, used by most drums, and `n1`, the metallic noise of cymbals and hi-hats) are generated from a seed instead of `Math.random`, so a given seed, sample rate and library version always produce the same buffer data. The default seed is `0`; pass `seed` to the constructor to choose another. Compared with upstream, the reverb and noise texture changes once and then stays fixed. Upstream drew new random buffers each time an AudioContext was installed. Rendered audio can still differ slightly between browsers and between sample rates.
 
 **What is added:** the `loopEnd` property and `setLoopEnd(ticks)`. When looping, each pass can start on a bar boundary instead of on the song's last event (see `setLoopEnd()` below). Unset, looping works exactly as upstream. `getPlayStatus()` has a fourth field, `startTime`: when tick 0 of the current pass sounds, for syncing visuals to the music. Custom waveforms: `setSampleWave(name, samples)` registers a single-cycle table (for example a 4-bit stepped triangle, a 12.5 % pulse or an LFSR noise table) and `setHarmonicWave(name, real, imag)` a harmonic wave; a timbre operator uses one through its `w` field. Registered waves survive `setQuality()` (custom timbres still need reinstalling) and context changes. Optional fixed filters on an operator's output: the timbre fields `fl`, `ff`, `fq` and `fk` (see [Timbre Object Structure](#timbre-object-structure)); a timbre without `fl` builds exactly the same graph as before.
 
@@ -119,10 +120,13 @@ Settings are changed with the functions below (`setMasterVol()`, `setReverbLev()
 |**loopEnd**        | 0        | loop length in MIDI ticks; 0 = loop on the last event (see `setLoopEnd()`) |
 |**tsmode**         | 0        | default timestamp mode   |
 |**voices**         | 64       | Max number of simultaneous voices. Large number needs more CPU. |
+|**seed**           | 0        | seed of the reverb and noise buffers (constructor option, read-only) |
+|**bufferVersion**  | 1        | version of the buffer generation (read-only). A library change that alters the generated buffers increments it. |
 
 * Assigning `masterVol`, `reverbLev` or `quality` directly does not apply the change; call `setMasterVol()`, `setReverbLev()` or `setQuality()`.
 * The constructor creates an AudioContext. Use `setAudioContext()` to switch to your own.
 * The synth is ready as soon as the constructor returns (`isReady` is 1). `ready()` is kept for compatibility: it returns a `Promise` that resolves once the synth is initialized.
+* The buffers are generated with mulberry32. The seed is first mixed with murmur3's `fmix32`, then each buffer gets its own stream, starting at `fmix32(seed) + k·2^30` (k = 0 reverb, 1 `n0`, 2 `n1`). So changing or skipping one buffer never changes another.
 
 ## Functions
   These functions are available on a `WebAudioTinySynth` instance.  
@@ -136,10 +140,11 @@ Settings are changed with the functions below (`setMasterVol()`, `setReverbLev()
 >  **context** : an AudioContext or OfflineAudioContext to use instead of creating one. It stays yours: the synth never closes it.  
 >  **destination** : with `context`, the AudioNode to play into. default is `context.destination`.  
 >  **lazy** : if `true`, no AudioContext is created until `resume()`, or until the first call that plays a note or sets MIDI state: `send()`, `noteOn()`, the channel `set...` functions, `reset()`, `loadMIDI()`, `locateMIDI()` or `playMIDI()`. Other calls do not create it, and `getAudioContext()` returns `null` until then. Call `resume()` from the click that starts audio, and call `loadMIDI()` and `reset()` in that click handler or after `resume()`: called earlier, they create the AudioContext outside the gesture (it then starts suspended until `resume()`).  
+>  **seed** : an integer from `0` to `4294967295` that fixes the reverb impulse and the noise buffers (`n0`, `n1`). default is `0` (also for `null`). The same seed, `bufferVersion` and sample rate give the same buffer data on every load and in every instance; the data differs between sample rates (the buffers are 0.5 s long).  
 >  On an OfflineAudioContext, schedule notes with explicit times; `playMIDI()` throws there. Every note scheduled before the render counts against `voices`, so call `setVoices()` with at least the number of notes, or the earliest ones are dropped.
 >
 >  For example, `new WebAudioTinySynth({quality:0, useReverb:0, voices:32})`  
->  An invalid `context`, `destination` or `lazy` throws a `TypeError` before anything is created.
+>  An invalid `context`, `destination` or `lazy` throws a `TypeError`, and an invalid `seed` a `TypeError` (not a number) or a `RangeError` (not an integer from 0 to 4294967295), before anything is created.
 
 **getAudioContext()**  
 > Get current in-use AudioContext.
