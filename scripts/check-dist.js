@@ -144,7 +144,8 @@ async function main(argv) {
     }
   } else if (rule.rule === "fresh") {
     const r = spawnSync(process.execPath, [path.join(__dirname, "verify-dist.js")], { cwd: ROOT, stdio: "inherit" });
-    if (r.status !== 0) failures.push("the committed files do not match a fresh build (npm run verify, above)");
+    if (r.status !== 0) failures.push("the committed files do not match a fresh build (npm run verify, above). On " + INTEGRATION_BRANCH +
+      ", CI's rebuild commit (dist.yml) brings them up to date after each merge");
   }
 
   if (process.env.GITHUB_STEP_SUMMARY) {
