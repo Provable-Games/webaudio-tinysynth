@@ -89,10 +89,12 @@ function Init(){
   synth.setLoop(1);
   synth.setMasterVol(0.3);
   synth.loadMIDIUrl("ws.mid");
-  setInterval(function(){
+  var showStatus=function(){
     var st=synth.getPlayStatus();
     document.getElementById("status").innerHTML=(st.play?"Playing ":"Stopped ")+st.curTick+" / "+st.maxTick;
-  },100);
+  };
+  showStatus();   // at once: a line filled in 100 ms later would move the controls below it
+  setInterval(showStatus,100);
   kb=document.getElementById("kb");
   kb.addEventListener("change",KeyIn);
   kb.addEventListener("focusout",function(){ReleaseAll("kb");});
