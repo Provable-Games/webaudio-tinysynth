@@ -41,7 +41,7 @@ const ROOT = path.resolve(__dirname, "..");
 const SPEC_DIR = path.join(ROOT, "tests", "browser", "specs");
 
 function parseArgs(argv) {
-  const o = { engines: null, specs: null, observe: false, seed: MATRIX.seed, overrides: {}, out: null, list: false, engine: null, results: null };
+  const o = { engines: null, specs: null, observe: false, seed: MATRIX.seed, overrides: {}, out: null, list: false, engine: null, results: null, orchestrator: false };
   // A list option must name at least one entry: "--engines=," or "--specs=" would
   // otherwise select nothing and pass without running a browser.
   const list = (name, value) => {
@@ -64,6 +64,7 @@ function parseArgs(argv) {
     else if (a === "--list") o.list = true;
     else if ((m = /^--engine=(.+)$/.exec(a))) o.engine = m[1];
     else if ((m = /^--results=(.+)$/.exec(a))) o.results = path.resolve(m[1]);
+    else if (a === "--orchestrator") o.orchestrator = true;
     else throw new Error("unknown argument " + a);
   }
   for (const e of [...(o.engines || []), ...(o.engine ? [o.engine] : [])]) if (!MATRIX.engines.includes(e)) throw new Error("engine " + e + " is not declared in tests/browser/matrix.js");
@@ -131,8 +132,9 @@ async function worker(o) {
         if (session.fatal) break;
       }
       if (session.fatal) {
+        // The case that set fatal already failed its cleanup check and is
+        // counted in `failed`; the stop itself fails the worker below.
         results.fatal = session.fatal;
-        ++failed;
         console.log("FAIL: " + session.fatal + "; no further case runs in this worker");
         break;
       }
@@ -149,8 +151,9 @@ async function worker(o) {
     console.log("FAIL: " + engine + " " + session.version + ": no case ran");
     return 1;
   }
-  console.log((failed ? "FAIL: " : "PASS: ") + engine + " " + session.version + ": " + (n - failed) + " of " + n + " cases passed");
-  return failed ? 1 : 0;
+  const fail = failed || results.fatal;
+  console.log((fail ? "FAIL: " : "PASS: ") + engine + " " + session.version + ": " + (n - failed) + " of " + n + " cases passed");
+  return fail ? 1 : 0;
 }
 
 /* ---------------- orchestrator ---------------- */
@@ -296,6 +299,45 @@ async function orchestrate(o) {
   return 0;
 }
 
+/* ---------------- launcher ---------------- */
+
+/*
+ * The command-line process only launches the orchestrator (this script with
+ * --orchestrator, over IPC) and exits with the status it reports. The
+ * orchestrator reports its status after printing its last line. If it has not
+ * exited EXIT_GRACE seconds later, the launcher kills it and exits with that
+ * status anyway. A full local run printed its final "PASS:" line and then never
+ * exited: 0% CPU for 42 minutes, holding the shared browser lock. No exit
+ * listener or open handle can keep process.exit() from returning, so the
+ * process stalled in Node's own teardown; the cause was not isolated. The
+ * launcher holds no browsers, results or children other than the
+ * orchestrator. SIGINT and SIGTERM are passed on to the orchestrator, which
+ * stops its engine workers' process groups (run-with-deadline.js).
+ */
+const EXIT_GRACE = 30;
+
+function launch(argv) {
+  const { fork } = require("child_process");
+  const child = fork(__filename, ["--orchestrator", ...argv], { stdio: ["ignore", "inherit", "inherit", "ipc"] });
+  let reported = null, grace = null;
+  child.on("message", (m) => {
+    if (!m || typeof m.status !== "number" || reported !== null) return;
+    reported = m.status;
+    grace = setTimeout(() => {
+      // stderr: the orchestrator's PASS:/FAIL: line stays the last line on stdout.
+      console.error("note: the orchestrator did not exit within " + EXIT_GRACE + " s of reporting its result; it was killed (exit status " + reported + " kept)");
+      child.kill("SIGKILL");
+      process.exit(reported);
+    }, EXIT_GRACE * 1000);
+  });
+  child.on("exit", (code, signal) => {
+    clearTimeout(grace);
+    if (reported === null && signal) console.log("FAIL: the orchestrator was ended by " + signal);
+    process.exit(reported !== null ? reported : code === null ? 1 : code);
+  });
+  for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => child.kill(sig));
+}
+
 if (require.main === module) {
   let o;
   const argv = process.argv.slice(2);
@@ -305,10 +347,15 @@ if (require.main === module) {
     console.log("FAIL: " + e.message);
     process.exit(2);
   }
-  (o.engine ? worker(o) : orchestrate(o)).then((status) => process.exit(status), (e) => {
-    console.log("FAIL: " + (e && e.stack ? e.stack : e));
-    process.exit(1);
-  });
+  if (!o.engine && !o.orchestrator) launch(argv);
+  else {
+    // The orchestrator reports its status to the launcher before exiting.
+    const done = (status) => (process.send ? process.send({ status }, () => process.exit(status)) : process.exit(status));
+    (o.engine ? worker(o) : orchestrate(o)).then(done, (e) => {
+      console.log("FAIL: " + (e && e.stack ? e.stack : e));
+      done(1);
+    });
+  }
 }
 
 module.exports = { parseArgs };
