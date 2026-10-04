@@ -36,6 +36,7 @@
     "test:browser:firefox": "node scripts/browser-matrix.js --engines=firefox",
     "test:browser:webkit": "node scripts/browser-matrix.js --engines=webkit",
     "test:browser:observe": "node scripts/browser-matrix.js --specs=hang,variation",
+    "test:browser:demos": "node tests/browser/specs/demos.js",
     "test:browser:serve": "node scripts/browser-server.js"
   },
   "repository": {
