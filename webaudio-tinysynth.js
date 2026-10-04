@@ -555,9 +555,18 @@ function WebAudioTinySynthCore(target) {
       this.isReady=1;
     },
     _create:()=>{
-      /* Create and install the synth-owned context. */
+      /* Create and install the synth-owned context. If installing it fails (a registered wave the
+         context refuses, #26, or any later step), the new context is closed and whatever part of
+         its graph was installed is torn down and released (_drop), so the synth is left without a
+         context, nothing stays open or referenced, and the error propagates; the next use retries. */
       window.AudioContext = window.AudioContext || window.webkitAudioContext;
-      this.setAudioContext(new AudioContext());
+      const c=new AudioContext();
+      try{
+        this.setAudioContext(c);
+      }catch(e){
+        this.actx==c ? this._drop(1) : c.close().catch(()=>{});
+        throw e;
+      }
       this._own=1;
       return this.actx;
     },
@@ -627,10 +636,11 @@ function WebAudioTinySynthCore(target) {
          promise that settles after the context is closed, when `close` is set. On a realtime
          context that stays open, a source and its gain are disconnected when the source ends
          (Chromium can keep an oscillator disconnected right after stop() from ever ending); a
-         closed or offline one dispatches no more ended events, so it is done at once. */
+         closed or offline one dispatches no more ended events, so it is done at once. A graph
+         that failed part-way through installation (see _create) has no LFO yet. */
       const c=this.actx,n=x=>x && x.disconnect(),now=close || this._off || c && c.state=="closed";
       if(c){
-        this.notetab.concat(this._src,Array.from(this._gone),{o:[this.lfo],g:[]}).forEach(v=>{
+        this.notetab.concat(this._src,Array.from(this._gone),this.lfo ? {o:[this.lfo],g:[]} : []).forEach(v=>{
           v.o.forEach((s,i)=>{
             const off=()=>{ n(s); n(v.g[i]); n(v.q && v.q[i]); }; // and the operator's filter (#27)
             s.onended=now ? null : off;

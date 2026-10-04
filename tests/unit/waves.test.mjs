@@ -437,6 +437,71 @@ describe.each(variants)("$name: the registry across contexts (#26, D-018)", (var
     expect([s.synth.noiseBuf.nTRI, s.synth._wv.get("nTRI"), s.synth._wv.has("nNew"), "nNew" in s.synth.noiseBuf]).toEqual([tri, def, false, false]);
   });
 
+  test("a lazy start whose context refuses a registered wave closes that context and stays uninstalled (PR #40 Codex MEDIUM)", async () => {
+    const s = make(variant, { lazy: true });
+    s.synth.setHarmonicWave("wOrg", [0, 0], [0, 1]);
+    const Base = s.env.sandbox.AudioContext, made = [];
+    let refuse = (re) => re.length === 2; // the registered wave, built before anything is installed; w9999 has 5 coefficients
+    s.env.sandbox.AudioContext = class extends Base {
+      constructor() {
+        super();
+        made.push(this);
+      }
+      createPeriodicWave(re, im) {
+        if (refuse(re)) throw new Error("refused");
+        return super.createPeriodicWave(re, im);
+      }
+    };
+    for (let i = 0; i < 3; ++i) expect(thrown(() => s.synth.noteOn(0, 60, 100))).toEqual({ name: "Error", message: "refused" });
+    expect(made.map((c) => c.state)).toEqual(["closed", "closed", "closed"]);
+    expect([s.synth.getAudioContext(), s.synth.chvol.length]).toEqual([null, 0]);
+    // A failure after the context is installed (here w9999, built late in setAudioContext(); PR #47 Claude LOW):
+    // the synth is left without a context, not on the closed one, so the next use retries.
+    refuse = (re) => re.length === 5; // w9999 only: the registered wave builds, the install then fails
+    expect(thrown(() => s.synth.noteOn(0, 60, 100))).toEqual({ name: "Error", message: "refused" });
+    expect([made[3].state, s.synth.getAudioContext()]).toEqual(["closed", null]);
+    refuse = () => false;
+    s.synth.noteOn(0, 60, 100);
+    expect([made.length, made[4].state, s.synth.getAudioContext()]).toEqual([5, "running", made[4]]);
+    await s.synth.dispose();
+    expect(made.map((c) => c.state)).toEqual(["closed", "closed", "closed", "closed", "closed"]); // the working one is synth-owned
+    expect(calls(s.trace).filter((c) => c[0] === "close")).toHaveLength(5); // each closed once
+    // A failure part-way through the graph (the sixth createGain, a channel node; PR #47 Codex LOW): the error
+    // is the original one, and what was installed is disconnected and released before the context is closed.
+    const u = make(variant, { lazy: true }), UBase = u.env.sandbox.AudioContext, umade = [];
+    u.env.sandbox.AudioContext = class extends UBase {
+      constructor() {
+        super();
+        umade.push(this);
+        this.gains = 0;
+      }
+      createGain() {
+        if (++this.gains === 6) throw new Error("no more gains");
+        return super.createGain();
+      }
+    };
+    expect(thrown(() => u.synth.noteOn(0, 60, 100))).toEqual({ name: "Error", message: "no more gains" });
+    const graph = (y) => [y.getAudioContext(), y.out, y.comp, y.conv, y.rev, y.lfo, y.wave, y.noiseBuf, y.convBuf, y.chvol.length, y.chmod.length, y.chpan.length];
+    expect(graph(u.synth)).toEqual([null, null, null, null, null, null, null, null, null, 0, 0, 0]);
+    expect(umade[0].state).toBe("closed");
+    const made0 = calls(u.trace).filter((c) => c[0] === "create" || c[0] === "connect");
+    const live = new Set();
+    for (const [op, from, to] of calls(u.trace)) {
+      if (op === "connect") live.add(from + ">" + to);
+      if (op === "disconnect") for (const k of [...live]) if (k.startsWith(from + ">") && (to === null || k === from + ">" + to)) live.delete(k);
+    }
+    expect(made0.length > 10 && live.size === 0).toBe(true); // every connection the failed install made is undone
+    await u.synth.dispose();
+    expect(graph(u.synth)).toEqual([null, null, null, null, null, null, null, null, null, 0, 0, 0]);
+    // A caller-owned context that refuses a wave is never closed by the synth.
+    const t = make(variant);
+    t.synth.setHarmonicWave("wOrg", [0, 0], [0, 1]);
+    const caller = t.Ctx();
+    caller.createPeriodicWave = () => { throw new Error("refused"); };
+    expect(thrown(() => t.synth.setAudioContext(caller))).toEqual({ name: "Error", message: "refused" });
+    expect(caller.state).toBe("running");
+  });
+
   test("dispose() releases the context's waves and keeps the definitions; later calls change nothing audible", async () => {
     const s = make(variant);
     s.synth.setSampleWave("nTRI", TRI64);
