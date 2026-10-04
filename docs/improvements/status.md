@@ -32,11 +32,11 @@ States: `pending`, `running`, `review`, `accepted`, `blocked`.
 | T2 | #4 #6 | `t2/parser` | 25d2a3d | accepted | cdb2228 (merge e128330) | The independent review accepted after fuzzing about 940k cases (`tasks/T2-review.md`). PR #32 was green at 4efcd64 with Codex and Claude `lgtm`. min.js is `45cc9778…`, 36,975 / 9,875 B (+1.66 % raw / +4.81 % gzip vs 782e9b92). D-013 and D-016. |
 | T3 | #8 #9 #10 #21 | `t3/transport` | 09922b9 | accepted | 99177f4 | The independent review accepted after two rounds (`tasks/T3-review.md`, 0cf4495). PR #34 green, Codex and Claude `lgtm`. min.js `b49e8ceb…`, 36,960 / 9,948 B. D-005, D-019. F11 is a T6-B test; F12 is a documented residual. |
 | T4 | #11 #12 | `t4/lifecycle` | e5866e1 | review (delta re-review of 25c4f79) | | D-018 and D-023. PR #37 is green at 2fe1882. The independent review (93053e3) requested changes for F1 (Stop then Play resumed about 24 dB louder). The fix round adopts C7 (D-025). It was interrupted by the 2026-10-03 container crash and resumed from commit e500eac. |
-| T3.1 | #21 (consumer D-023) | `t3/leading-rest` | d1f0e26 (T4 head) | done locally (76a4a12); making `startTime` enumerable; waits for T4 to land | | Leading rest on the first `loopEnd` pass, plus `getPlayStatus().startTime`. Runs in parallel with T11 (D-026). |
+| T3.1 | #21 (consumer D-023) | `t3/leading-rest` | d1f0e26 (T4 head) | done (d096501, signed); independent review running; waits for T4 to land | | Leading rest on the first `loopEnd` pass, plus `getPlayStatus().startTime`. Runs in parallel with T11 (D-026). |
 | T5 | #13 #14 | `t5/api` | d1f0e26 (T4 head) | running | | Integrates last among engine tasks and folds in the T11/T12 helpers (D-030). The `_note` guard is deferred to T5.2. |
 | T6 | #16 #7 (validation) | `t6/validation` | 25d2a3d | phases A and A.1 integrated (merges 346b782 and af3ea7a; PRs #33 and #36 green); phase B.1 running (`t6/phase-b`, 413f36c: T2/T3 assertions, F11, the double-count LOW); the remaining phase-B rows follow their tasks | | PR #33 green, including the arm64 matrix in 3 engines. The integrated tree passes `test:browser:matrix` locally (42 cases). Two deferred Codex MEDIUM test-strength fixes are in A.1. Full acceptance at G1. |
 | T7 | #17 | `t7/architecture` | after G1 | pending | | |
-| T8 | #7 #18 | seed: `t8/seed`; perf later | seed d1f0e26 | #7 seed running (D-030); #18 after T7 | | D-004 |
+| T8 | #7 #18 | seed: `t8/seed`; perf later | seed d1f0e26 | #7 seed done (6e74155, signed); independent review running; #18 after T7 | | D-004. mulberry32 streams, `bufferVersion` 1, default seed 0. The matrix passes in 3 engines. min.js 40,694 / 11,334 B. |
 | T11 | #26 | `t11/waveforms` | d1f0e26 (T4 head) | running | | D-006, D-021, D-027 (held storage) |
 | T12 | #27 | `t12/filters` | d1f0e26 (T4 head) | running | | D-007, D-028. Integrates after T11 and T8-seed. |
 | T9 | #19 #20, docs for #26/#27 | demos: `t9/demos`; docs later | demos 413f36c | demos in review (T9-D head cf3e2e6, PR #38); docs after T7, accepted after T12 | | T9-D covers the engine-independent #19 demo fixes: 11/11 cases in 3 engines, and the demos make zero remote requests offline. T9-3/5/8 deferred to T4/T5. |
@@ -81,6 +81,11 @@ Local checks at f01ca19 all exit 0: `npm ci`, lint, verify, `pack:check`, `npm t
 ## Concurrency (D-029, D-030)
 
 Running in parallel: T4 (fix round), T3.1, T11, T8-seed, T12, T5, T6-B.1 and T9-D. Binding rules are in `_evidence/assignments/CONCURRENCY.md`. Engine integration order: T4 → T3.1 → T11 → T8-seed → T12 → T5 → T5.2. T6-B.1 and T9-D integrate whenever they are ready.
+
+## Incidents (2026-10-03)
+
+- **Container crashes, two of them.** The probable cause is vacuity runs that loaded the pre-T2 parser in WebKit: unbounded allocation on malformed MIDI reached 18–35 GB per WPEWebProcess. CONCURRENCY.md rule 10 now forbids unbounded pre-fix cases in browsers (run them in Node with a heap cap and a deadline). Rule 8 serializes heavy browser runs behind a flock.
+- **GPG forwarding outage.** After the second crash the VS Code GPG-agent forwarding was gone. The supervisor's `gpgconf --launch` briefly shadowed the socket; it was stopped. The user reconnected VS Code. Unsigned commits made during the outage were re-signed before any push (rule 9).
 
 ## Next actions
 
