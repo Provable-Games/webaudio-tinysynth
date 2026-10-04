@@ -21,6 +21,8 @@ import { H, variants, noteHz } from "./helpers.mjs";
 const calls = (trace, from = 0) => trace.slice(from).map((line) => JSON.parse(line));
 const SQRT1_2_DB = 20 * Math.log10(Math.SQRT1_2); // -3.0103 dB: the default Q for low- and high-pass
 const CLAMP = 0.45; // x sample rate (tasks/T12.md, "Nyquist")
+const FLOOR = 2 ** -126; // the smallest normal 32-bit float: the least accepted ff and fq (review F1)
+const BELOW = FLOOR * (1 - 2 ** -20); // a double just under it
 
 /*
  * A fresh mock environment with `variant` loaded and a synth built with `opts`. `sr` sets the
@@ -106,7 +108,7 @@ describe.each(variants)("$name", (variant) => {
       ["fq and fk given", [{ fl: "lowpass", ff: 2, fk: 1, fq: 30 }, { fl: "bandpass", ff: 500, fk: 0, fq: 0.1 }]],
       ["g given as 0 (or the engine's loose \"0\")", [{ g: 0, fl: "highpass", ff: 3000 }, { g: "0", fl: "highpass", ff: 3000 }]],
       ["a filtered output next to a modulator", [{ fl: "lowpass", ff: 800 }, { g: 1, w: "sine", t: 0, f: 5, v: 0.01 }]],
-      ["natural limits only (D-028): tiny and float-sized values", [{ fl: "lowpass", ff: 1e-300, fq: 1e-300 }, { fl: "bandpass", ff: 3.4e38, fq: 3.4e38 }]],
+      ["natural limits only (D-028): the smallest and largest normal floats", [{ fl: "lowpass", ff: FLOOR, fq: FLOOR }, { fl: "highpass", ff: FLOOR, fq: FLOOR }, { fl: "bandpass", ff: 3.4e38, fq: 3.4e38 }]],
       ["undefined fields count as absent", [{ fl: undefined, ff: undefined, fq: undefined, fk: undefined }, { fl: "lowpass", ff: 500, fq: undefined, fk: undefined }]],
     ];
     test.each(accepted)("accepts %s, and stores the filter fields as given (no fq or fk added)", (_, timbre) => {
@@ -142,6 +144,14 @@ describe.each(variants)("$name", (variant) => {
       ["fq negative", [{ fl: "highpass", ff: 1000, fq: -0.5 }], "RangeError", "fq: -0.5"],
       ["fq NaN", [{ fl: "highpass", ff: 1000, fq: NaN }], "RangeError", "fq: NaN"],
       ["fq beyond the float range (band-pass Q is set as given)", [{ fl: "bandpass", ff: 1000, fq: 1e39 }], "RangeError", "fq: 1e+39"],
+      ["a low-pass fq below the normal floats (NaN coefficients in Chromium, review F1)", [{ fl: "lowpass", ff: 1000, fq: 1e-39 }], "RangeError", "fq: 1e-39"],
+      ["a high-pass fq of 1e-300", [{ fl: "highpass", ff: 1000, fq: 1e-300 }], "RangeError", "fq: 1e-300"],
+      ["a band-pass fq below the normal floats (one rule for every type)", [{ fl: "bandpass", ff: 1000, fq: 1e-39 }], "RangeError", "fq: 1e-39"],
+      ["fq just under 2^-126", [{ fl: "lowpass", ff: 1000, fq: BELOW }], "RangeError", "fq: " + BELOW],
+      ["the smallest double fq", [{ fl: "lowpass", ff: 1000, fq: 5e-324 }], "RangeError", "fq: 5e-324"],
+      ["an ff the AudioParam stores as 0 Hz", [{ fl: "lowpass", ff: 1e-46 }], "RangeError", "ff: 1e-46"],
+      ["a subnormal-float ff", [{ fl: "highpass", ff: 1e-40, fk: 1 }], "RangeError", "ff: 1e-40"],
+      ["ff just under 2^-126", [{ fl: "bandpass", ff: BELOW }], "RangeError", "ff: " + BELOW],
       ["fk true", [{ fl: "lowpass", ff: 2, fk: true }], "TypeError", "fk: true"],
       ["fk 2", [{ fl: "lowpass", ff: 2, fk: 2 }], "RangeError", "fk: 2"],
       ["fk 0.5", [{ fl: "lowpass", ff: 2, fk: 0.5 }], "RangeError", "fk: 0.5"],
@@ -307,7 +317,7 @@ describe.each(variants)("$name", (variant) => {
         [{ ff: 8, fk: 1 }, 108, top], // key-tracked high note: 8 x 4186 Hz
         [{ ff: 16, fk: 1 }, 127, top],
         [{ ff: 8, fk: 1 }, 96, 8 * noteHz(96)], // 16.7 kHz: below the clamp at both rates
-        [{ ff: 1e-300 }, 69, 1e-300], // tiny values pass unchanged (the float AudioParam rounds them to 0)
+        [{ ff: FLOOR }, 69, FLOOR], // the smallest accepted value passes unchanged (a normal float, not 0 Hz)
       ];
       for (const [f, n, want] of cases) {
         s.synth.setTimbre(0, 0, lead(f));
@@ -443,6 +453,57 @@ describe.each(variants)("$name", (variant) => {
       for (let n = 50; n < 70; n += 3) s.synth.noteOn(n % 4, n, 100);
       s.synth.noteOn(9, 42, 100);
       await s.synth.dispose();
+      expect(filterEdges(s.trace)).toEqual([]);
+      expect(heldFilters(s.synth)).toEqual([]);
+    });
+
+    /*
+     * Review F2: filters on operator 1 and later, with operator 0 unfiltered (so a release of
+     * q[0] in place of q[i] releases nothing), through each release path.
+     */
+    const later = [{ w: "square", v: 0.1, s: 1, r: 0.05 }, { w: "sawtooth", v: 0.2, s: 1, r: 0.05, fl: "lowpass", ff: 2, fk: 1 }, { w: "sawtooth", t: 1.01, v: 0.2, s: 1, r: 0.05, fl: "bandpass", ff: 900, fq: 3 }];
+    const laterHat = (d = 0.04) => [{ w: "triangle", t: 0, f: 180, v: 0.3, d }, { w: "n1", t: 0, f: 440, v: 0.3, d: 0.04, fl: "highpass", ff: 3000 }];
+    const onLater = (v) => [v.q[0], v.q[1] && v.q[1]._id, v.q[2] && v.q[2]._id];
+    test("filters on operator 1 and later: released through prune and release", () => {
+      const s = make(variant);
+      s.synth.setTimbre(0, 1, later);
+      s.synth.setProgram(4, 1);
+      s.synth.noteOn(4, 60, 100);
+      expect(onLater(voice(s.synth, 4, 60))[0]).toBeUndefined();
+      expect(filterEdges(s.trace).length).toBe(4);
+      s.synth.noteOff(4, 60);
+      s.step(1000);
+      s.ended();
+      expect(filterEdges(s.trace)).toEqual([]);
+      expect(heldFilters(s.synth)).toEqual([]);
+    });
+    test("filters on operator 1 and later: released through a drum hit's own end", () => {
+      const s = make(variant);
+      s.synth.setTimbre(1, 38, laterHat());
+      s.synth.noteOn(9, 38, 100);
+      expect(s.synth._src[s.synth._src.length - 1].q[0]).toBeUndefined();
+      expect(filterEdges(s.trace).length).toBe(2);
+      s.step(400);
+      s.ended();
+      expect(filterEdges(s.trace)).toEqual([]);
+      expect(heldFilters(s.synth)).toEqual([]);
+    });
+    test("filters on operator 1 and later: released through replacement and dispose()", async () => {
+      const s = make(variant);
+      s.synth.setTimbre(0, 1, later);
+      s.synth.setTimbre(1, 38, laterHat(2));
+      s.synth.setProgram(4, 1);
+      s.synth.noteOn(4, 60, 100);
+      s.synth.noteOn(9, 38, 100);
+      expect(filterEdges(s.trace).length).toBe(6);
+      s.synth.setAudioContext(new s.Base()); // the synth's own context: torn down at once
+      expect(filterEdges(s.trace)).toEqual([]);
+      s.synth.setProgram(4, 1); // setAudioContext() reset the channels; the timbres stay
+      s.synth.noteOn(4, 62, 100);
+      s.synth.noteOn(9, 38, 100);
+      expect(filterEdges(s.trace).length).toBe(6);
+      await s.synth.dispose(); // the new context is the caller's: released when the sources end
+      s.ended();
       expect(filterEdges(s.trace)).toEqual([]);
       expect(heldFilters(s.synth)).toEqual([]);
     });

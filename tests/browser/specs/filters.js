@@ -20,6 +20,8 @@
  *     magnitude at F within PROBE_DB: low-, high- and band-pass with Q in dB and linear,
  *     a +20 dB resonance, key tracking (-3.01 dB at every note), the Nyquist clamp on key-
  *     tracked high notes, and a drum;
+ *   - the smallest accepted fq, 2^-126 (the least normal float; review F1), on low-, high- and
+ *     band-pass notes: the render stays finite and a later note on another channel is unchanged;
  *   - the consumer fixture (tests/fixtures/consumer/filters-setup.json) end to end: its three
  *     timbres rendered with and without their filters. Per octave band (125 Hz to 16 kHz;
  *     Blackman-Harris window over 16384 samples, 4096 for the short hi-hat, from 10 ms after
@@ -29,7 +31,8 @@
  *     50 dB down;
  *   - lifecycle on a realtime context with T6's instrumentation (page/instrument.js): after
  *     many melodic notes with steals, drum hits, a song stopped by stopMIDI() with hits queued
- *     ahead, all-sound-off, context replacement and dispose(), every node-to-node connection is
+ *     ahead, all-sound-off, context replacement and dispose() (filters on operator 0 and on later
+ *     operators, review F2), every node-to-node connection is
  *     the idle graph's (so none from or to a BiquadFilter is left; WebKit's pre-existing leftover
  *     modulation-to-detune routes are observed separately), the synth's voice lists hold
  *     no filter, the old context has no live connection, and filters were created in every
@@ -130,10 +133,12 @@ const LIFE = async ({ midi }) => {
   };
   const bq = (c = "c0") => (L.snapshot().contexts[c] || { nodes: {} }).nodes.BiquadFilter || 0;
   const timbres = () => {
-    synth.setTimbre(0, 1, [{ w: "sawtooth", v: 0.2, d: 0.2, s: 0.5, r: 0.05, fl: "lowpass", ff: 2, fk: 1, fq: 2 }, { w: "square", t: 2, v: 0.05, s: 0.5, r: 0.05 }]);
+    // Filters on operator 0 and on later operators (review F2): program 1 filters both of its
+    // outputs, and drum 38 only its second, so releasing q[0] in place of q[i] leaves one connected.
+    synth.setTimbre(0, 1, [{ w: "sawtooth", v: 0.2, d: 0.2, s: 0.5, r: 0.05, fl: "lowpass", ff: 2, fk: 1, fq: 2 }, { w: "square", t: 2, v: 0.05, s: 0.5, r: 0.05, fl: "highpass", ff: 400 }]);
     synth.setTimbre(0, 2, [{ w: "n0", v: 0.2, s: 0.5, r: 0.05, fl: "bandpass", ff: 1200, fq: 4 }, { g: 1, w: "sine", t: 0, f: 5, v: 0.01, s: 1 }]);
     synth.setTimbre(1, 42, [{ w: "n1", t: 0, f: 440, v: 0.2, d: 0.04, r: 0.04, fl: "highpass", ff: 3000 }]);
-    synth.setTimbre(1, 38, [{ w: "n0", t: 0, f: 440, v: 0.2, d: 0.08, fl: "bandpass", ff: 2000, fq: 2 }, { w: "triangle", t: 0, f: 180, v: 0.3, d: 0.08 }]);
+    synth.setTimbre(1, 38, [{ w: "triangle", t: 0, f: 180, v: 0.3, d: 0.08 }, { w: "n0", t: 0, f: 440, v: 0.2, d: 0.08, fl: "bandpass", ff: 2000, fq: 2 }]);
   };
   const programs = () => { synth.setProgram(0, 1); synth.setProgram(1, 2); };
   timbres();
@@ -228,6 +233,25 @@ function probeSpec(list, sr, seed, filtered) {
     if (!p.m) steps.push({ call: "noteOff", args: [0, p.n, t + OFF] });
   });
   return { seed, sr, duration: list.length * SLOT + 0.2, options: { quality: 1, useReverb: 0 }, masterVol: LEVEL, steps, pcm: "L" };
+}
+
+/*
+ * Review F1: the smallest accepted fq, 2^-126, at 1 kHz on low-, high- and band-pass notes
+ * (channels 0, 2, 3), then a clean sine note on channel 1. Below it Chromium's low- and high-pass
+ * coefficients are NaN and one note silences the whole synth; at it the render must stay finite
+ * and the later note must sound as in a render without the filtered notes.
+ */
+const FLOOR = 2 ** -126;
+function floorSpec(sr, seed, withFloor) {
+  const steps = [];
+  if (withFloor)
+    [["lowpass", 0], ["highpass", 2], ["bandpass", 3]].forEach(([fl, ch], k) => {
+      steps.push({ call: "setTimbre", args: [0, 10 + k, [{ w: "sawtooth", v: 0.2, s: 1, r: 0.02, fl, ff: 1000, fq: FLOOR }]] },
+        { call: "setProgram", args: [ch, 10 + k] }, { call: "noteOn", args: [ch, 69, 100, 0.05 + 0.25 * k] }, { call: "noteOff", args: [ch, 69, 0.25 + 0.25 * k] });
+    });
+  steps.push({ call: "setTimbre", args: [0, 13, [{ w: "sine", v: 0.2, s: 1, r: 0.02 }]] }, { call: "setProgram", args: [1, 13] },
+    { call: "noteOn", args: [1, 69, 100, 0.9] }, { call: "noteOff", args: [1, 69, 1.3] });
+  return { seed, sr, duration: 1.5, options: { quality: 1, useReverb: 0 }, masterVol: LEVEL, steps, slots: [[0, 1.5], [0.95, 1.25]] };
 }
 
 /* ---- the consumer fixture ---- */
@@ -339,6 +363,13 @@ function cases(shared) {
             t.check(r.label + ": " + r.measuredDb.toFixed(3) + " dB, RBJ " + r.expectedDb.toFixed(3) + " dB", r.unfiltered > 1e-4 && r.diff <= PROBE_DB, "|diff| " + r.diff.toExponential(2) + " dB");
           t.check("renders are finite", !A.nonFinite(x).nan && !A.nonFinite(x).inf && !A.nonFinite(y).nan && !A.nonFinite(y).inf);
 
+          const fl = await render(p, floorSpec(sr, options.seed, true));
+          const fc = await render(p, floorSpec(sr, options.seed, false));
+          const level = fl.slots[1].rms / fc.slots[1].rms;
+          t.check("fq at its floor 2^-126 (low-, high- and band-pass): the render is finite and a later note on another channel sounds unchanged",
+            !fl.slots[0].nan && !fl.slots[0].inf && fc.slots[1].rms > 1e-4 && Math.abs(level - 1) <= 1e-3,
+            fl.slots[0].nan + " NaN, " + fl.slots[0].inf + " infinite; later note at " + level.toFixed(6) + "x");
+
           const fx = await render(p, fixtureSpec(sr, options.seed, true));
           const fu = await render(p, fixtureSpec(sr, options.seed, false));
           const bands = fixtureBands(fu.channels[0], fx.channels[0], sr);
@@ -349,7 +380,7 @@ function cases(shared) {
             judged.length >= 18 && worst.d <= BAND_DB, worst.b ? "worst " + worst.d.toFixed(3) + " dB, " + worst.b.timbre + " " + worst.b.band + " Hz" : "");
           const deep = bands.filter((b) => b.expectedDb <= -60);
           t.check("consumer fixture: bands the filters cut by 60 dB or more measure at least 50 dB down", deep.every((b) => b.measuredDb <= -50), deep.map((b) => b.timbre + " " + b.band + ": " + b.measuredDb.toFixed(1)).join(", "));
-          t.check("no unhandled rejections", ![fr, un, fx, fu].some((z) => z.rejections.length));
+          t.check("no unhandled rejections", ![fr, un, fl, fc, fx, fu].some((z) => z.rejections.length));
           t.check("no page errors", !p.pageErrors.length, p.pageErrors.slice(0, 2).join(" | "));
         },
       });
