@@ -28,12 +28,13 @@ This is [g200kg/webaudio-tinysynth](https://github.com/g200kg/webaudio-tinysynth
   - A song with no playable events, only tempo or metadata, stays stopped: `playMIDI()` does nothing. Upstream reported `play: 1` forever.
   - `playMIDI()` on a finished song starts a new pass at the song's initial tempo and channel state, as `locateMIDI(0)` does. Upstream replayed the opening at the tempo the song ended on. Notes still sounding from the previous pass are not cut.
   - `locateMIDI(tick)` rebuilds tempo and channel state from the song up to `tick`: programs, controllers, bend and bend range, RPN and SysEx tuning. A seek gives the same result whatever happened before. Upstream kept earlier programs and tempo and replayed only some controllers. Channel changes you made with `setProgram`, `send()` and similar, and controller changes scheduled for later, are replaced. Engine settings (volume, reverb, quality, voices, loop, `loopEnd`, timbres) are kept. Seeking with no song loaded does nothing.
+  - With `loopEnd` set, the first pass keeps the rest before the song's first event, as every later pass already did: `playMIDI()` from the start (after `loadMIDI()` or `locateMIDI(0)`, or on a finished song) sounds tick 0 0.1 s later and each event at its own tick's time. Upstream, and this fork with `loopEnd` unset, plays the first event at once. A seek to a later tick still resumes at the next event.
 - `stopMIDI()` now also stops drums and queued controller changes: every drum hit, sounding or already scheduled, stops, and channel volume, pan and modulation changes scheduled for later are cancelled. A seek (`locateMIDI()`) stops the same way. Upstream let drum hits scheduled up to 0.2 s ahead, and queued controller changes, play on after a stop.
 - An instance can start from a user gesture and release everything it uses: the constructor options `context`, `destination` and `lazy`, `resume()` and `dispose()` are new (see [Functions](#functions)). `setAudioContext()` now stops and disconnects the previous graph, and closes the previous context if the synth created it. Ended voices are disconnected, `send()` no longer leaves unhandled promise rejections, and on an `OfflineAudioContext`, `playMIDI()` throws an `Error` with `code` `AUDIO_CONTEXT_OFFLINE` (schedule notes with explicit times instead). Upstream kept every context, graph and timer alive.
 
-**What is added:** the `loopEnd` property and `setLoopEnd(ticks)`. When looping, each pass can start on a bar boundary instead of on the song's last event (see `setLoopEnd()` below). Unset, looping works exactly as upstream.
+**What is added:** the `loopEnd` property and `setLoopEnd(ticks)`. When looping, each pass can start on a bar boundary instead of on the song's last event (see `setLoopEnd()` below). Unset, looping works exactly as upstream. `getPlayStatus()` has a fourth field, `startTime`: when tick 0 of the current pass sounds, for syncing visuals to the music.
 
-**What is unchanged:** `new WebAudioTinySynth(options)`, every upstream function documented below apart from the `loadMIDI`, `playMIDI` and `locateMIDI` changes above, and the CommonJS / AMD / `window.WebAudioTinySynth` exports.
+**What is unchanged:** `new WebAudioTinySynth(options)`, every upstream function documented below apart from the `loadMIDI`, `playMIDI`, `locateMIDI`, `stopMIDI` and `getPlayStatus` changes above, and the CommonJS / AMD / `window.WebAudioTinySynth` exports.
 
 **Tests:** `npm test` runs the unit tests, the native Node tests and the regression scripts. The differential regression plays every MIDI file in this repository through upstream's file (with the tempo change above applied, and nothing else) and through this one, against a mock WebAudio, and checks that both make exactly the same calls. The others check note timing at fractional tempos (`tests/tempo.js`) and `loopEnd` looping (`tests/loop-end.js`). See [Development](#development) for every command.
 
@@ -180,7 +181,7 @@ Settings are changed with the functions below (`setMasterVol()`, `setReverbLev()
 >
 > For whole-bar looping, use `bars × quarter notes per bar × ppq`, where ppq is the file's ticks per quarter note. For example, 4 bars of 4/4 at ppq 480 is `setLoopEnd(7680)`. `setLoopEnd(synth.getPlayStatus().maxTick)` loops at the file's end-of-track marker.
 >
-> Timing: the rest after the last event is timed at the tempo in effect at the end of the song. The next pass then starts again at the song's starting tempo (120 BPM until its first tempo event), so a rest before the first event, and any music before the first tempo event, keep their length on every pass.
+> Timing: the rest after the last event is timed at the tempo in effect at the end of the song. The next pass then starts again at the song's starting tempo (120 BPM until its first tempo event), so a rest before the first event, and any music before the first tempo event, keep their length on every pass. The first pass keeps that rest too when it starts from tick 0 (after loadMIDI(), locateMIDI(0), or on a finished song).
 
 **setVoices(v)**
 > set max voices that simultaneous sounds, default is 64.
@@ -203,7 +204,9 @@ Settings are changed with the functions below (`setMasterVol()`, `setReverbLev()
 
 **getPlayStatus()**
 > get current MIDI sequence play status.
-> return value is a object `{play:playstatus, curTick:currenttick, maxTick:maxtick}`
+> return value is a object `{play:playstatus, maxTick:maxtick, curTick:currenttick, startTime:time}`. `startTime` is new in this fork.
+> `startTime` is the AudioContext time at which tick 0 of the current pass sounds, or `null` when not playing. With `loopEnd` set, an event at tick T of any pass sounds at `startTime` plus the time from tick 0 to T under the song's tempo map (120 BPM until its first tempo event). With `loopEnd` unset this holds only in the first pass: a later pass keeps the tempo the previous one ended on until its first tempo event (as upstream), so `startTime` is extrapolated at that tempo. Use `loopEnd` for exact sync. With `loopEnd` set and play from tick 0, tick 0 sounds 0.1 s after `playMIDI()`. Otherwise (`loopEnd` unset, after a seek or a resume) the next event plays 0.1 s after `playMIDI()`, and `startTime` is when tick 0 would have sounded, which can be in the past. Like `curTick`, it moves to the next pass when the sequencer reaches the end of the current one, up to 0.2 s before the last event sounds and before any rest up to `loopEnd`, so it can be later than `currentTime`: while it is, the previous pass is still sounding.
+> To start visuals with the music: `const st = synth.getPlayStatus().startTime; setTimeout(start, (st - ctx.currentTime + (ctx.outputLatency || 0)) * 1000);`
 
 **setTsMode(mode)**
 > Set time stamp mode that is used in send() or Channel message functions.  

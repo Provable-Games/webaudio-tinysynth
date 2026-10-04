@@ -40,6 +40,10 @@ Modifications by Provable Games, based on upstream commit
     leaves unhandled rejections, and on an OfflineAudioContext the
     timer leaves scheduled notes alone and playMIDI() throws
     AUDIO_CONTEXT_OFFLINE.
+  - webaudio-tinysynth.js: with loopEnd set, the first pass of a song
+    started from tick 0 keeps the rest before its first event, as later
+    passes already did, and getPlayStatus() has a startTime: the
+    AudioContext time at which tick 0 of the current pass sounds.
   - webaudio-tinysynth.min.js and its source map are regenerated from
     the modified source.
   - Demo pages and README updated to use the JavaScript API; tests added.
