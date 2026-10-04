@@ -448,6 +448,24 @@ for (const variant of variants) {
       expect(thrown(() => lazy.synth.setTimbre(0, 3, [{ w: "nLegacy" }])).message).toBe("unknown wave: nLegacy");
     });
 
+    test("a filtered timbre with a route to a missing operator, or an unknown wave, is rejected at setTimbre: no note can build a partial voice (T12 open LOW)", () => {
+      for (const [p, message] of [
+        [[{ fl: "lowpass", ff: 1000 }, { g: 15 }], "operator 1 g out of range: 15"],
+        [[{ fl: "lowpass", ff: 1000 }, { g: 3, w: "square" }], "operator 1 g: 3 is not an earlier operator"],
+        [[{ fl: "highpass", ff: 500 }, { w: "nMissing" }], "unknown wave: nMissing"],
+      ]) {
+        const s = synthFor(variant);
+        const before = s.synth.program[0].p;
+        const e = thrown(() => s.synth.setTimbre(0, 0, p));
+        expect([e && e.message, s.synth.program[0].p === before]).toEqual([message, true]);
+        const from = s.trace.length;
+        s.synth.noteOn(0, 60, 100, 1); // the previous timbre plays: no filter, every source has its gain
+        const made = calls(s.trace, from).filter((c) => c[0] === "create").map((c) => c[1].split("#")[0]);
+        expect(made.filter((k) => k === "biquad")).toEqual([]);
+        expect(made.filter((k) => k === "osc" || k === "src").length).toBe(made.filter((k) => k === "gain").length);
+      }
+    });
+
     test("rejections: waves, routing, fields, operators and arrays, with nothing installed", () => {
       const GOOD = { w: "sine", v: 0.5 };
       const BAD = [
