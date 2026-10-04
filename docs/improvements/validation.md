@@ -214,7 +214,7 @@ Phase A of T6 on `t6/validation` (base `25d2a3d`). Record: [tasks/T6.md](tasks/T
 
 ### Phase B.1
 
-Branch `t6/phase-b` (base `413f36c`, then `improve/integration` `7b4f5c5` merged with T4). Record: [tasks/T6.md §17](tasks/T6.md#17-phase-b1). Evidence: `/workspace/webaudio-tinysynth-worktrees/_evidence/t6-phase-b/`.
+Branch `t6/phase-b`, rebased onto `improve/integration` `3b86508` (T4, T3.1, the #43 demos fix, T11). Record: [tasks/T6.md §17](tasks/T6.md#17-phase-b1). Evidence: `/workspace/webaudio-tinysynth-worktrees/_evidence/t6-phase-b/`.
 
 - **Summary count.** A fatal worker stop now counts its case once. A forced fatal stop on a one-case run prints "0 of 1 cases passed" (it was "-1 of 1"), and the run still exits 1.
 - **New assert specs** (both builds, all three engines):
@@ -228,13 +228,13 @@ Branch `t6/phase-b` (base `413f36c`, then `improve/integration` `7b4f5c5` merged
   - Cases that terminate on their own were shown in all three engines.
   - Cases that hang or allocate without bound on pre-fix code are shown only in Node children (1 GB heap, 5 s deadline; CONCURRENCY.md rule 10). Earlier browser runs of those cases are the probable source of the oversized WebKit processes.
 
-- **Results** (merged head `f9d9102`, linux-x64):
-  - lint, `npm test` (unit 436, node 115, regressions 3 of 3) and `verify` pass;
-  - `npm run test:browser:matrix` passes 246 cases and 3,438 checks: 82 cases and 1,146 checks in each of Chromium 153, Firefox 155 and WebKit 26.6;
+- **Results** (rebased head, base `3b86508`, linux-x64; [tasks/T6.md §17.10](tasks/T6.md#1710-rebase-onto-improveintegration-3b86508)):
+  - lint, `npm test` (unit 8 files and 530 tests, node 8 files and 122 tests, regressions 3 of 3) and `verify` pass;
+  - `npm run test:browser:matrix` passes 258 cases and 3,690 checks: 86 cases and 1,230 checks in each of Chromium 153, Firefox 155 and WebKit 26.6;
   - parser 138, transport 104 and seek 36 checks per engine;
   - the cross-engine comparison passes 12 of 12.
 
 ### Pending
 
-- **Phase B rows waiting on other tasks.** #11 and #12 (T4), #14 (T5), #7 (T8), #26 (T11), #27 (T12), and the short-note decision ([tasks/T6.md §13](tasks/T6.md#13-phase-b-plan)).
+- **Phase B rows waiting on other tasks.** #14 (T5), #7 (T8), #27 (T12), and the short-note decision. T4's `dispose`, `start` and `offline` specs already assert #11 and #12, and T11's `waves` spec asserts #26 ([tasks/T6.md §13](tasks/T6.md#13-phase-b-plan)).
 - **Manual listening is pending.** The steps are in [tasks/T6.md §12](tasks/T6.md#12-manual-listening). No automated listening is claimed.
