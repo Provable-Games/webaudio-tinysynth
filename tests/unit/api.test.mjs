@@ -188,6 +188,21 @@ for (const variant of variants) {
       expect(s.notes.length - from).toBe(1);
     });
 
+    test("setProgram also selects a program slot a caller added to synth.program (TinyChip, D-031); a hole or a slot without p is out of range", () => {
+      const s = synthFor(variant);
+      s.synth.program[130] = { name: "added", p: [{ w: "square", g: 0, t: 1, f: 0, v: 0.3, a: 0, h: 0.01, d: 0.01, s: 0, r: 0.05, p: 1, q: 1, k: 0 }] };
+      s.synth.program[140] = { name: "no timbre" };
+      s.synth.setProgram(2, "130");
+      expect(s.synth.pg[2]).toBe(130);
+      const from = s.trace.length;
+      s.synth.noteOn(2, 60, 100, 1);
+      expect(calls(s.trace, from).filter((c) => c[0] === "type").map((c) => c[2])).toEqual(["square"]);
+      const before = snapshot(s);
+      for (const v of [128, 129, 140, 131.5, 1e9]) expect(thrown(() => s.synth.setProgram(2, v)).message).toMatch(/^program out of range/);
+      expect(snapshot(s)).toBe(before);
+      expect(thrown(() => s.synth.setTimbre(0, 130, [{}])).name).toBe("RangeError"); // setTimbre and getTimbreName stay 0-127
+    });
+
     test("numeric strings are read with Number() and stored as numbers", () => {
       const s = synthFor(variant);
       const y = s.synth;

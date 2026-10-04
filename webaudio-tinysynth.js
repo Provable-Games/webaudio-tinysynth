@@ -1359,7 +1359,11 @@ function WebAudioTinySynthCore(target) {
       this.brange[ch]=v;
     },
     setProgram:(ch,v)=>{
-      [ch,v]=this._cv(ch,v,0,"program",127,1);
+      /* v indexes the program table: 0-127, or a slot a caller added to it itself, as TinyChip
+         does (unsupported compatibility path, D-031). */
+      [ch,v]=this._cv(ch,v,0,"program",1/0,1);
+      if(!(this.program[v]||0).p)
+        throw new RangeError("program out of range: "+v);
       if(!this._live())
         return;
       if(this.debug)
