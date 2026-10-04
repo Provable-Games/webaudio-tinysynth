@@ -869,6 +869,23 @@ for (const variant of variants) {
       expect(pending(s)).toBe(0);
     });
 
+    test("a lazy synth whose context fails to install while a response is loaded: the load rejects with that error and #47 leaves no context; a later load works", async () => {
+      let refuse = true;
+      const s = withXHR({ lazy: true }, (sandbox) => {
+        const Base = sandbox.AudioContext;
+        sandbox.AudioContext = class extends Base { createGain() { if (refuse) throw new Error("no gains"); return super.createGain(); } };
+      });
+      const p = s.synth.loadMIDIUrl("x.mid");
+      s.reqs[0].respond(200, SONG_B);
+      const [how, e] = await settle(p);
+      expect([how, e.message, pending(s), s.synth.getAudioContext(), tick(s)]).toEqual(["rejected", "no gains", 0, null, 0]);
+      refuse = false;
+      const q = s.synth.loadMIDIUrl("y.mid");
+      s.reqs[1].respond(200, SONG_B);
+      expect((await settle(q))[0]).toBe("resolved");
+      expect([s.synth.getAudioContext() !== null, tick(s)]).toEqual([true, 1920]);
+    });
+
     test("a lazy synth creates its context only when a response is installed", async () => {
       const s = withXHR({ lazy: true });
       const p = s.synth.loadMIDIUrl("x.mid");
