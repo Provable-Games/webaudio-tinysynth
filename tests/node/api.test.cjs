@@ -28,7 +28,7 @@ const builds = H.forkVariants();
 function child(build, body) {
   const code = [
     "const H = require(" + JSON.stringify(path.join(H.ROOT, "tests", "harness.js")) + ");",
-    "const Synth = require(" + JSON.stringify(path.join(H.ROOT, build.name)) + ");",
+    "const Synth = require(" + JSON.stringify(build.file) + ");",
     "const ctx = new (H.createEnvironment([]).sandbox.AudioContext)();",
     "const reqs = [], seen = [];",
     "globalThis.XMLHttpRequest = class { constructor() { reqs.push(this); } open(m, u) { this.url = u; } send() {} abort() { if (this.onabort) this.onabort(); } };",
