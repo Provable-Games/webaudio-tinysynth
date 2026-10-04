@@ -15,8 +15,11 @@
  *     Locally, --unchanged-from=REF passes when HEAD's copy equals REF's or
  *     the merge base's (the branch did not touch it), and the working tree
  *     has no uncommitted change to either file;
- *   - changed, from this repository's improve/integration (CI's rebuild) or a
- *     release/* branch: pass only if both equal a fresh pinned build;
+ *   - changed, from this repository's improve/integration (CI's rebuild):
+ *     pass only if both equal a fresh pinned build;
+ *   - from this repository's release/* branches: both must equal a fresh
+ *     pinned build, changed or not, because the release tag is what
+ *     consumers verify;
  *   - any other change: fail, with the command that restores them.
  *
  * Pushes and manual runs check no committed copy (--inline-only). Whatever the
@@ -47,12 +50,14 @@ const GENERATED = ["webaudio-tinysynth.min.js", "webaudio-tinysynth.min.js.map"]
  */
 function decide({ eventName, repo, pr }) {
   if (eventName === "pull_request") {
-    const mayCarryBuild = pr.headRepo === repo && (pr.headRef === INTEGRATION_BRANCH || RELEASE_BRANCH.test(pr.headRef));
+    const ours = pr.headRepo === repo;
+    const mustBeFresh = ours && RELEASE_BRANCH.test(pr.headRef);
+    const mayCarryBuild = mustBeFresh || (ours && pr.headRef === INTEGRATION_BRANCH);
     return {
-      rule: "pull-request", base: "HEAD^1", fixRef: "origin/" + pr.baseRef, mayCarryBuild,
-      reason: "pull request " + pr.headRef + " -> " + pr.baseRef + ": " + (mayCarryBuild
-        ? "the files may change, but only to a fresh build"
-        : "the files must stay as the base has them"),
+      rule: "pull-request", base: "HEAD^1", fixRef: "origin/" + pr.baseRef, mayCarryBuild, mustBeFresh,
+      reason: "pull request " + pr.headRef + " -> " + pr.baseRef + ": " + (mustBeFresh
+        ? "a release: the files must equal a fresh build"
+        : mayCarryBuild ? "the files may change, but only to a fresh build" : "the files must stay as the base has them"),
     };
   }
   return { rule: "inline-only", reason: eventName + " event: the committed files are not compared (main's may lag the source between releases)" };
@@ -129,9 +134,13 @@ function compareWithFresh(freshDir, { cwd = ROOT, files = GENERATED } = {}) {
 /*
  * The pull request rule: unchanged from `base`, or (only when mayCarryBuild)
  * equal to the fresh build in `freshDir()`, which is called only if needed.
- * Returns {ok, via, problems}.
+ * mustBeFresh (a release) skips the "unchanged" pass. Returns {ok, via, problems}.
  */
-function checkPullRequest({ base, mayCarryBuild, freshDir, cwd = ROOT, files = GENERATED }) {
+function checkPullRequest({ base, mayCarryBuild, mustBeFresh = false, freshDir, cwd = ROOT, files = GENERATED }) {
+  if (mustBeFresh) {
+    const stale = compareWithFresh(freshDir(), { cwd, files });
+    return { ok: !stale.length, via: "fresh", problems: stale };
+  }
   const changed = checkUnchanged(base, { cwd, files });
   if (!changed.length) return { ok: true, via: "unchanged", problems: [] };
   if (!mayCarryBuild) return { ok: false, via: "changed", problems: changed };
@@ -170,7 +179,7 @@ async function main(argv) {
         if (b.status !== 0) throw new Error("the pinned build failed");
         return tmp;
       };
-      result = checkPullRequest({ base: rule.base, mayCarryBuild: rule.mayCarryBuild, freshDir });
+      result = checkPullRequest({ base: rule.base, mayCarryBuild: rule.mayCarryBuild, mustBeFresh: rule.mustBeFresh, freshDir });
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }

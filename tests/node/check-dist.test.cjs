@@ -26,10 +26,11 @@ test.describe("decide()", () => {
     }
   });
 
-  test("improve/integration and release/* may carry a build", () => {
-    assert.equal(D.decide(pr("improve/integration", "main")).mayCarryBuild, true);
-    assert.equal(D.decide(pr("release/v1.2.0", "main")).mayCarryBuild, true);
-    assert.equal(D.decide(pr("releases/v1.2.0", "main")).mayCarryBuild, false);
+  test("improve/integration and release/* may carry a build; a release must", () => {
+    const flags = (head) => { const d = D.decide(pr(head, "main")); return [d.mayCarryBuild, d.mustBeFresh]; };
+    assert.deepEqual(flags("improve/integration"), [true, false]);
+    assert.deepEqual(flags("release/v2.0.0"), [true, true]);
+    assert.deepEqual(flags("releases/v2.0.0"), [false, false]);
   });
 
   test("a fork's branch named improve/integration or release/* is a feature branch", () => {
@@ -174,7 +175,7 @@ test.describe("checkPullRequest()", () => {
   };
   let builds;
   // `fresh` stands in for the pinned build of the branch's source; it is built only when needed.
-  const check = (mayCarryBuild) => D.checkPullRequest({ base: "main", mayCarryBuild, cwd: dir, freshDir: () => (++builds, fresh) });
+  const check = (mayCarryBuild, mustBeFresh = false) => D.checkPullRequest({ base: "main", mayCarryBuild, mustBeFresh, cwd: dir, freshDir: () => (++builds, fresh) });
 
   test.beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), "tinysynth-check-pr-"));
@@ -206,16 +207,26 @@ test.describe("checkPullRequest()", () => {
 
   test("release/*, files equal to a fresh build: passes", () => {
     commit("rebuild", { [MIN]: "min 2\n", [MAP]: "map 2\n" });
-    assert.deepEqual(check(true), { ok: true, via: "fresh", problems: [] });
+    assert.deepEqual(check(true, true), { ok: true, via: "fresh", problems: [] });
     assert.equal(builds, 1);
   });
 
   test("release/*, files changed but stale: fails and names the stale file", () => {
     commit("partial rebuild", { [MIN]: "min 2\n", [MAP]: "map 1.5\n" });
-    assert.deepEqual(check(true), { ok: false, via: "fresh", problems: [MAP + " differs from a fresh build of this source"] });
+    assert.deepEqual(check(true, true), { ok: false, via: "fresh", problems: [MAP + " differs from a fresh build of this source"] });
   });
 
-  test("release/*, files unchanged: passes (main may lag its source between releases)", () => {
+  test("release/*, files left unchanged although the source changed: fails (review finding)", () => {
+    assert.deepEqual(check(true, true), { ok: false, via: "fresh", problems: [MIN + " differs from a fresh build of this source", MAP + " differs from a fresh build of this source"] });
+  });
+
+  test("release/*, nothing changed since the last release: passes (the old files are the fresh build)", () => {
+    fs.writeFileSync(path.join(fresh, MIN), "min 1\n");
+    fs.writeFileSync(path.join(fresh, MAP), "map 1\n");
+    assert.deepEqual(check(true, true), { ok: true, via: "fresh", problems: [] });
+  });
+
+  test("improve/integration, files unchanged: passes (main may lag its source between releases)", () => {
     assert.deepEqual(check(true), { ok: true, via: "unchanged", problems: [] });
   });
 });
