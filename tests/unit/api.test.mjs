@@ -694,7 +694,8 @@ for (const variant of variants) {
       fire();
       const [how, e] = await settle(p);
       expect([how, e.name, e.message, s.reqs[0].aborted]).toEqual(["rejected", "AbortError", "Aborted", true]);
-      expect((await settle(s.synth.loadMIDIUrl("y.mid", { signal: { aborted: true } })))[1].name).toBe("AbortError");
+      const preOld = { aborted: true, addEventListener() {}, removeEventListener() {} };
+      expect((await settle(s.synth.loadMIDIUrl("y.mid", { signal: preOld })))[1].name).toBe("AbortError");
     });
 
     test("that AbortError is a DOMException where the global scope has one", async () => {
@@ -722,6 +723,23 @@ for (const variant of variants) {
       expect(s.reqs.at(-1).sent).toBe(true);
       s.reqs.at(-1).respond(200, SONG_B);
       expect((await settle(p))[0]).toBe("resolved");
+    });
+
+    test("a signal that is not shaped like an AbortSignal (an EventTarget, a falsy value, a look-alike with a reason) rejects TypeError and leaves a pending load alone (PR #48 review)", async () => {
+      const s = withXHR();
+      const older = s.synth.loadMIDIUrl("old.mid");
+      for (const signal of [new EventTarget(), false, 0, "", NaN, { aborted: true, reason: new Error("its reason") }, { aborted: "no", addEventListener() {} }]) {
+        const [how, e] = await settle(s.synth.loadMIDIUrl("x.mid", { signal }));
+        expect([String(signal), how, e.name, e.message]).toEqual([String(signal), "rejected", "TypeError", "signal"]);
+      }
+      expect([s.reqs.length, s.reqs[0].aborted, pending(s)]).toEqual([1, false, 1]); // nothing else was created, superseded or registered
+      s.reqs[0].respond(200, SONG_B);
+      expect((await settle(older))[0]).toBe("resolved");
+      for (const opts of [undefined, null, {}, { signal: undefined }, { signal: null }]) { // no signal
+        const p = s.synth.loadMIDIUrl("y.mid", opts);
+        s.reqs.at(-1).respond(200, SONG_C);
+        expect((await settle(p))[0]).toBe("resolved");
+      }
     });
 
     test("the signal's listener is removed once the load settles", async () => {

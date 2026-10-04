@@ -765,11 +765,11 @@ function WebAudioTinySynthCore(target) {
          status) for a status outside 200-299; NETWORK_ERROR; or loadMIDI()'s error. It never
          throws, and an ignored rejection is handled. A newer call or the signal aborts the
          request; dispose() settles the promise and discards the response when it arrives. */
-      const s=o && o.signal,r=new Promise((res,rej)=>{
+      const s=o ? o.signal : null,r=new Promise((res,rej)=>{
         // The signal's reason, or an AbortError when it has none (or a falsy one)
         const why=()=>s.reason || (window.DOMException ? new window.DOMException("Aborted","AbortError") : Object.assign(Error("Aborted"),{name:"AbortError"}));
-        if(!url)
-          throw new TypeError("url");
+        if(!url || s!=null && !(typeof s.aborted=="boolean" && typeof s.addEventListener=="function"))
+          throw new TypeError(url ? "signal" : "url"); // an AbortSignal (by its shape), undefined or null
         if(this._dead)
           throw CodedError("SYNTH_DISPOSED");
         if(s && s.aborted)
@@ -788,7 +788,7 @@ function WebAudioTinySynthCore(target) {
           a=()=>{ f(why()); x.abort(); };
         x.open("GET",url);
         x.responseType="arraybuffer";
-        s && s.addEventListener("abort",a); // throws for a bad signal, before anything changes
+        s && s.addEventListener("abort",a);
         x.onload=()=>{
           if(this._pend.has(d)){
             try{
