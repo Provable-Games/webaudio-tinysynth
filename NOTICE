@@ -55,6 +55,12 @@ Modifications by Provable Games, based on upstream commit
     operator's gain and its channel, key-trackable and clamped below
     Nyquist, released with its voice. setTimbre() rejects invalid filter
     fields before any change.
+  - webaudio-tinysynth.js: the reverb impulse and the n0/n1 noise
+    buffers are generated from seeded mulberry32 streams (one per
+    buffer) instead of Math.random, with a fixed default seed of 0, a
+    seed constructor option and read-only seed and bufferVersion
+    properties. The generated reverb and noise texture differs from
+    upstream once and is then the same on every load.
   - webaudio-tinysynth.min.js and its source map are regenerated from
     the modified source.
   - Demo pages and README updated to use the JavaScript API; tests added.
