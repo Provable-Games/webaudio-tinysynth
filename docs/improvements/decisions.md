@@ -376,3 +376,15 @@ The user asked that maintaining and refining agent skills become a core responsi
   - credential lifetime and the leak guard
 
   It is opened with the `no-auto-merge` label, because that repository auto-merges reviewed PRs and merging requires the user's authorization.
+
+## D-033 T5 review outcome, and one numeric-coercion rule for timbres (2026-10-04)
+
+T5 review (9054e84) requested changes on #13 and #14. Decisions:
+- **F1:** `setMasterVol`/`setReverbLev` get natural float32 upper limits (reverb divided by 8, for its gain factor). Every other AudioParam-writing setter is checked for the same gap.
+- **F3/F6:** aborting a URL load always rejects. A missing or falsy `AbortSignal.reason` falls back to a standard `AbortError`.
+- **F2:** timbre copies use null-prototype objects, so a `__proto__` key is neutralized.
+- **F4:** add a test for a negative `loopEnd` set by direct property assignment.
+- **F5 (oversized finite timbre fields) and F7 (`tsmode` can make a time negative):** deferred to T5.2.
+- **Size:** adopt the reviewer's set, which nets −7 B gzip.
+
+**One coercion rule.** Every numeric timbre field, including T12's `ff`, `fq` and `fk` and any numeric wave parameter, follows T5's general rule. Numeric strings are coerced with `Number()`, then checked as finite and within their natural range. `fl` and wave names stay string enums or names. T5 applies this rule when it folds T11's `_checkWave` and T12's `_checkFilter`.
