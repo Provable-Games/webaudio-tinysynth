@@ -303,7 +303,7 @@ function parent() {
           assert.equal(r.maxTick, c.maxTick, c.name);
           assert.deepEqual(r.song.ev, c.ev, c.name);
           assert.equal(r.song.timebase, 4 * PPQ, c.name);
-          assert.deepEqual(r.status, { play: 0, maxTick: c.maxTick, curTick: c.ev.length ? c.ev[0].t : c.maxTick }, c.name);
+          assert.deepEqual(r.status, H.playStatus(0, c.maxTick, c.ev.length ? c.ev[0].t : c.maxTick), c.name);
         }
       });
     });

@@ -632,7 +632,7 @@ describe.each(variants)("$name: dispose() (#11)", (variant) => {
     expect(s.trace.slice(from)).toEqual([]);
     expect(s.env.timers.size).toBe(0);
     expect(s.synth.getAudioContext()).toBe(null);
-    expect(s.synth.getPlayStatus()).toEqual({ play: 0, maxTick: 3840, curTick: expect.any(Number) });
+    expect(s.synth.getPlayStatus()).toEqual(H.playStatus(0, 3840, expect.any(Number)));
     const byName = Object.fromEntries(results.slice(0, methods.length));
     expect(byName).toMatchObject({ ready: "resolved", resume: "rejected", dispose: "resolved", getPlayStatus: "object",
       getTimbreName: "string", playMIDI: "undefined", noteOn: "undefined", setAudioContext: "undefined" });

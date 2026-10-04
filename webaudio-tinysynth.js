@@ -520,6 +520,11 @@ function WebAudioTinySynthCore(target) {
                     this.tick2Time=4*60/this.song.tempo/this.song.timebase;
                     this.playTime+=e.t*this.tick2Time;
                   }
+                  /* The new pass stands at its tick 0 (see playMIDI), which sounds e.t ticks
+                     before ev[0]: at the padded end with loopEnd, else virtually (D-023). _x0:
+                     the pass's opening seconds per tick (inherited without loopEnd). */
+                  this._z=1;
+                  this._st=this.playTime-e.t*(this._x0=this.tick2Time);
                   this.playTick=e.t;
                 }
                 else{
@@ -659,7 +664,12 @@ function WebAudioTinySynthCore(target) {
       this.voices=v;
     },
     getPlayStatus:()=>{
-      return {play:this.playing, maxTick:this.maxTick, curTick:this.playTick};
+      /* startTime (D-023): the AudioContext time at which tick 0 of the current pass sounds
+         (see playMIDI), or null when not playing. Like curTick, it follows the scheduler: it
+         moves to the next pass once the current pass's last event is scheduled, up to 0.2 s
+         before that event sounds and before any rest up to loopEnd, so it can be later than
+         currentTime. */
+      return {play:this.playing, maxTick:this.maxTick, curTick:this.playTick, startTime:this.playing?this._st:null};
     },
     locateMIDI:(tick,load)=>{
       if(!this._live())
@@ -688,6 +698,8 @@ function WebAudioTinySynthCore(target) {
       }
       this.playIndex=i; // ev.length when no event is left: playMIDI restarts the song
       this.playTick=e?e.t:this.maxTick;
+      this._z=!(tick>0); // at tick 0, not a seek into the leading rest (playMIDI, D-023)
+      this._x0=0; // the song's own opening tempo, 120 BPM (playMIDI)
       if(p)
         this.playMIDI();
     },
@@ -790,7 +802,26 @@ function WebAudioTinySynthCore(target) {
       dummy.stop(this.actx.currentTime+0.001);
       dummy.onended=()=>dummy.disconnect();
       this._src.push({o:[dummy],g:[],e:this.actx.currentTime+0.001});
-      this.playTime=this.actx.currentTime+.1;
+      /* Start timing (#21, D-023). t: seconds from tick 0 to the next event (playTick) under
+         the pass's tempo map: the song's, from 120 BPM until its first tempo event, except
+         that a pass the default loop started opens at the tempo it inherited (_x0, set at
+         the wrap and cleared by locateMIDI), as it plays. With a positive loopEnd, a
+         pass that stands at tick 0 with nothing of it played yet (after loadMIDI(),
+         locateMIDI(0), a completed song, a loop, or a stop before its first event) keeps its
+         leading rest, as later passes do: tick 0 sounds 0.1 s from now. Otherwise the next
+         event plays 0.1 s from now, as upstream and after a seek (next-event positioning,
+         D-005), and startTime (_st) is when tick 0 would have sounded, now + 0.1 s - t. */
+      let t=0,k=0,x=this._x0||2/s.timebase,a=this.actx.currentTime+.1;
+      for(const e of s.ev.slice(0,this.playIndex+1)){
+        t+=(e.t-k)*x;
+        k=e.t;
+        if(e.m[0]==0xff51)
+          x=240/e.m[1]/s.timebase;
+      }
+      if(this.loopEnd>0 && this._z && !this.playIndex)
+        this.playTime=(this._st=a)+t;
+      else
+        this._st=(this.playTime=a)-t;
       this.tick2Time=4*60/s.tempo/s.timebase;
       this.playing=1;
     },

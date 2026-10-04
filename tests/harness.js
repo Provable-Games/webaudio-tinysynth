@@ -341,6 +341,16 @@ function smf(format, division, chunks, opts = {}) {
 }
 
 /*
+ * getPlayStatus() results. This fork adds startTime (D-023): the AudioContext
+ * time at which tick 0 of the current pass sounds, null unless playing.
+ * playStatus(play, maxTick, curTick, startTime) is a whole expected result.
+ * statusOf(synth) is a synth's result for comparing with upstream, which has no
+ * startTime: a missing one reads as null, and the fork's own value is kept.
+ */
+const playStatus = (play, maxTick, curTick, startTime = null) => ({ play, maxTick, curTick, startTime });
+const statusOf = (synth) => Object.assign({ startTime: null }, synth.getPlayStatus());
+
+/*
  * Everything a failed loadMIDI must leave unchanged, as plain JSON: the song,
  * the sequencer position and timing, the voice count, the channel and tuning
  * state, and the timbre tables (program, drummap). Undefined and non-finite
@@ -350,7 +360,7 @@ function playbackState(synth) {
   const keep = (k, v) => (v === undefined ? "undefined" : typeof v === "number" && !Number.isFinite(v) ? String(v) : v);
   return JSON.parse(JSON.stringify({
     song: synth.song, maxTick: synth.maxTick, playTick: synth.playTick, playIndex: synth.playIndex,
-    playing: synth.playing, playTime: synth.playTime, tick2Time: synth.tick2Time, status: synth.getPlayStatus(),
+    playing: synth.playing, playTime: synth.playTime, tick2Time: synth.tick2Time, status: statusOf(synth),
     loop: synth.loop, loopEnd: synth.loopEnd, voices: synth.notetab.length,
     pg: synth.pg, vol: synth.vol, ex: synth.ex, bend: synth.bend, brange: synth.brange, rpnidx: synth.rpnidx,
     sustain: synth.sustain, rhythm: synth.rhythm, tuningC: synth.tuningC, tuningF: synth.tuningF,
@@ -364,5 +374,5 @@ module.exports = {
   FORK_PATCHES, fail, sha256, upstreamSource, applyPatches, referenceSource, forkVariants,
   createEnvironment, createSynth, toArrayBuffer, runUntil,
   makeMidi, midi,
-  vlq, trackBytes, chunk, smf, playbackState,
+  vlq, trackBytes, chunk, smf, playStatus, statusOf, playbackState,
 };

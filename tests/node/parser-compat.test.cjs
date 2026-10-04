@@ -83,7 +83,7 @@ function load(s, bytes) {
     error = e.code || e.message;
   }
   const song = s.synth.song && JSON.parse(JSON.stringify(s.synth.song));
-  return { error, song, maxTick: s.synth.maxTick, status: { ...s.synth.getPlayStatus() }, playIndex: s.synth.playIndex, calls: s.trace.slice(from) };
+  return { error, song, maxTick: s.synth.maxTick, status: H.statusOf(s.synth), playIndex: s.synth.playIndex, calls: s.trace.slice(from) };
 }
 
 function playing(variant) {
