@@ -521,9 +521,10 @@ function WebAudioTinySynthCore(target) {
                     this.playTime+=e.t*this.tick2Time;
                   }
                   /* The new pass stands at its tick 0 (see playMIDI), which sounds e.t ticks
-                     before ev[0]: at the padded end with loopEnd, else virtually (D-023). */
+                     before ev[0]: at the padded end with loopEnd, else virtually (D-023). _x0:
+                     the pass's opening seconds per tick (inherited without loopEnd). */
                   this._z=1;
-                  this._st=this.playTime-e.t*this.tick2Time;
+                  this._st=this.playTime-e.t*(this._x0=this.tick2Time);
                   this.playTick=e.t;
                 }
                 else{
@@ -698,6 +699,7 @@ function WebAudioTinySynthCore(target) {
       this.playIndex=i; // ev.length when no event is left: playMIDI restarts the song
       this.playTick=e?e.t:this.maxTick;
       this._z=!(tick>0); // at tick 0, not a seek into the leading rest (playMIDI, D-023)
+      this._x0=0; // the song's own opening tempo, 120 BPM (playMIDI)
       if(p)
         this.playMIDI();
     },
@@ -801,13 +803,15 @@ function WebAudioTinySynthCore(target) {
       dummy.onended=()=>dummy.disconnect();
       this._src.push({o:[dummy],g:[],e:this.actx.currentTime+0.001});
       /* Start timing (#21, D-023). t: seconds from tick 0 to the next event (playTick) under
-         the song's tempo map, 120 BPM until its first tempo event. With a positive loopEnd, a
+         the pass's tempo map: the song's, from 120 BPM until its first tempo event, except
+         that a pass the default loop started opens at the tempo it inherited (_x0, set at
+         the wrap and cleared by locateMIDI), as it plays. With a positive loopEnd, a
          pass that stands at tick 0 with nothing of it played yet (after loadMIDI(),
          locateMIDI(0), a completed song, a loop, or a stop before its first event) keeps its
          leading rest, as later passes do: tick 0 sounds 0.1 s from now. Otherwise the next
          event plays 0.1 s from now, as upstream and after a seek (next-event positioning,
          D-005), and startTime (_st) is when tick 0 would have sounded, now + 0.1 s - t. */
-      let t=0,k=0,x=2/s.timebase,a=this.actx.currentTime+.1;
+      let t=0,k=0,x=this._x0||2/s.timebase,a=this.actx.currentTime+.1;
       for(const e of s.ev.slice(0,this.playIndex+1)){
         t+=(e.t-k)*x;
         k=e.t;

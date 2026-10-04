@@ -145,6 +145,37 @@ describe.each(variants)("$name: leading rest and startTime (D-023)", (variant) =
     [96, 192].forEach((tick, i) => close(s.notes[n + i][0], starts[1] + tick * inherited, "pass 2, note at tick " + tick));
   });
 
+  test("loopEnd unset: a stop and resume inside a pass at an inherited tempo keep startTime at that tempo; a seek returns to the song's map", () => {
+    // PR #39 Codex review: the same fixture, stopped in pass 2 before its tempo event (60 BPM inherited, 60 BPM after 240).
+    const fx = fixture([[240, 1000000]], [96, 192, 288], 384);
+    const s = synthFor(variant);
+    load(s, fx);
+    s.synth.setLoop(1);
+    s.synth.playMIDI();
+    wraps(s, 1);
+    const n = fx.ticks.length, inherited = 60 / 60 / PPQ;
+    expect(H.runUntil(s.env, () => s.notes.length >= n + 1, 10000)).toBe(true); // pass 2's note at 96 is scheduled
+    s.synth.stopMIDI();
+    const cur = s.synth.getPlayStatus().curTick;
+    expect(cur).toBeGreaterThan(96);
+    expect(cur).toBeLessThan(240);
+    let from = s.notes.length, t0 = now(s);
+    s.synth.playMIDI();
+    const st = startTime(s);
+    close(st, t0 + 0.1 - cur * inherited, "startTime after the resume");
+    expect(H.runUntil(s.env, () => s.notes.length >= from + 2, 10000)).toBe(true);
+    [192, 288].forEach((tick, i) => close(s.notes[from + i][0], st + tick * inherited, "resumed pass 2, note at tick " + tick));
+    // A seek rebuilds the song's own tempo map, from 120 BPM.
+    s.synth.stopMIDI();
+    s.synth.locateMIDI(144);
+    from = s.notes.length;
+    t0 = now(s);
+    s.synth.playMIDI();
+    close(startTime(s), t0 + 0.1 - at(fx, 144), "startTime after locateMIDI(144)");
+    expect(H.runUntil(s.env, () => s.notes.length >= from + 1, 10000)).toBe(true);
+    close(s.notes[from][0], startTime(s) + at(fx, 192), "after the seek, note at tick 192");
+  });
+
   test.each([-1, NaN])("locateMIDI(%s) counts as tick 0: with loopEnd, the pass keeps its leading rest", (tick) => {
     const s = synthFor(variant);
     load(s, CONSUMER);
