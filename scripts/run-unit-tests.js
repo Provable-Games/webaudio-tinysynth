@@ -9,7 +9,9 @@
  * the console and the JSON reporter in a temporary file, then fails if Vitest
  * failed, if any file passed no test, or if fewer than --min-files files ran or
  * fewer than --min-tests tests passed. The floors are committed in
- * package.json ("test:unit"); raise them when you add tests.
+ * package.json ("test:unit"); raise them when you add tests. The minified
+ * build under test is a fresh build of the current source
+ * (scripts/test-build.js), made before Vitest starts.
  *
  * Usage: node scripts/run-unit-tests.js [--min-files=N] [--min-tests=N] [--deadline=SECONDS]
  */
@@ -18,6 +20,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { runWithDeadline, describeFailure } = require("./run-with-deadline");
+const { prepare } = require("./test-build");
 
 const ROOT = path.resolve(__dirname, "..");
 const VITEST = path.join(ROOT, "node_modules", "vitest", "vitest.mjs");
@@ -34,6 +37,7 @@ function parseArgs(argv) {
 
 async function main(argv) {
   const opts = parseArgs(argv);
+  await prepare();
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tinysynth-unit-tests-"));
   const reportFile = path.join(tmp, "vitest.json");
   let result, report = null;

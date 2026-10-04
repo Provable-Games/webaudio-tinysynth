@@ -15,10 +15,13 @@
  *   (paths with spaces are not supported).
  *   Default entries: tests/differential.js tests/tempo.js tests/loop-end.js
  *   Default deadline: 300 s per script.
+ * The scripts test a fresh minified build of the current source
+ * (scripts/test-build.js), made before the first script starts.
  */
 "use strict";
 const path = require("path");
 const { runWithDeadline, describeFailure } = require("./run-with-deadline");
+const { prepare } = require("./test-build");
 
 const ROOT = path.resolve(__dirname, "..");
 const DEFAULT_SCRIPTS = ["tests/differential.js", "tests/tempo.js", "tests/loop-end.js"];
@@ -36,6 +39,7 @@ async function main(argv) {
     return 2;
   }
   if (!entries.length) entries.push(...DEFAULT_SCRIPTS);
+  await prepare();
 
   const results = [];
   for (const entry of entries) {
@@ -62,4 +66,7 @@ async function main(argv) {
   return failed.length ? 1 : 0;
 }
 
-main(process.argv.slice(2)).then((status) => process.exit(status));
+main(process.argv.slice(2)).then((status) => process.exit(status), (e) => {
+  console.error("FAIL: " + (e && e.stack || e));
+  process.exit(1);
+});

@@ -23,7 +23,7 @@ function load(build) {
     "Math.random = () => { throw new Error('Math.random called'); };",
     "const crypto = require('crypto');",
     "const H = require(" + JSON.stringify(path.join(H.ROOT, "tests", "harness.js")) + ");",
-    "const Synth = require(" + JSON.stringify(path.join(H.ROOT, build.name)) + ");",
+    "const Synth = require(" + JSON.stringify(build.file) + ");",
     "const Ctx = H.createEnvironment([]).sandbox.AudioContext;",
     "const sha = (buf) => {",
     "  const h = crypto.createHash('sha256');",

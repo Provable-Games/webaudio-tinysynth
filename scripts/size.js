@@ -7,7 +7,10 @@
  * gzip command is on PATH. The two deflate implementations differ by a few
  * dozen bytes, so compare like with like.
  *
- * Usage: node scripts/size.js [file ...]   (default: source, min.js, map)
+ * Usage: node scripts/size.js [file ...]
+ *   Default: the source, and a fresh build of it (scripts/test-build.js:
+ *   .build/, or TINYSYNTH_MIN) with its map. The committed min.js can be
+ *   older than the source on a branch; `npm run verify` measures that copy.
  */
 "use strict";
 const fs = require("fs");
@@ -17,7 +20,6 @@ const crypto = require("crypto");
 const { spawnSync } = require("child_process");
 
 const ROOT = path.resolve(__dirname, "..");
-const DEFAULT_FILES = ["webaudio-tinysynth.js", "webaudio-tinysynth.min.js", "webaudio-tinysynth.min.js.map"];
 
 function gnuGzipSize(file) {
   const r = spawnSync("gzip", ["-9", "-n", "-c", file], { maxBuffer: 1 << 26 });
@@ -46,7 +48,16 @@ function format(rows) {
 
 module.exports = { measure, format };
 
+async function main(argv) {
+  if (argv.length) return format(argv.map(measure));
+  const built = await require("./test-build").prepare({ quiet: true });
+  return "min.js and map: " + path.relative(ROOT, built.min) + (built.built ? " (fresh build of the current source)" : " (TINYSYNTH_MIN)") + "\n" +
+    format([path.join(ROOT, "webaudio-tinysynth.js"), built.min, built.map].map(measure));
+}
+
 if (require.main === module) {
-  const files = process.argv.length > 2 ? process.argv.slice(2) : DEFAULT_FILES.map((f) => path.join(ROOT, f));
-  console.log(format(files.map(measure)));
+  main(process.argv.slice(2)).then((text) => console.log(text), (e) => {
+    console.error("size failed: " + (e && e.stack || e));
+    process.exit(1);
+  });
 }

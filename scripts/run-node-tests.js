@@ -14,6 +14,8 @@
  *   - fails if fewer than --min-files files ran or fewer than --min-tests tests
  *     passed. The floors are committed in package.json ("test:node"); raise
  *     them when you add tests, so a renamed or deleted test file is noticed.
+ * The minified build under test is a fresh build of the current source
+ * (scripts/test-build.js), made before the tests start.
  *
  * Usage: node scripts/run-node-tests.js [--min-files=N] [--min-tests=N] [--deadline=SECONDS] [pattern ...]
  *   Default pattern: tests/node/**\/*.test.cjs (relative to the repository root).
@@ -23,6 +25,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { runWithDeadline, describeFailure } = require("./run-with-deadline");
+const { prepare } = require("./test-build");
 
 const ROOT = path.resolve(__dirname, "..");
 const REPORTER = path.join(__dirname, "node-test-events.mjs");
@@ -71,6 +74,7 @@ async function main(argv) {
     return 1;
   }
   const relative = new Map(found.map((f) => [path.join(ROOT, f), f]));
+  await prepare();
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tinysynth-node-tests-"));
   const eventsFile = path.join(tmp, "events.jsonl");
   let result, lines;
