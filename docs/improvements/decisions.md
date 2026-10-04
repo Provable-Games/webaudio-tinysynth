@@ -408,3 +408,15 @@ The user squash-merged PR #43 into `improve/integration` on GitHub and asked the
 - Recommended merge order to minimize conflicts: #40 (T11) → #42 (T8-seed) → T12 → T5 (which folds `_checkWave`/`_checkFilter`). #41 (T6-B.1) can merge at any time.
 - Addendum to D-031/D-033 (2026-10-04): T5's `setProgram` accepts any existing program slot, not only 0–127. This keeps TinyChip's direct `synth.program[129+]` presets working. "The slot must exist" is the natural limit: a non-existent slot throws a `RangeError` before any change. MIDI program change through `send()` stays 0–127, per the protocol.
 - PR #47 (T11 follow-up): fixes a lazy-start AudioContext leak found by Codex after #40 merged. Codex's P2 suggestion to wait for the previous `close()` before creating a new context was declined, because it would change the D-018 lazy-start contract. It is optional for T5.2.
+
+## D-036 CI generates the minified library; PRs stop carrying it (2026-10-04)
+
+The user observed that regenerating `webaudio-tinysynth.min.js` and its map in every PR makes every pair of open PRs conflict, and adds fragility. They decided to move the generation to CI, starting with the workflow's `GITHUB_TOKEN` ("start simple").
+
+- The two files stay committed. The README `<script src>` usage, the consumer's SHA-256 check and its SHA pins all depend on them.
+- After each push to `improve/integration`, a workflow rebuilds both files with the pinned build. It runs the inline-safety checks and the test suites on the fresh build. Then it commits the files back through GraphQL `createCommitOnBranch` with `expectedHeadOid`, so GitHub signs the commit. The commit job runs no npm and no repository code.
+- Feature PRs must leave both files byte-identical to their base. The integration → `main` PR (#31) must carry files equal to a fresh build. Every CI job still tests a fresh build. Local tests build into an ignored directory.
+- `main` is not automated yet. The `protect main` ruleset (PR required, signed commits, one bypass user) blocks `GITHUB_TOKEN`. Automating `main` needs a GitHub App or a ruleset bypass, which is a later user decision.
+- Commits made with `GITHUB_TOKEN` start no workflows. When #31's head is a bot commit, its required checks need a human commit on top, or a re-run.
+- Consumers pin a rebuild commit, or any SHA where `npm run verify` passes. A merge commit may carry a stale min.js until the rebuild lands.
+- This supersedes the "final rebuild commit" part of D-003 for tasks that start after T1-dist merges. CONCURRENCY.md rule 12 carries it to agents. AGENTS.md on `main` still says to commit the generated files, and T9 updates it. Task: T1-dist.
