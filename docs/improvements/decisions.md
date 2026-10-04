@@ -397,3 +397,12 @@ The user clarified that the skills they meant are the composer-facing skills in 
 - This partly supersedes D-032. The agent-skills PR #41 (`github-ci` lessons) stays open with `no-auto-merge` for the user to keep, trim or close. Its review-workflow lessons are org-wide, and its skills-review rule fits repositories that contain skills, such as onchain-tinysynth.
 - T9's documentation pass (#20) treats `README.md` and `AGENTS.md` (now tracked on `main`) as the authoritative definition of the engine. Before #31, `improve/integration` must merge `main` so it picks up `AGENTS.md`/`CLAUDE.md`.
 - `.github/`, `docs/` and `scripts/` exist only on `improve/integration`. `main` gains them, and its required checks gain their workflows, only when #31 merges.
+
+## D-035 The user merges PRs into improve/integration; agents rebase with lease (2026-10-04)
+
+The user squash-merged PR #43 into `improve/integration` on GitHub and asked the agents for PRs #40 and #42 to resolve conflicts and "push back with lease".
+
+- Task PRs into `improve/integration` may now be merged by the user on GitHub. The supervisor never merges on GitHub.
+- When the base moves, the owning agent rebases its branch onto `origin/improve/integration` and pushes with `--force-with-lease`, to its own branch only. That push is authorized by the user for this purpose. The agent regenerates min.js/map with the pinned build rather than hand-merging, sets floors to the runners' counts, and keeps commits signed.
+- The supervisor fetches and rebases its local record commits onto `origin/improve/integration` before every push.
+- Recommended merge order to minimize conflicts: #40 (T11) → #42 (T8-seed) → T12 → T5 (which folds `_checkWave`/`_checkFilter`). #41 (T6-B.1) can merge at any time.
