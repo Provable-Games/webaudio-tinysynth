@@ -187,7 +187,11 @@ README, "What behaves differently" bullet:
 
 README, constructor options (after **lazy**):
 
-> **seed** : an integer from `0` to `4294967295` that fixes the reverb impulse and the noise buffers (`n0`, `n1`). default is `0` (also for `null`). The same seed gives the same buffer data on every load and in every instance at a given sample rate; the data differs between sample rates (the buffers are 0.5 s long). Any other value throws a `TypeError` (not a number) or a `RangeError` before anything is created.
+> **seed** : an integer from `0` to `4294967295` that fixes the reverb impulse and the noise buffers (`n0`, `n1`). default is `0` (also for `null`). The same seed, `bufferVersion` and sample rate give the same buffer data on every load and in every instance; the data differs between sample rates (the buffers are 0.5 s long).
+
+README, the constructor's closing sentence (replacing "An invalid `context`, `destination` or `lazy` throws a `TypeError` before anything is created."):
+
+> An invalid `context`, `destination` or `lazy` throws a `TypeError`, and an invalid `seed` a `TypeError` (not a number) or a `RangeError` (not an integer from 0 to 4294967295), before anything is created.
 
 README, Properties table (two rows) and note:
 
