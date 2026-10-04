@@ -683,6 +683,28 @@ function midiCase() {
         const m4 = await waitText(p, "midistatus", /^No MIDI input connected\./);
         s = await ports();
         t.check("statechange: no input left", /^No MIDI input/.test(m4.text) && s.names.length === 1 && s.current === -1, JSON.stringify(s));
+        await p.evaluate(() => window.__fakeMidi.add("in-3", "Fake keyboard 3")); // eslint-disable-line no-undef -- runs in the page
+        await waitText(p, "midistatus", /^1 MIDI input connected\.$/);
+        s = await ports();
+        t.check("statechange: an input connected after none were left is selected", s.selected === 1 && s.current === 0, JSON.stringify(s));
+        // "--" chosen by the user stays chosen when inputs come and go.
+        await p.selectOption("#midiport", { index: 0 });
+        await p.evaluate(() => window.__fakeMidi.add("in-4", "Fake keyboard 4")); // eslint-disable-line no-undef -- runs in the page
+        await waitText(p, "midistatus", /^2 MIDI inputs connected\.$/);
+        const off1 = await ports();
+        await p.evaluate(() => window.__fakeMidi.send("in-3", [0x90, 60, 100])); // eslint-disable-line no-undef -- runs in the page
+        const silent = await held(p);
+        await p.evaluate(() => window.__fakeMidi.remove("in-4")); // eslint-disable-line no-undef -- runs in the page
+        await waitText(p, "midistatus", /^1 MIDI input connected\.$/);
+        const off2 = await ports();
+        t.check("statechange: \"--\" chosen by the user stays chosen, and the input plays nothing", off1.selected === 0 && off1.current === -1 && off2.selected === 0 && off2.current === -1 &&
+          silent.voices.length === 0 && silent.page.length === 0, JSON.stringify({ off1, off2, silent }));
+        await p.selectOption("#midiport", { index: 1 });
+        await p.evaluate(() => window.__fakeMidi.send("in-3", [0x90, 61, 100])); // eslint-disable-line no-undef -- runs in the page
+        const on = await waitSounding(p, "0:61");
+        await p.evaluate(() => window.__fakeMidi.send("in-3", [0x80, 61, 0])); // eslint-disable-line no-undef -- runs in the page
+        const after = await held(p);
+        t.check("choosing the input again plays and releases its notes", on.includes("0:61") && after.voices.length === 0 && after.page.length === 0, JSON.stringify({ on, after }));
       }
     }),
   };

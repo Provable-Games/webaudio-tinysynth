@@ -74,6 +74,7 @@ var curMidi=0;
 var midiAccess=null;
 var midiPort=[];
 var currentPort=-1;
+var midiOff=false;      // the user chose no MIDI input ("--"): a hot-plug does not select one
 var synth, kb;
 /* Notes this page is sounding, by input (keyboard key, shot button, MIDI input
    note): each note-off goes to the channel and note that were sent, even after
@@ -209,6 +210,10 @@ function MidiIn(e){
   }
   synth.send(Array.prototype.slice.call(d),0);
 }
+function ChooseMidi(n){
+  midiOff=n<0;
+  SelectMidi(n);
+}
 function SelectMidi(n){
   document.getElementById("midiport").selectedIndex=n+1;
   if(currentPort>=0)
@@ -277,7 +282,7 @@ function UpdateMidiPorts(){
       sel.selectedIndex=keep+1;
     }
     else
-      SelectMidi(ports.length?0:-1);
+      SelectMidi(ports.length&&!midiOff?0:-1);
   }
   if(ports.length)
     MidiStatus(ports.length+" MIDI input"+(ports.length>1?"s":"")+" connected.");
@@ -567,7 +572,7 @@ The demo on this page is based on webauido-tinysynth, and you can do the followi
 <div id="message" role="status"></div>
 <br/>
 <hr/>
-MIDI Keyboard : <select id="midiport" onchange="SelectMidi(this.selectedIndex-1)"><option>--</option></select> <span id="midistatus" role="status"></span>
+MIDI Keyboard : <select id="midiport" onchange="ChooseMidi(this.selectedIndex-1)"><option>--</option></select> <span id="midistatus" role="status"></span>
 <br/>
 Oct : <label><input type="radio" name="oct" onclick="OctChange(-2)"/> -2</label>
 <label><input type="radio" name="oct" onclick="OctChange(-1)"/> -1</label>
