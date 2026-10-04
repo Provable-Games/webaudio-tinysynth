@@ -19,32 +19,25 @@ const [MIN, MAP] = D.GENERATED;
 test.describe("decide()", () => {
   const pr = (headRef, baseRef, headRepo = REPO) => ({ eventName: "pull_request", repo: REPO, pr: { headRef, baseRef, headRepo } });
 
-  test("a feature pull request into improve/integration must leave the files unchanged", () => {
-    const d = D.decide(pr("t5/api", "improve/integration"));
-    assert.equal(d.rule, "unchanged");
-    assert.equal(d.base, "HEAD^1");
-    assert.equal(d.fixRef, "origin/improve/integration");
+  test("a feature pull request may not change the files, into any base", () => {
+    for (const [head, base] of [["t5/api", "improve/integration"], ["docs/agents-skills", "main"], ["t5/api-part2", "t5/api"]]) {
+      const d = D.decide(pr(head, base));
+      assert.deepEqual([d.rule, d.base, d.fixRef, d.mayCarryBuild], ["pull-request", "HEAD^1", "origin/" + base, false], head);
+    }
   });
 
-  test("a pull request into another feature branch (stacked) must leave them unchanged", () => {
-    assert.deepEqual([D.decide(pr("t5/api-part2", "t5/api")).rule, D.decide(pr("t5/api-part2", "t5/api")).fixRef], ["unchanged", "origin/t5/api"]);
+  test("improve/integration and release/* may carry a build", () => {
+    assert.equal(D.decide(pr("improve/integration", "main")).mayCarryBuild, true);
+    assert.equal(D.decide(pr("release/v1.2.0", "main")).mayCarryBuild, true);
+    assert.equal(D.decide(pr("releases/v1.2.0", "main")).mayCarryBuild, false);
   });
 
-  test("the improve/integration -> main pull request must carry a fresh build", () => {
-    assert.equal(D.decide(pr("improve/integration", "main")).rule, "fresh");
+  test("a fork's branch named improve/integration or release/* is a feature branch", () => {
+    for (const head of ["improve/integration", "release/v1.2.0"]) assert.equal(D.decide(pr(head, "main", "someone/webaudio-tinysynth")).mayCarryBuild, false, head);
   });
 
-  test("every other pull request into main must carry a fresh build too: CI does not rebuild main (review finding)", () => {
-    for (const head of ["docs/agents-skills", "fix/hotfix-source-change"]) assert.equal(D.decide(pr(head, "main")).rule, "fresh", head);
-    assert.equal(D.decide(pr("improve/integration", "main", "someone/webaudio-tinysynth")).rule, "fresh", "fork into main");
-  });
-
-  test("a fork's branch named improve/integration is a feature branch", () => {
-    assert.equal(D.decide(pr("improve/integration", "improve/integration", "someone/webaudio-tinysynth")).rule, "unchanged");
-  });
-
-  test("pushes and manual runs require a fresh build", () => {
-    for (const eventName of ["push", "workflow_dispatch"]) assert.equal(D.decide({ eventName, repo: REPO, pr: null }).rule, "fresh", eventName);
+  test("pushes and manual runs compare no committed copy: main may lag its source between releases", () => {
+    for (const eventName of ["push", "workflow_dispatch"]) assert.equal(D.decide({ eventName, repo: REPO, pr: null }).rule, "inline-only", eventName);
   });
 
   test("fromGithub() reads the head repository from the event payload", () => {
@@ -54,7 +47,7 @@ test.describe("decide()", () => {
       fs.writeFileSync(file, JSON.stringify({ pull_request: { head: { ref: "improve/integration", repo: { full_name: REPO } }, base: { ref: "main" } } }));
       const input = D.fromGithub({ GITHUB_EVENT_NAME: "pull_request", GITHUB_REPOSITORY: REPO, GITHUB_EVENT_PATH: file });
       assert.deepEqual(input, { eventName: "pull_request", repo: REPO, pr: { headRef: "improve/integration", headRepo: REPO, baseRef: "main" } });
-      assert.equal(D.decide(input).rule, "fresh");
+      assert.equal(D.decide(input).mayCarryBuild, true);
       assert.equal(D.fromGithub({ GITHUB_EVENT_NAME: "push", GITHUB_REPOSITORY: REPO }).pr, null);
       assert.throws(() => D.fromGithub({}), /GITHUB_EVENT_NAME/);
     } finally {
@@ -161,5 +154,68 @@ test.describe("checkUnchanged()", () => {
     git("checkout", "-q", "base");
     commit("CI rebuild", { [MIN]: "min 0\n", [MAP]: "map 0\n" });
     assert.deepEqual(mergeOf("feature"), [], "untouched files take the base tip's copy in the merge");
+  });
+});
+
+test.describe("checkPullRequest()", () => {
+  let dir, fresh;
+  const env = Object.assign({}, process.env, {
+    GIT_CONFIG_GLOBAL: os.devNull, GIT_CONFIG_NOSYSTEM: "1",
+    GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.invalid", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.invalid",
+  });
+  const git = (...args) => {
+    const r = spawnSync("git", args, { cwd: dir, env, encoding: "utf8" });
+    assert.equal(r.status, 0, "git " + args.join(" ") + ": " + r.stderr);
+  };
+  const commit = (msg, files) => {
+    for (const [f, t] of Object.entries(files)) fs.writeFileSync(path.join(dir, f), t);
+    git("add", "-A");
+    git("commit", "-q", "-m", msg);
+  };
+  let builds;
+  // `fresh` stands in for the pinned build of the branch's source; it is built only when needed.
+  const check = (mayCarryBuild) => D.checkPullRequest({ base: "main", mayCarryBuild, cwd: dir, freshDir: () => (++builds, fresh) });
+
+  test.beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "tinysynth-check-pr-"));
+    fresh = fs.mkdtempSync(path.join(os.tmpdir(), "tinysynth-check-pr-fresh-"));
+    fs.writeFileSync(path.join(fresh, MIN), "min 2\n");
+    fs.writeFileSync(path.join(fresh, MAP), "map 2\n");
+    builds = 0;
+    git("init", "-q", "-b", "main");
+    commit("release 1", { "webaudio-tinysynth.js": "source 1\n", [MIN]: "min 1\n", [MAP]: "map 1\n" });
+    git("checkout", "-q", "-b", "branch");
+    commit("source change", { "webaudio-tinysynth.js": "source 2\n" });
+  });
+  test.afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(fresh, { recursive: true, force: true });
+  });
+
+  test("feature, files unchanged: passes without building", () => {
+    assert.deepEqual(check(false), { ok: true, via: "unchanged", problems: [] });
+    assert.equal(builds, 0);
+  });
+
+  test("feature, files changed (even to a fresh build): fails", () => {
+    commit("rebuild", { [MIN]: "min 2\n", [MAP]: "map 2\n" });
+    const r = check(false);
+    assert.deepEqual([r.ok, r.via, builds], [false, "changed", 0]);
+    assert.match(r.problems.join("\n"), /webaudio-tinysynth\.min\.js differs from main/);
+  });
+
+  test("release/*, files equal to a fresh build: passes", () => {
+    commit("rebuild", { [MIN]: "min 2\n", [MAP]: "map 2\n" });
+    assert.deepEqual(check(true), { ok: true, via: "fresh", problems: [] });
+    assert.equal(builds, 1);
+  });
+
+  test("release/*, files changed but stale: fails and names the stale file", () => {
+    commit("partial rebuild", { [MIN]: "min 2\n", [MAP]: "map 1.5\n" });
+    assert.deepEqual(check(true), { ok: false, via: "fresh", problems: [MAP + " differs from a fresh build of this source"] });
+  });
+
+  test("release/*, files unchanged: passes (main may lag its source between releases)", () => {
+    assert.deepEqual(check(true), { ok: true, via: "unchanged", problems: [] });
   });
 });

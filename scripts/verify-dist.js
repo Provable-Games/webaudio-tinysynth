@@ -13,9 +13,9 @@
  *
  * Exits 1 if any check fails. Usage: npm run verify
  *
- * This is the consumer's check of a commit. Pull requests other than
- * improve/integration -> main do not carry the generated files and use
- * scripts/check-dist.js instead.
+ * This is the consumer's check of a release tag or of a CI rebuild commit on
+ * improve/integration. Elsewhere the committed files may be older than the
+ * source; pull requests are checked by scripts/check-dist.js.
  */
 "use strict";
 const fs = require("fs");

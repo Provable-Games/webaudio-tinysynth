@@ -4,7 +4,8 @@ name: Dist
 # improve/integration after each push (normally a merged pull request) and
 # commits them back. Pull requests do not carry these files
 # (scripts/check-dist.js); this workflow is their only writer on that branch.
-# main is not automated: GITHUB_TOKEN cannot push there under its ruleset.
+# main is not automated: there the files change only in a manual release pull
+# request (README, "Releases").
 # Design, trust boundary and the main branch: docs/improvements/tasks/T1-dist.md.
 #
 #   build          read-only token. npm ci, the pinned build, the inline-safety
