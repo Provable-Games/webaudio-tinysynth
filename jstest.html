@@ -128,10 +128,12 @@ function Init(){
   document.getElementById("file").addEventListener("cancel",function(){
     showMessage("No file selected. The current song is unchanged.");
   });
-  setInterval(function(){
+  var showStatus=function(){
     var st=synth.getPlayStatus();
     document.getElementById("status").innerHTML="Play:"+st.play+"  Pos:"+st.curTick+"/"+st.maxTick;
-  },100);
+  };
+  showStatus();   // at once: a line filled in 100 ms later would move the buttons below it
+  setInterval(showStatus,100);
 }
 function Test(){
   var o=synth.getAudioContext().createOscillator();

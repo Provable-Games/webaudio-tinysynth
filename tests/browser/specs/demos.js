@@ -75,6 +75,14 @@ const MESSAGE = (id) => {
   const r = e.getBoundingClientRect();
   return { text: e.textContent.trim(), visible: r.width > 0 && r.height > 0 && getComputedStyle(e).visibility !== "hidden", role: e.getAttribute("role") };
 };
+/* Records where an element is once the page's load handlers have run (before any timer they started). */
+const LAYOUT_PROBE = (selector) => {
+  window.addEventListener("load", () => setTimeout(() => {
+    const e = document.querySelector(selector);
+    window.__layoutAtLoad = e ? e.getBoundingClientRect().toJSON() : null;
+  }, 0));
+};
+const LAYOUT_NOW = (selector) => document.querySelector(selector).getBoundingClientRect().toJSON();
 const POINTER_RECORDER = () => {
   window.addEventListener("pointerdown", (e) => { window.__lastPointer = { id: e.pointerId, type: e.pointerType }; }, true);
 };
@@ -225,6 +233,8 @@ async function waitText(page, id, re, ms = 3000) {
 /* ---------------- cases ---------------- */
 
 const DEMOS = ["simple", "jstest", "soundedit"];
+/* An element below every line a demo fills in after load (the play status), for the layout check. */
+const BELOW_STATUS = { jstest: "button[data-note='60']", soundedit: "input[name=oct]" };
 const ELEMENTS = { simple: ["webaudio-keyboard"], jstest: [], soundedit: ["webaudio-keyboard", "webaudio-knob", "webaudio-switch"] };
 
 function loadCase(demo) {
@@ -280,6 +290,17 @@ function loadCase(demo) {
       if (demo === "soundedit") {
         await rec.page.click("text=Timbre Editor");
         await shot(t, rec, demo + "-editor");
+      }
+      if (BELOW_STATUS[demo]) {
+        // The controls must not move after load: a status line filled in by a later timer moved them
+        // under a pending click once ready() resolved at once (the demos' readiness no longer waits 100 ms).
+        const sel = BELOW_STATUS[demo];
+        const lp = await openDemo(t, srv, demo, { initScripts: [[LAYOUT_PROBE, sel], [MIDI_STUB, "empty"]] });
+        await sleep(600);
+        const at = await lp.page.evaluate(() => window.__layoutAtLoad); // eslint-disable-line no-undef -- runs in the page
+        const now = await lp.page.evaluate(LAYOUT_NOW, sel);
+        t.check("the controls do not move after load (" + sel + ")", !!at && Math.abs(at.x - now.x) < 0.5 && Math.abs(at.y - now.y) < 0.5,
+          "after the load handlers " + JSON.stringify(at && { x: at.x, y: at.y }) + ", 600 ms later " + JSON.stringify({ x: now.x, y: now.y }));
       }
     }),
   };
