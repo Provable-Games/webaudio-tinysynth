@@ -115,10 +115,20 @@ describe.each(variants)("$name", (variant) => {
       const { synth } = make(variant);
       const given = JSON.parse(JSON.stringify(timbre));
       synth.setTimbre(0, 5, timbre);
-      expect(synth.program[5].p).toBe(timbre);
+      const installed = synth.program[5].p;
+      expect(installed).not.toBe(timbre); // setTimbre installs a validated copy (T5, ledger L-09)
       timbre.forEach((op, i) => {
-        for (const k of ["fl", "ff", "fq", "fk"]) expect(op[k]).toBe(given[i][k]);
+        for (const k of ["fl", "ff", "fq", "fk"]) {
+          expect(op[k]).toBe(given[i][k]); // the caller's operator is unchanged
+          expect(installed[i][k]).toBe(given[i][k]); // and the copy holds the fields as given
+        }
       });
+    });
+
+    test("numeric strings in ff, fq and fk are read with Number() and stored as numbers (D-033)", () => {
+      const { synth } = make(variant);
+      synth.setTimbre(0, 5, [{ fl: "lowpass", ff: "1000", fq: " 2 ", fk: "0" }, { fl: "bandpass", ff: "1e3", fk: "1" }]);
+      expect(synth.program[5].p.map((op) => [op.ff, op.fq, op.fk])).toEqual([[1000, 2, 0], [1000, undefined, 1]]);
     });
 
     const rejected = [
@@ -132,13 +142,15 @@ describe.each(variants)("$name", (variant) => {
       ["a filter on an FM modulator", [{}, { g: 1, fl: "lowpass", ff: 1000 }], "TypeError", "fl on a modulator"],
       ["a filter on an AM modulator", [{}, { g: 11, fl: "lowpass", ff: 1000 }], "TypeError", "fl on a modulator"],
       ["no ff", [{ fl: "lowpass" }], "TypeError", "ff: undefined"],
-      ["ff a string", [{ fl: "lowpass", ff: "1000" }], "TypeError", "ff: 1000"],
+      ["ff a non-numeric string (numeric strings are read with Number(), D-033)", [{ fl: "lowpass", ff: "1 kHz" }], "RangeError", "ff: NaN"],
+      ["ff a blank string", [{ fl: "lowpass", ff: " " }], "TypeError", "ff:  "],
       ["ff 0", [{ fl: "lowpass", ff: 0 }], "RangeError", "ff: 0"],
       ["ff negative", [{ fl: "lowpass", ff: -1 }], "RangeError", "ff: -1"],
       ["ff NaN", [{ fl: "lowpass", ff: NaN }], "RangeError", "ff: NaN"],
       ["ff Infinity", [{ fl: "lowpass", ff: Infinity }], "RangeError", "ff: Infinity"],
       ["ff beyond the float range", [{ fl: "lowpass", ff: 1e39 }], "RangeError", "ff: 1e+39"],
-      ["fq a string", [{ fl: "highpass", ff: 1000, fq: "2" }], "TypeError", "fq: 2"],
+      ["fq a non-numeric string", [{ fl: "highpass", ff: 1000, fq: "high" }], "RangeError", "fq: NaN"],
+      ["fk a string that is not 0 or 1", [{ fl: "lowpass", ff: 2, fk: "2" }], "RangeError", "fk: 2"],
       ["fq null", [{ fl: "highpass", ff: 1000, fq: null }], "TypeError", "fq: null"],
       ["fq 0", [{ fl: "highpass", ff: 1000, fq: 0 }], "RangeError", "fq: 0"],
       ["fq negative", [{ fl: "highpass", ff: 1000, fq: -0.5 }], "RangeError", "fq: -0.5"],
