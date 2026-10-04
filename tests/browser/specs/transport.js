@@ -227,6 +227,27 @@ function seconds(file, tick) {
   return s + (tick - at) * us / 1e6 / r.division;
 }
 
+/*
+ * Effective automation of one recorded AudioParam from `origin` on: the value
+ * in effect at origin and the later events [seconds after origin, value].
+ * Only the methods the library uses on channel parameters are modelled; any
+ * other is reported.
+ */
+function automation(r, name, origin) {
+  let tl = [];
+  const unsupported = [];
+  for (const e of r.params.filter((p) => p.param === name)) {
+    if (e.m === "initial") tl.push({ t: -Infinity, v: e.v });
+    else if (e.m === "value") tl.push({ t: e.at, v: e.v });
+    else if (e.m === "setValueAtTime") tl.push({ t: e.t, v: e.v });
+    else if (e.m === "cancelScheduledValues") tl = tl.filter((x) => x.t < e.t);
+    else unsupported.push(e.m);
+  }
+  tl = tl.map((x, i) => Object.assign({ i }, x)).sort((a, b) => a.t - b.t || a.i - b.i);
+  const upTo = tl.filter((x) => x.t <= origin);
+  return { at: upTo.length ? upTo[upTo.length - 1].v : null, after: tl.filter((x) => x.t > origin).map((x) => [x.t - origin, x.v]), unsupported };
+}
+
 /* Note-on ticks of a file (velocity > 0), in order. */
 function noteTicks(file) {
   const r = smf.read(file);
@@ -248,6 +269,9 @@ const SONGS = {
   tempoOnly: song([[0, tempo(100)]]),
   // #10: 120 BPM (no tempo event at tick 0), then 240 BPM from tick 960.
   replay: song([[0, on(69)], [240, off(69)], [480, on(69)], [720, off(69)], [960, tempo(240)], [960, on(69)], [1200, off(69)], [1440, on(69)], [1680, off(69)]]),
+  // T4 review (D-025): volume 90 and expression 100 at tick 0, expression 40 from tick 480.
+  expression: song([[0, [0xb0, 7, 90]], [0, [0xb0, 11, 100]], [0, on(69)], [240, off(69)], [480, [0xb0, 11, 40]], [480, on(69)], [720, off(69)],
+    [960, on(69)], [1200, off(69)], [1440, on(69)], [1680, off(69)]]),
   // D-019 / F11: the last note (A5) is held from tick 1440 to 1920, the song's end.
   held: song([[0, on(69)], [240, off(69)], [480, on(69)], [720, off(69)], [960, on(69)], [1200, off(69)], [1440, on(81)], [1920, off(81)]]),
 };
@@ -339,6 +363,22 @@ function cases(shared) {
       t.observe("largest timing difference (s)", Math.max(diff(p1), diff(p2)));
     });
 
+    // T4 review (D-025, F1): stop, then play, resumes with the channel's latest expression.
+    add("T4 stop then play resumes with the channel's latest expression (CC11)", async (t) => {
+      const r = await scenario(t, build, {
+        steps: [
+          { when: "now", ops: [{ load: b64(SONGS.expression) }, { call: "playMIDI" }] },
+          { when: { curTick: 960 }, ops: [{ call: "stopMIDI" }] }, { when: { after: 0.2 }, ops: [{ call: "playMIDI" }] }, { when: { after: 0.3 } },
+        ],
+      });
+      if (!r) return;
+      const gain = (v) => 3 * v * v / (127 * 127); // GM gain, as volume and expression combine on the channel gain
+      const want = gain(90) * (40 * 40) / (127 * 127), stale = gain(90) * (100 * 100) / (127 * 127);
+      const resume = opAt(r, "playMIDI", 1), v = automation(r, "vol", resume.playTime);
+      t.check("the resumed pass starts at volume 90 with expression 40 (gain " + want.toFixed(6) + ")", v.at !== null && Math.abs(v.at - want) <= 1e-9 * want && !v.unsupported.length,
+        "gain at the resume " + v.at + (Math.abs(v.at - gain(90)) < 1e-9 ? " (volume alone: expression ignored)" : Math.abs(v.at - stale) < 1e-9 ? " (the first expression, 100)" : ""));
+    });
+
     // D-019 and F11: a replay in the tick where the song ends.
     const heldTicks = noteTicks(SONGS.held), lastOn = heldTicks[heldTicks.length - 1];
     const heldOff = seconds(SONGS.held, 1920) - seconds(SONGS.held, 0);
@@ -380,4 +420,4 @@ function cases(shared) {
   return out;
 }
 
-module.exports = { cases, scenario, SONGS, song, seconds, noteTicks, notes, opAt, b64, on, off, tempo, PPQ, SINE, SQUARE, TIME_TOL, fmt };
+module.exports = { cases, scenario, automation, SONGS, song, seconds, noteTicks, notes, opAt, b64, on, off, tempo, PPQ, SINE, SQUARE, TIME_TOL, fmt };

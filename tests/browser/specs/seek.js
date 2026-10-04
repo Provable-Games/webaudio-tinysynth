@@ -60,33 +60,12 @@ const EXPECTED = {
   mod: { at: 0, after: [[at(1200), mod(64)]] },
 };
 
-/*
- * Effective automation of one recorded AudioParam from `origin` on: the value
- * in effect at origin and the later events [seconds after origin, value].
- * Only the methods the library uses on channel parameters are modelled; any
- * other is reported.
- */
-function automation(r, name, origin) {
-  let tl = [];
-  const unsupported = [];
-  for (const e of r.params.filter((p) => p.param === name)) {
-    if (e.m === "initial") tl.push({ t: -Infinity, v: e.v });
-    else if (e.m === "value") tl.push({ t: e.at, v: e.v });
-    else if (e.m === "setValueAtTime") tl.push({ t: e.t, v: e.v });
-    else if (e.m === "cancelScheduledValues") tl = tl.filter((x) => x.t < e.t);
-    else unsupported.push(e.m);
-  }
-  tl = tl.map((x, i) => Object.assign({ i }, x)).sort((a, b) => a.t - b.t || a.i - b.i);
-  const upTo = tl.filter((x) => x.t <= origin);
-  return { at: upTo.length ? upTo[upTo.length - 1].v : null, after: tl.filter((x) => x.t > origin).map((x) => [x.t - origin, x.v]), unsupported };
-}
-
 /* The new pass after the seek: its notes and channel 0's automation, from the pass start. */
 function pass(r, seekOp) {
   const origin = seekOp.playTime;
   const notes = T.notes(r).filter((x) => x.seq > seekOp.seq).map((x) => ({ t: x.start - origin, freq: x.freq, detune: x.detune, wave: x.wave }));
   const out = { origin, notes };
-  for (const p of ["vol", "pan", "mod"]) out[p] = automation(r, p, origin);
+  for (const p of ["vol", "pan", "mod"]) out[p] = T.automation(r, p, origin);
   return out;
 }
 
