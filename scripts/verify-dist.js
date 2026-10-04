@@ -12,6 +12,10 @@
  * 3. Prints raw size, gzip size and SHA-256 (scripts/size.js).
  *
  * Exits 1 if any check fails. Usage: npm run verify
+ *
+ * This is the consumer's check of a commit. Pull requests other than
+ * improve/integration -> main do not carry the generated files and use
+ * scripts/check-dist.js instead.
  */
 "use strict";
 const fs = require("fs");
@@ -91,7 +95,11 @@ async function main() {
   console.log("\nPASS: committed distribution matches the pinned build");
 }
 
-main().catch((e) => {
-  console.error("verify failed: " + (e && e.stack || e));
-  process.exit(1);
-});
+module.exports = { checkInlineSafe };
+
+if (require.main === module) {
+  main().catch((e) => {
+    console.error("verify failed: " + (e && e.stack || e));
+    process.exit(1);
+  });
+}
