@@ -37,7 +37,7 @@ States: `pending`, `running`, `review`, `accepted`, `blocked`.
 | T6 | #16 #7 (validation) | `t6/validation` | 25d2a3d | phases A and A.1 integrated (merges 346b782 and af3ea7a; PRs #33 and #36 green); phase B.1 running (`t6/phase-b`, 413f36c: T2/T3 assertions, F11, the double-count LOW); the remaining phase-B rows follow their tasks | | PR #33 green, including the arm64 matrix in 3 engines. The integrated tree passes `test:browser:matrix` locally (42 cases). Two deferred Codex MEDIUM test-strength fixes are in A.1. Full acceptance at G1. |
 | T7 | #17 | `t7/architecture` | after G1 | pending | | |
 | T8 | #7 #18 | seed: `t8/seed`; perf later | seed d1f0e26 | #7 seed ready (399907b, signed): review fixes in (fmix32, static guard, `seed: null`); PR opening; integrates after T3.1 and T11; #18 after T7 | | D-004. mulberry32 streams, `bufferVersion` 1, default seed 0. The matrix passes in 3 engines. min.js 40,694 / 11,334 B. |
-| T11 | #26 | `t11/waveforms` | d1f0e26 (T4 head) | done (4ea5927); TinyChip compatibility follow-up plus PR in progress; independent review running | | D-006, D-021, D-027 (held storage) |
+| T11 | #26 | `t11/waveforms` | d1f0e26 (T4 head) | accepted | squash 4b99a2b (PR #40, merged by the user) | The independent review approved with changes (61deb9f); the fixes (M1 rescale, L1 tags, L2 build-before-install) are in the PR. Integration at 4b99a2b: verify passes, 530 unit / 122 node / 3 regressions. min.js `8b560049…`, 42,421 / 11,859 B. |
 | T12 | #27 | `t12/filters` | d1f0e26 (T4 head) | review requested fixes (9716d63): F1 `fq` NaN floor; fixes in progress | | D-007, D-028. Integrates after T11 and T8-seed. |
 | T9 | #19 #20, docs for #26/#27 | demos: `t9/demos`; docs later | demos 413f36c | demos integrated (merge 5946c28, head 0818b76; PR #38 green at 284c61b); docs after T7, accepted after T12 | | T9-D covers the engine-independent #19 demo fixes: 11/11 cases in 3 engines, and the demos make zero remote requests offline. T9-3/5/8 deferred to T4/T5. |
 | T1B | later CI extensions | `t1/ci-ext` | after T6/T7/T12 | pending | | |
@@ -72,6 +72,7 @@ Local checks at f01ca19 all exit 0: `npm ci`, lint, verify, `pack:check`, `npm t
 
 ## Consumer coordination
 
+- 2026-10-04: the T3.1 pin `705bb91` (min.js `34f856f9…`) and the combined T3.1+T11 pin `4b99a2b` (min.js `8b560049…`, 42,421 / 11,859 B) were sent to the coordinator.
 - 2026-10-03: the T4 pin `a6d3f0e` (min.js `6f5b1f79…`, 40,245 / 10,991 B) was sent to the coordinator, now likely `webaudio-tinysynth-03` after the second crash. This supervisor is now `webaudio-tinysynth-a0`.
 - Session names change after restarts. After the 2026-10-03 container crash, the consumer coordinator is `webaudio-tinysynth-33` (formerly `webaudio-tinysynth-15`; the D-028 note first went to `onchain-tinysynth-9b`, a read-only helper, by mistake), and this supervisor is `webaudio-tinysynth-b1` (formerly `-88`). Run `ListAgents` and confirm before messaging.
 - 2026-10-03: interim pinning was offered to the onchain-tinysynth agent (session `webaudio-tinysynth-15`): pin an `improve/integration` SHA plus its min.js sha256, with no class declaration against interim pins. The pin candidate offered was `4b29ff1` / min.js `b49e8ceb…`, and the consumer adopted it (below).
