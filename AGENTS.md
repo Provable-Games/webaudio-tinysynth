@@ -9,7 +9,7 @@
 ## Build, Test, and Development Commands
 
 - `npm install`: install development tools; the library has no runtime dependencies.
-- `npm run build`: use Terser to regenerate the minified library and source map. Include both generated files with source changes.
+- `npm run build`: use the pinned Terser to regenerate the minified library and source map. Do not commit them in pull requests: CI rebuilds both on `improve/integration` after each merge, and `main` receives them only through a release PR (`release/vX.Y.Z`).
 - `npm test`: run differential playback, fractional-tempo, and loop-end regression scripts against both library builds.
 - `python3 -m http.server 8000`: serve the repository; open `http://localhost:8000/simple.html` or another demo.
 - `PLAYWRIGHT_CORE=/path/to/node_modules/playwright-core node tests/browser-smoke.js`: run the optional offline browser check. Install Playwright Core and matching Chromium separately; this script is outside `npm test`.
@@ -18,13 +18,13 @@
 
 Use two-space indentation, double-quoted strings, and semicolons. Match the compact surrounding style in the library; tests use modern Node.js JavaScript. Use camelCase for functions and properties, retaining established API names such as `loadMIDI` and `setLoopEnd`. Name test scripts descriptively, for example `tests/loop-end.js`.
 
-No formatter or linter is configured. Edit the source and regenerate distribution files. Preserve browser, CommonJS, and AMD exports and keep the library self-contained.
+No formatter or linter is configured. Edit the source, never `webaudio-tinysynth.min.js` or its map. Preserve browser, CommonJS, and AMD exports and keep the library self-contained.
 
 ## Testing Guidelines
 
 Tests use custom Node.js scripts and `tests/harness.js`, without a testing framework or numerical coverage threshold. Add focused regression cases for playback changes and reuse the deterministic clock and MIDI generator.
 
-Differential tests require upstream commit `3d75aee` in local Git history. Use a full checkout or set `TINYSYNTH_REFERENCE` to that commit's original source; the harness verifies its SHA-256. Rebuild before testing source changes.
+Differential tests require upstream commit `3d75aee` in local Git history. Use a full checkout or set `TINYSYNTH_REFERENCE` to that commit's original source; the harness verifies its SHA-256. Rebuild before testing source changes (on `improve/integration` the test runners build their own fresh copy), and do not commit the rebuilt files.
 
 ## Commit & Pull Request Guidelines
 
