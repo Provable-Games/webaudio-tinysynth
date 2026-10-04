@@ -415,11 +415,11 @@ The minified file starts with the source's license header and has no `sourceMapp
 
 ### Releases
 
-On `main`, the minified file and its map change only in a release, made by hand:
+On `main`, the minified file and its map change only in a release, made by hand. The steps for the first release, `v2.0.0`, cut once `improve/integration` has been merged into `main`:
 
-1. From `main`, create `release/vX.Y.Z`. Bump the version with `npm version X.Y.Z --no-git-tag-version` (it updates `package.json` and `package-lock.json`), run `npm run build`, and commit the version change and both files.
-2. Open a pull request into `main`; `build-verify` requires both files to equal a fresh build. After it is squash-merged, tag the merge commit and push the tag: `git tag -s vX.Y.Z <merge sha>` and `git push origin vX.Y.Z`.
-3. Run `gh release create vX.Y.Z webaudio-tinysynth.min.js webaudio-tinysynth.min.js.map` from a checkout of the tag, with the SHA-256 and sizes from `npm run size` in the notes.
+1. From `main`, create `release/v2.0.0`. Set the version in `package.json` and `package-lock.json` if it is not already the release's (`npm version 2.0.0 --no-git-tag-version`), run `npm run build`, and commit both generated files.
+2. Open a pull request into `main`; `build-verify` requires both files to equal a fresh build. After it is squash-merged, tag the merge commit and push the tag: `git tag -s v2.0.0 <merge sha>` and `git push origin v2.0.0`.
+3. Run `gh release create v2.0.0 webaudio-tinysynth.min.js webaudio-tinysynth.min.js.map` from a checkout of the tag, with the SHA-256 and sizes from `npm run size` in the notes.
 
 ## License
 
