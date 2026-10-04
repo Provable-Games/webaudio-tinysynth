@@ -690,13 +690,13 @@ function WebAudioTinySynthCore(target) {
     _cv:(ch,v,t,k,hi,i)=>[this._ch(ch),this._num(k,v,hi,i),this._time(t)],
     setMasterVol:(v)=>{
       if(v!=undefined)
-        this.masterVol=this._num("masterVol",v,1/0);
+        this.masterVol=this._num("masterVol",v,3.4e38); // within float32, as AudioParam values are
       if(this.out)
         this.out.gain.value=this.masterVol;
     },
     setReverbLev:(v)=>{
       if(v!=undefined)
-        this.reverbLev=this._num("reverbLev",v,1/0);
+        this.reverbLev=this._num("reverbLev",v,4.25e37); // float32 / 8: the reverb gain is 8x
       var r=parseFloat(this.reverbLev);
       if(this.rev&&!isNaN(r))
         this.rev.gain.value=r*8;
@@ -766,24 +766,26 @@ function WebAudioTinySynthCore(target) {
          throws, and an ignored rejection is handled. A newer call or the signal aborts the
          request; dispose() settles the promise and discards the response when it arrives. */
       const s=o && o.signal,r=new Promise((res,rej)=>{
+        // The signal's reason, or an AbortError when it has none (or a falsy one)
+        const why=()=>s.reason || (window.DOMException ? new window.DOMException("Aborted","AbortError") : Object.assign(Error("Aborted"),{name:"AbortError"}));
         if(!url)
           throw new TypeError("url");
         if(this._dead)
           throw CodedError("SYNTH_DISPOSED");
         if(s && s.aborted)
-          throw s.reason;
+          throw why();
         const x=new XMLHttpRequest(),s0=this.song,
           f=(e,v)=>{ // settles once and unhooks the load
             if(this._pend.delete(d)){
               s && s.removeEventListener("abort",a);
-              e ? rej(e) : res(v);
+              v ? res(v) : rej(e); // v, the response, is an ArrayBuffer
             }
           },
           d=(e)=>{ // dispose() calls it without e; a newer load with e, and aborts the request
             f(CodedError(e ? "LOAD_SUPERSEDED" : "SYNTH_DISPOSED"));
             e && x.abort();
           },
-          a=()=>{ f(s.reason); x.abort(); };
+          a=()=>{ f(why()); x.abort(); };
         x.open("GET",url);
         x.responseType="arraybuffer";
         s && s.addEventListener("abort",a); // throws for a bad signal, before anything changes
@@ -1103,7 +1105,7 @@ function WebAudioTinySynthCore(target) {
       const d={g:0,w:"sine",t:1,f:0,v:0.5,a:0,h:0.01,d:0.01,s:0,r:0.05,p:1,q:1,k:0},e="operator "+i+" ";
       if(typeof o!="object" || !o)
         throw new TypeError(e+"is not an object");
-      const c=Object.assign({},o);
+      const c=Object.assign(Object.create(null),o); // an own __proto__ key stays data
       for(const k in d){
         if(c[k]===undefined)
           c[k]=d[k];
