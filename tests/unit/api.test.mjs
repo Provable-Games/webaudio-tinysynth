@@ -28,13 +28,26 @@ const settle = (p) => p.then((v) => ["resolved", v], (e) => ["rejected", e]);
 /*
  * A synth on the harness's mock WebAudio, as H.createSynth makes it ({synth,
  * env, trace, notes}), but its contexts report a 2 kHz sample rate, so the
- * generated noise and reverb buffers are short and construction is fast.
- * Nothing here depends on the sample rate.
+ * generated noise and reverb buffers are short and construction is fast
+ * (nothing here depends on the rate), and its AudioParams take only float32
+ * values, as WebIDL makes real engines do: a value past the float32 range
+ * throws a TypeError. `setup(sandbox)` runs before the library is loaded.
  */
-function synthFor(variant, opts) {
+function synthFor(variant, opts, setup) {
   const trace = [], notes = [];
   const env = H.createEnvironment(trace);
-  env.sandbox.AudioContext = class extends env.sandbox.AudioContext { constructor() { super(); this.sampleRate = 2000; } };
+  const Base = env.sandbox.AudioContext;
+  const P = Object.getPrototypeOf(new Base().createGain().gain);
+  trace.length = 0;
+  const f32 = (v) => { if (!Number.isFinite(Math.fround(v))) throw new TypeError("The provided float value is non-finite."); };
+  const value = Object.getOwnPropertyDescriptor(P, "value");
+  Object.defineProperty(P, "value", { get: value.get, set(v) { f32(v); value.set.call(this, v); } });
+  for (const m of ["setValueAtTime", "linearRampToValueAtTime", "exponentialRampToValueAtTime", "setTargetAtTime"]) {
+    const call = P[m];
+    P[m] = function (v, ...rest) { f32(v); return call.call(this, v, ...rest); };
+  }
+  env.sandbox.AudioContext = class extends Base { constructor() { super(); this.sampleRate = 2000; } };
+  if (setup) setup(env.sandbox);
   vm.runInContext(variant.source, env.sandbox, { filename: variant.name });
   const synth = new env.sandbox.WebAudioTinySynth(opts);
   const note = synth._note;
@@ -92,8 +105,8 @@ const CONTRACTS = [
   ]),
   ["allSoundOff", (x) => [x], "channel", 0, 15, true],
   ["resetAllControllers", (x) => [x], "channel", 0, 15, true],
-  ["setMasterVol", (x) => [x], "masterVol", 0, null, false, true],
-  ["setReverbLev", (x) => [x], "reverbLev", 0, null, false, true],
+  ["setMasterVol", (x) => [x], "masterVol", 0, 3.4e38, false, true], // float32, the AudioParam range
+  ["setReverbLev", (x) => [x], "reverbLev", 0, 4.25e37, false, true], // float32 / 8: the reverb gain is 8x
   ["setQuality", (x) => [x], "quality", 0, 1, true, true],
   ["setVoices", (x) => [x], "voices", 1, 0xffffffff, true],
   ["setLoopEnd", (x) => [x], "loopEnd", 0, null, true],
@@ -113,7 +126,8 @@ function cases(lo, hi, integer, optional) {
   if (!integer) accept.push(lo + 0.5);
   if (optional) accept.push(undefined, null);
   const range = [lo - 1, NaN, Infinity, -Infinity, "abc", "1x"];
-  if (hi !== null) range.push(hi + 1, String(hi + 1));
+  const over = hi > 2 ** 53 ? hi * 1.03 : hi + 1; // hi + 1 rounds back to hi above 2^53
+  if (hi !== null) range.push(over, String(over));
   if (integer) range.push(lo + 0.5, String(lo + 0.5));
   const type = ["", "  ", true, false, {}, [], () => 1];
   if (!optional) type.push(undefined, null);
@@ -143,6 +157,36 @@ for (const variant of variants) {
         expect(fails).toEqual([]);
       });
     }
+
+    test("masterVol and reverbLev stay within float32: past it a RangeError before any change, and a lazy synth then starts and disposes normally (review F1)", async () => {
+      const probe = synthFor(variant);
+      expect(thrown(() => { probe.synth.out.gain.value = 1e39; }).name).toBe("TypeError"); // control: the mock is float32-strict
+      for (const [m, limit, past] of [["setMasterVol", 3.4e38, 3.5e38], ["setReverbLev", 4.25e37, 4.3e37]]) {
+        const s = synthFor(variant);
+        const before = snapshot(s);
+        for (const x of [past, 1e39, Number.MAX_VALUE]) expect(thrown(() => s.synth[m](x)).name).toBe("RangeError");
+        expect(snapshot(s)).toBe(before);
+        expect(thrown(() => s.synth[m](limit))).toBe(null);
+        const lazy = synthFor(variant, { lazy: true });
+        expect(thrown(() => lazy.synth[m](1e39)).name).toBe("RangeError");
+        lazy.synth.noteOn(0, 60, 100);
+        expect([lazy.synth.getAudioContext() !== null, lazy.synth._own]).toEqual([true, 1]);
+        await lazy.synth.dispose();
+        expect(calls(lazy.trace).filter((c) => c[0] === "close").length).toBe(1);
+      }
+    });
+
+    test("a negative loopEnd written to the property (not validated, unlike setLoopEnd) cannot make a zero-length loop spin: it plays once and stops (review F4)", () => {
+      const s = synthFor(variant);
+      s.synth.loadMIDI(song([noteOn(0, 0, 60, 100), noteOff(0, 0, 60)]));
+      s.synth.setLoop(1);
+      s.synth.loopEnd = -480;
+      const from = s.notes.length;
+      s.synth.playMIDI();
+      for (let i = 0; i < 50; ++i) s.env.step();
+      expect(s.synth.getPlayStatus()).toEqual({ play: 0, maxTick: 0, curTick: 0 });
+      expect(s.notes.length - from).toBe(1);
+    });
 
     test("numeric strings are read with Number() and stored as numbers", () => {
       const s = synthFor(variant);
@@ -266,6 +310,8 @@ for (const variant of variants) {
       const s = synthFor(variant, { lazy: true });
       const before = snapshot(s);
       for (const msg of [undefined, null, 0x90, "\x90<d", true]) expect(thrown(() => s.synth.send(msg)).name).toBe("TypeError");
+      // a byte that cannot become a number at all: a TypeError, still before any change
+      for (const msg of [[Symbol("x"), 60, 100], [0x90, 1n, 100], [0xf0, 0x7f, Symbol("x"), 0xf7]]) expect(thrown(() => s.synth.send(msg)).name).toBe("TypeError");
       for (const t of [-1, NaN, Infinity, "soon"]) expect(thrown(() => s.synth.send([0x90, 60, 100], t)).name).toBe("RangeError");
       expect(snapshot(s)).toBe(before);
     });
@@ -346,6 +392,25 @@ for (const variant of variants) {
         return calls(t.trace, from).map((c) => c.filter((x) => typeof x !== "string" || !x.includes("#")));
       };
       expect(play([{ w: "square", v: 0.3, b: 5, c: "x" }])).toEqual(play([{ w: "square", v: 0.3 }]));
+    });
+
+    test("a __proto__ key is kept as data: it cannot supply fields or link the installed copy to the caller's object (review F2)", () => {
+      const s = synthFor(variant);
+      const p = JSON.parse('[{"__proto__":{"w":"square","g":3},"v":0.3}]');
+      const linked = Object.getOwnPropertyDescriptor(p[0], "__proto__").value;
+      s.synth.setTimbre(0, 5, p);
+      const op = s.synth.program[5].p[0];
+      expect(Object.getPrototypeOf(op)).toBe(null);
+      expect([op.w, op.g, Object.prototype.hasOwnProperty.call(op, "w")]).toEqual(["sine", 0, true]);
+      expect(JSON.stringify(s.synth.program[5].p)).toBe('[{"__proto__":{"w":"square","g":3},"v":0.3,"g":0,"w":"sine","t":1,"f":0,"a":0,"h":0.01,"d":0.01,"s":0,"r":0.05,"p":1,"q":1,"k":0}]');
+      linked.w = "saw";
+      expect(s.synth.program[5].p[0].w).toBe("sine");
+      s.synth.setTimbre(0, 6, [{ ["__proto__"]: { w: "saw" } }]);
+      expect(s.synth.program[6].p[0].w).toBe("sine");
+      const from = s.trace.length;
+      s.synth.send([0xc0, 5]);
+      s.synth.noteOn(0, 60, 100, 1);
+      expect(calls(s.trace, from).filter((c) => c[0] === "type").map((c) => c[2])).toEqual(["sine"]); // not the caller's later "saw"
     });
 
     test("rejections: waves, routing, fields, operators and arrays, with nothing installed", () => {
@@ -465,8 +530,8 @@ for (const variant of variants) {
      * fail() or browserAbort(); abort() fires the abort event at once, as
      * browsers do. respond() after an abort() simulates a stale response.
      */
-    function withXHR(opts) {
-      const s = synthFor(variant, opts);
+    function withXHR(opts, setup) {
+      const s = synthFor(variant, opts, setup);
       const reqs = [];
       s.env.sandbox.XMLHttpRequest = class {
         constructor() { reqs.push(this); this.status = 0; this.response = null; this.sent = false; this.aborted = false; }
@@ -553,6 +618,41 @@ for (const variant of variants) {
       expect(await settle(q)).toEqual(["rejected", "changed my mind"]);
     });
 
+    test("an abort with no reason or a falsy one rejects with an AbortError and never resolves (review F3, F6)", async () => {
+      for (const reason of [0, "", null, false, NaN]) {
+        const s = withXHR();
+        s.synth.loadMIDI(SONG_A);
+        const ac = new AbortController();
+        const p = s.synth.loadMIDIUrl("x.mid", { signal: ac.signal });
+        ac.abort(reason);
+        const [how, e] = await settle(p);
+        expect([String(reason), how, e && e.name, e && e.message, s.reqs[0].aborted, tick(s)]).toEqual([String(reason), "rejected", "AbortError", "Aborted", true, 960]);
+        const pre = new AbortController();
+        pre.abort(reason);
+        const [how2, e2] = await settle(s.synth.loadMIDIUrl("y.mid", { signal: pre.signal }));
+        expect([how2, e2 && e2.name, s.reqs.length]).toEqual(["rejected", "AbortError", 1]);
+      }
+      // A signal from an engine without AbortSignal.reason (before 2022).
+      const s = withXHR();
+      let fire = null;
+      const old = { aborted: false, addEventListener: (type, f) => { fire = f; }, removeEventListener: () => {} };
+      const p = s.synth.loadMIDIUrl("x.mid", { signal: old });
+      old.aborted = true;
+      fire();
+      const [how, e] = await settle(p);
+      expect([how, e.name, e.message, s.reqs[0].aborted]).toEqual(["rejected", "AbortError", "Aborted", true]);
+      expect((await settle(s.synth.loadMIDIUrl("y.mid", { signal: { aborted: true } })))[1].name).toBe("AbortError");
+    });
+
+    test("that AbortError is a DOMException where the global scope has one", async () => {
+      const s = withXHR(undefined, (sandbox) => { sandbox.DOMException = DOMException; });
+      const ac = new AbortController();
+      const p = s.synth.loadMIDIUrl("x.mid", { signal: ac.signal });
+      ac.abort(0);
+      const [how, e] = await settle(p);
+      expect([how, e instanceof DOMException, e.name, e.message]).toEqual(["rejected", true, "AbortError", "Aborted"]);
+    });
+
     test("an already aborted signal rejects without a request; a signal that is not an AbortSignal rejects TypeError without a request", async () => {
       const s = withXHR();
       const ac = new AbortController();
@@ -630,6 +730,7 @@ for (const variant of variants) {
       const d = s.synth.dispose();
       const [how, e] = await settle(p);
       expect([how, e.code, e.message, pending(s)]).toEqual(["rejected", "SYNTH_DISPOSED", "SYNTH_DISPOSED", 0]);
+      expect(s.reqs[0].aborted).toBe(false); // settled and discarded, not aborted (supervisor decision, tasks/T5.md section 5)
       await d;
       const from = s.trace.length;
       s.reqs[0].respond(200, SONG_B);

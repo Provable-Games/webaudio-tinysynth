@@ -6,7 +6,8 @@
  * statuses outside 200-299 reject HTTP_STATUS (a redirect is followed); an
  * empty, non-MIDI or truncated body rejects with loadMIDI()'s code; a reset or
  * refused connection rejects NETWORK_ERROR; opts.signal aborts the request;
- * an already aborted signal sends nothing; a newer URL or a direct loadMIDI()
+ * an already aborted signal sends nothing; an abort with a falsy reason
+ * (abort(0)) still rejects with an AbortError; a newer URL or a direct loadMIDI()
  * wins a race; dispose() during a load settles it and installs nothing; every
  * failure keeps the last valid song; and fire-and-forget calls cause no
  * unhandled rejection, while a control rejection made on purpose is seen.
@@ -46,6 +47,7 @@ function pageScript() {
       return loads.length - 1;
     },
     abort: function (id) { loads[id].ac.abort(); },
+    abortWith: function (id, reason) { loads[id].ac.abort(reason); },
     outcome: function (id) {
       var r = loads[id];
       return { state: r.state, isPromise: r.isPromise, byteLength: r.byteLength, name: r.name, code: r.code, status: r.status };
@@ -79,6 +81,7 @@ const ev = {
   load: (p, url, abort) => p.page.evaluate(([u, a]) => window.__t5.load(u, a), [url, abort || null]),
   outcome: (p, id) => p.page.evaluate((i) => window.__t5.outcome(i), id),
   abort: (p, id) => p.page.evaluate((i) => window.__t5.abort(i), id),
+  abortWith: (p, id, reason) => p.page.evaluate(([i, r]) => window.__t5.abortWith(i, r), [id, reason]),
   bytes: (p, b64) => p.page.evaluate((b) => window.__t5.loadBytes(b), b64),
   status: (p) => p.page.evaluate(() => window.__t5.status()),
   done: (p, url) => p.page.evaluate((u) => window.__t5.done(u), url),
@@ -184,6 +187,22 @@ function cases(shared) {
         t.check("abort: rejects with the signal's AbortError", o.state === "rejected" && o.name === "AbortError", JSON.stringify(o));
         t.check("abort: the request is aborted", end.outcome === "abort", JSON.stringify(end));
         kept("abort", before, await ev.status(p));
+      }
+      {
+        const before = await fresh(p);
+        const key = "t5-abort0-" + build + "-" + Date.now();
+        server.hold(key);
+        const url = tag("/midi/hold/" + key + "/ws.mid");
+        const id = await ev.load(p, url, "later");
+        await until(() => reached(url).length, "the held request to reach the server");
+        await ev.abortWith(p, id, 0);
+        const o = await settled(p, id);
+        const end = await loadend(p, url);
+        server.release(key);
+        await sleep(300);
+        t.check("abort(0), a falsy reason: rejects with an AbortError, never resolves", o.state === "rejected" && o.name === "AbortError", JSON.stringify(o));
+        t.check("abort(0): the request is aborted", end.outcome === "abort", JSON.stringify(end));
+        kept("abort(0)", before, await ev.status(p));
       }
       {
         await fresh(p);

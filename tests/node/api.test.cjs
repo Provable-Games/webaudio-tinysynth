@@ -49,6 +49,7 @@ const FAILURES = [
   "start('c.mid'); answer(reqs[2], 200, new ArrayBuffer(3));", // SMF_INVALID_HEADER
   "start('d.mid'); reqs[3].onerror();", // NETWORK_ERROR
   "const ac = new AbortController(); start('e.mid', { signal: ac.signal }); ac.abort();", // AbortError
+  "const ac0 = new AbortController(); start('e0.mid', { signal: ac0.signal }); ac0.abort(0);", // a falsy reason: AbortError (review F3)
   "start('f.mid', { signal: {} });", // TypeError: not an AbortSignal
   "start('g.mid');", // pending at dispose(): SYNTH_DISPOSED
   "synth.dispose().then(() => {",
@@ -77,7 +78,7 @@ for (const build of builds) {
       ].join("\n"));
       assert.deepEqual([r.status, r.signal], [0, null], r.out);
       const got = JSON.parse(/^got (\[.*\]) seen/m.exec(r.out)[1]);
-      assert.deepEqual(got.slice().sort(), ["AbortError", "HTTP_STATUS", "LOAD_SUPERSEDED", "NETWORK_ERROR", "SMF_INVALID_HEADER", "SYNTH_DISPOSED",
+      assert.deepEqual(got.slice().sort(), ["AbortError", "AbortError", "HTTP_STATUS", "LOAD_SUPERSEDED", "NETWORK_ERROR", "SMF_INVALID_HEADER", "SYNTH_DISPOSED",
         "SYNTH_DISPOSED", "TypeError", "TypeError"]);
       assert.match(r.out, /seen \[\]$/m);
     });
