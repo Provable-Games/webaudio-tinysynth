@@ -31,8 +31,9 @@ This is [g200kg/webaudio-tinysynth](https://github.com/g200kg/webaudio-tinysynth
   - With `loopEnd` set, the first pass keeps the rest before the song's first event, as every later pass already did: `playMIDI()` from the start (after `loadMIDI()` or `locateMIDI(0)`, or on a finished song) sounds tick 0 0.1 s later and each event at its own tick's time. Upstream, and this fork with `loopEnd` unset, plays the first event at once. A seek to a later tick still resumes at the next event.
 - `stopMIDI()` now also stops drums and queued controller changes: every drum hit, sounding or already scheduled, stops, and channel volume, pan and modulation changes scheduled for later are cancelled. A seek (`locateMIDI()`) stops the same way. Upstream let drum hits scheduled up to 0.2 s ahead, and queued controller changes, play on after a stop.
 - An instance can start from a user gesture and release everything it uses: the constructor options `context`, `destination` and `lazy`, `resume()` and `dispose()` are new (see [Functions](#functions)). `setAudioContext()` now stops and disconnects the previous graph, and closes the previous context if the synth created it. Ended voices are disconnected, `send()` no longer leaves unhandled promise rejections, and on an `OfflineAudioContext`, `playMIDI()` throws an `Error` with `code` `AUDIO_CONTEXT_OFFLINE` (schedule notes with explicit times instead). Upstream kept every context, graph and timer alive.
+- `setTimbre()` checks waveform names and filter fields before changing anything. It throws a `TypeError` or `RangeError` for an operator whose `w` is neither built in nor registered, a filter field without `fl`, an unknown `fl`, a filter on a modulator (`g` ≠ 0), or an `ff`, `fq` or `fk` out of range. Timbres that use only built-in waveforms and no filter fields are accepted as before.
 
-**What is added:** the `loopEnd` property and `setLoopEnd(ticks)`. When looping, each pass can start on a bar boundary instead of on the song's last event (see `setLoopEnd()` below). Unset, looping works exactly as upstream. `getPlayStatus()` has a fourth field, `startTime`: when tick 0 of the current pass sounds, for syncing visuals to the music.
+**What is added:** the `loopEnd` property and `setLoopEnd(ticks)`. When looping, each pass can start on a bar boundary instead of on the song's last event (see `setLoopEnd()` below). Unset, looping works exactly as upstream. `getPlayStatus()` has a fourth field, `startTime`: when tick 0 of the current pass sounds, for syncing visuals to the music. Custom waveforms: `setSampleWave(name, samples)` registers a single-cycle table (for example a 4-bit stepped triangle, a 12.5 % pulse or an LFSR noise table) and `setHarmonicWave(name, real, imag)` a harmonic wave; a timbre operator uses one through its `w` field. Registered waves survive `setQuality()` (custom timbres still need reinstalling) and context changes. Optional fixed filters on an operator's output: the timbre fields `fl`, `ff`, `fq` and `fk` (see [Timbre Object Structure](#timbre-object-structure)); a timbre without `fl` builds exactly the same graph as before.
 
 **What is unchanged:** `new WebAudioTinySynth(options)`, every upstream function documented below apart from the `loadMIDI`, `playMIDI`, `locateMIDI`, `stopMIDI` and `getPlayStatus` changes above, and the CommonJS / AMD / `window.WebAudioTinySynth` exports.
 
@@ -213,12 +214,19 @@ Settings are changed with the functions below (`setMasterVol()`, `setReverbLev()
 > If `mode=0` timestamp is a time of in-use audioContext's currentTime timeline.
 > If `mode=1` timestamp is HighResolutionTime timeline.
 
+**setSampleWave(name, samples)**
+> Registers a single-cycle sample table under `name` (`n` followed by a letter or `_`, then up to 30 letters, digits or `_`; `n0`, `n1` and other names with a digit second are reserved). `samples` is an array or typed array of one or more numbers in −1..1, copied. Each sample is held for `k = max(1, round(sampleRate/(440·N)))` frames, so the wave plays near its stored rate with sharp steps, and the table's home pitch is `sampleRate/(N·k)`: an operator's frequency (`note × t + f`) is the frequency of one whole cycle, for playback, the pitch envelope and FM. Steps are exact at the home pitch; at other pitches the browser resamples, so edges are interpolated (Chromium and Safari linearly, Firefox band-limited). Long tables (for example a 32,767-step LFSR) are accepted; at a literal `t` they play at very high rates, which Firefox renders slowly, so set `t`/`f` for the cycle rate you want. Registering a name again replaces it for later notes. A one-sample table plays as a constant (DC). Throws `TypeError` for an invalid name or a non-array, `RangeError` for other invalid data.
+
+**setHarmonicWave(name, real, imag)**
+> Registers a periodic wave under `name` (`w` followed by a letter or `_`, then up to 30 letters, digits or `_`; `w9999` and other names with a digit second are reserved), built with `createPeriodicWave(real, imag)`: element `i` is harmonic `i` (cosine in `real`, sine in `imag`), element 0 (DC) is ignored, and the peak is normalized to 1. `real` and `imag` are arrays or typed arrays of equal length, at least 2, of numbers that are finite as 32-bit floats; they are copied. Only the coefficients' ratios matter: very large or very small sets are rescaled before use.
+
 **setTimbre(m,n,p)**
 > Even webaudio-tinysynth has defaultly GM mapped timbre set, This function can overwrite with user-definable timbre.  
 > `m=0` : timbre for normal channel.  
 > `m=1` : timbre for rhythm channel (ch=9).  
 > `n` : program number for normal channel or notenumber for rhythm channel.  
-> `p` : timbre object. Source of this object can be created by soundedit.html **(Details are not yet documented)**
+> `p` : timbre object. Source of this object can be created by soundedit.html **(Details are not yet documented)**  
+> Every operator's `w` must be a built-in waveform (`sine`, `square`, `sawtooth`, `triangle`, `w9999`, `n0`, `n1`) or a registered name, and filter fields must be valid (see [Timbre Object Structure](#timbre-object-structure)); otherwise `setTimbre` throws a `TypeError` or `RangeError` and changes nothing. For compatibility, a name that code has written into the synth's internal `noiseBuf` or `wave` objects is still accepted and plays as before. This is unsupported: those objects are rebuilt whenever the AudioContext changes, and they do not exist before a lazy synth's first use. Register waves with `setSampleWave()` or `setHarmonicWave()` instead.
 
 **reset()**
 > Reset all channel to initial state. Including all controllers, program, chVol, pan and bendRange.
@@ -336,6 +344,8 @@ Each element of the array means a oscillator and object member means :
      "w9999" (summing 1-4 harmonics)  
      "n0" (white noise)  
      "n1" (metalic noise)  
+     "n…" (a wave registered with `setSampleWave`)  
+     "w…" (a wave registered with `setHarmonicWave`)  
 * v: volume  
 * t: tune factor according to note#
 * f: fixed frequency in Hz
@@ -347,6 +357,12 @@ Each element of the array means a oscillator and object member means :
 * p: pitch bend
 * q: pitch bend speed factor
 * k: volume key tracking factor
+* fl: optional fixed filter on this operator's output, `"lowpass"`, `"highpass"` or `"bandpass"`. Only on an operator with `g:0`. Without `fl` there is no filter.
+* ff: cutoff (low- and high-pass) or centre (band-pass) frequency, a normal positive 32-bit float (at least 2^-126): Hz, or with `fk:1` a multiple of the note's frequency (including master, channel and scale tuning; not the operator's `t` or `f`, bend or pitch envelope). Required with `fl`. Clamped to 0.45 × the sample rate.
+* fq: resonance as a linear Q, a normal positive 32-bit float (at least 2^-126), default 0.7071 (`Math.SQRT1_2`). Low- and high-pass are given `20·log10(fq)` dB, band-pass `fq`.
+* fk: 1 to track the note frequency, 0 (default) for fixed Hz.
+
+The filter is fixed for the life of the note, and is released with the voice. Example, a hi-hat through a 3 kHz high-pass: `[{w:"n1",t:0,f:440,v:0.3,d:0.04,fl:"highpass",ff:3000}]`.
 
 You can test how these parameter work with 'Timbre Editor' panel in 'soundedit.html'.  And the created timbre can be used with `setTimbre()` function.
 

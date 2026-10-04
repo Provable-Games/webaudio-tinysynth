@@ -44,6 +44,17 @@ Modifications by Provable Games, based on upstream commit
     started from tick 0 keeps the rest before its first event, as later
     passes already did, and getPlayStatus() has a startTime: the
     AudioContext time at which tick 0 of the current pass sounds.
+  - webaudio-tinysynth.js: added setSampleWave() and setHarmonicWave(),
+    a registry of custom single-cycle and harmonic waveforms that
+    timbres reference by name. Sample tables are held to a home pitch
+    near 440 Hz and keep their own pitch basis; registered waves survive
+    setQuality() and context changes. setTimbre() rejects unknown wave
+    names.
+  - webaudio-tinysynth.js: added optional fixed operator filters (timbre
+    fields fl, ff, fq and fk): a BiquadFilterNode between an output
+    operator's gain and its channel, key-trackable and clamped below
+    Nyquist, released with its voice. setTimbre() rejects invalid filter
+    fields before any change.
   - webaudio-tinysynth.min.js and its source map are regenerated from
     the modified source.
   - Demo pages and README updated to use the JavaScript API; tests added.
