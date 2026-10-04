@@ -20,7 +20,9 @@ All GPG-signed (`git log --format='%h %G?'` shows `G`).
 | `df1fa8c` | Rebuild the generated files in CI after each push to improve/integration | `.github/workflows/dist.yml` (new) |
 | `4545631` | Document that CI generates min.js and which commits to pin | `README.md` (development and verification sections; see §8) |
 | `d0e1ed6` | Point a fresh-rule failure at CI's rebuild commit | `scripts/check-dist.js` (message only) |
-| this record | Record T1-dist | `docs/improvements/tasks/T1-dist.md` |
+| `2fa7967`, `91fd11b` | Record T1-dist; paste the README draft verbatim | `docs/improvements/tasks/T1-dist.md` |
+| `a8d4e15` | Require a fresh build on every pull request into main (review, §11) | `scripts/check-dist.js`, `tests/node/check-dist.test.cjs`, `package.json` (node floor 140), `.github/workflows/ci.yml` (comments), `README.md` |
+| this update | Record the review round | this record |
 
 The committed min.js and map are byte-identical to the base (`git diff 19cb982 -- webaudio-tinysynth.min.js*` is empty), so this pull request passes its own new rule.
 
@@ -51,12 +53,13 @@ Job names are unchanged (`lint`, `build-verify`, `test`, `browser-smoke`, `brows
 
 | Event | Rule |
 | --- | --- |
-| `pull_request`, head `improve/integration` of this repository (#31) | **fresh**: committed equals a fresh build (`npm run verify`) |
-| any other `pull_request` (feature PRs into `improve/integration`; PRs into `main` from other branches; a fork's branch named `improve/integration`) | **unchanged**: in the merge commit, both files' blobs equal `HEAD^1`'s (the base tip). Failure prints the problem and `git checkout origin/<base> -- webaudio-tinysynth.min.js webaudio-tinysynth.min.js.map` |
+| `pull_request` into `main` (#31, and any hotfix or docs pull request into `main`) | **fresh**: committed equals a fresh build (`npm run verify`). Nothing rebuilds `main`, so whatever merges into it must already carry the build (review finding, §11) |
+| `pull_request` from this repository's `improve/integration` into another base | **fresh** |
+| any other `pull_request` (feature PRs into `improve/integration`, stacked PRs into feature branches, a fork's branch named `improve/integration`) | **unchanged**: in the merge commit, both files' blobs equal `HEAD^1`'s (the base tip). Failure prints the problem and `git checkout origin/<base> -- webaudio-tinysynth.min.js webaudio-tinysynth.min.js.map` |
 | `push` (to `main`), `workflow_dispatch` | **fresh** |
 | always | a fresh build and the source are inline-safe |
 
-Locally, `--unchanged-from=REF` applies merge semantics: it passes if HEAD's copy equals REF's or the merge base's (the branch did not touch it), and the working tree has no uncommitted change to either file. In the merge-ref checkout both collapse to `HEAD == HEAD^1`. `decide()`, `fromGithub()` and `checkUnchanged()` are exported and tested by `tests/node/check-dist.test.cjs` (13 tests, scratch git repositories with isolated git config).
+Locally, `--unchanged-from=REF` applies merge semantics: it passes if HEAD's copy equals REF's or the merge base's (the branch did not touch it), and the working tree has no uncommitted change to or deletion of either file. In the merge-ref checkout both collapse to `HEAD == HEAD^1`. `decide()`, `fromGithub()` and `checkUnchanged()` are exported and tested by `tests/node/check-dist.test.cjs` (14 tests, scratch git repositories with isolated git config).
 
 ### 2.3 Local development
 
@@ -136,7 +139,7 @@ Pull request rule, locally on simulated merge refs (`pr-scenario.log`, `pr-scena
 
 ### Draft README/NOTICE text (CONCURRENCY rule 4)
 
-Committed in `4545631`, so the supervisor can keep or drop that commit. Verbatim, for pasting if it is dropped. In "Development", the table rows for `npm run build`, `npm run size` and `npm run pack:check` become:
+Committed in `4545631` and amended by the review fix (§11), so the supervisor can keep or drop those hunks. Verbatim, for pasting if they are dropped. In "Development", the table rows for `npm run build`, `npm run size` and `npm run pack:check` become:
 
 ```markdown
 | `npm run build` | Minifies `webaudio-tinysynth.js` into `webaudio-tinysynth.min.js` and its source map with the pinned Terser. Every option is in `scripts/build.js`. `npm run build -- DIR` writes them to `DIR` instead of the repository root. CI runs this build after each merge; see below. |
@@ -147,14 +150,14 @@ Committed in `4545631`, so the supervisor can keep or drop that commit. Verbatim
 The bullet "Never edit `webaudio-tinysynth.min.js` or its map by hand. After changing the source, run `npm run build` and commit both files. CI fails if they differ from a fresh build." becomes these two bullets:
 
 ```markdown
-- Pull requests do not change `webaudio-tinysynth.min.js` or its map, and nobody edits them by hand. After each merge into `improve/integration`, CI (`.github/workflows/dist.yml`) rebuilds both with the pinned build, runs the tests against the new bytes and commits them as `github-actions[bot]`, titled `Rebuild webaudio-tinysynth.min.js for <commit>`. The `build-verify` check fails a feature pull request that changes either file; restore them with `git checkout origin/<base branch> -- webaudio-tinysynth.min.js webaudio-tinysynth.min.js.map` and commit. `node scripts/check-dist.js --unchanged-from=origin/<base branch>` runs the same check locally.
+- Pull requests do not change `webaudio-tinysynth.min.js` or its map, and nobody edits them by hand. After each merge into `improve/integration`, CI (`.github/workflows/dist.yml`) rebuilds both with the pinned build, runs the tests against the new bytes and commits them as `github-actions[bot]`, titled `Rebuild webaudio-tinysynth.min.js for <commit>`. The `build-verify` check fails a pull request into any branch other than `main` that changes either file; restore them with `git checkout origin/<base branch> -- webaudio-tinysynth.min.js webaudio-tinysynth.min.js.map` and commit. `node scripts/check-dist.js --unchanged-from=origin/<base branch>` runs the same check locally.
 - The test commands, `pack:check` and `size` build the current source into the ignored `.build/` directory first and test that, never the committed `webaudio-tinysynth.min.js`, so they leave tracked files unchanged. To test another copy, set `TINYSYNTH_MIN=path/to/file.min.js`. A test file run on its own reads `.build/`; refresh it with `node scripts/test-build.js`.
 ```
 
 The CI bullet becomes:
 
 ```markdown
-- CI (`.github/workflows/ci.yml`) runs the `lint`, `build-verify`, `test` and `browser-smoke` jobs on pull requests and on pushes to `main`. On the `improve/integration` → `main` pull request and on `main`, `build-verify` requires the committed files to equal a fresh build (`npm run verify`).
+- CI (`.github/workflows/ci.yml`) runs the `lint`, `build-verify`, `test` and `browser-smoke` jobs on pull requests and on pushes to `main`. Nothing rebuilds them on `main`, so on pull requests into `main` (normally from `improve/integration`, which carries CI's rebuild) and on pushes to `main`, `build-verify` requires the committed files to equal a fresh build (`npm run verify`).
 ```
 
 In "Verifying the minified build", after step 2 (indented under it):
@@ -177,3 +180,14 @@ No NOTICE text: this changes the CI process, not the library.
 - **Runner-image tools.** `commit` relies on `gh`, `jq`, `base64`, `gzip` and GNU `find` from the `ubuntu-24.04-arm` image; the self-test used them.
 - **Artifact integrity** rests on the build job's dependencies (§3).
 - **Direct test runs** (`node tests/tempo.js`, `npx vitest`) read whatever `.build/` holds; they do not rebuild. The npm scripts always rebuild.
+
+## 11. Review round 1 (PR #51, head `91fd11b`)
+
+All CI checks passed on `91fd11b`, including the three-engine Browser matrix (chromium 14 min, firefox 15 min, webkit 16 min) and the first CI run of the new `build-verify` rule. The Codex review gate failed on one HIGH finding, which the Claude review also raised as MEDIUM.
+
+| Finding | Decision | Change |
+| --- | --- | --- |
+| Codex HIGH, Claude MEDIUM: a pull request into `main` from any branch other than `improve/integration` got the `unchanged` rule. Nothing rebuilds `main`, so a source-changing hotfix into `main` would pass, leave `main`'s min.js stale, and break the README's "pin the head of `main`" guidance. Before this change, the drift checks prevented that. | Accepted | `decide()`: every `pull_request` into `main` gets `fresh`. `unchanged` is kept for every other base, including stacked pull requests into feature branches, because their files reach `improve/integration`, where CI rebuilds them. A docs pull request into a consistent `main` still passes. Test: hotfix, docs and fork pull requests into `main` get `fresh`; a stacked pull request gets `unchanged`. `ci.yml` comments, README CI bullet, §2.2 updated. |
+| Codex LOW: an uncommitted deletion of a generated file passed the local `--unchanged-from` check (the working-tree comparison was skipped when the file was missing). | Accepted | Missing working-tree file reported as `… is deleted in the working tree`. Test covers unstaged and staged deletions. |
+
+Both new assertions fail against the previous `check-dist.js` (2 of 14 tests, `_evidence/t1-dist/review-fix-vacuity.log`) and pass with the fix. Node floors are now 11 files and 140 tests, as printed by `npm run test:node`.
