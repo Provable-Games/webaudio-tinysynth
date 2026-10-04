@@ -184,7 +184,7 @@ for (const variant of variants) {
       const from = s.notes.length;
       s.synth.playMIDI();
       for (let i = 0; i < 50; ++i) s.env.step();
-      expect(s.synth.getPlayStatus()).toEqual({ play: 0, maxTick: 0, curTick: 0 });
+      expect(s.synth.getPlayStatus()).toEqual(H.playStatus(0, 0, 0));
       expect(s.notes.length - from).toBe(1);
     });
 
@@ -416,14 +416,31 @@ for (const variant of variants) {
       expect(calls(s.trace, from).filter((c) => c[0] === "type").map((c) => c[2])).toEqual(["sine"]); // not the caller's later "saw"
     });
 
+    test("the folded wave check (T11's _checkWave in _op): registered and legacy names pass, numeric fields still follow the one coercion rule (D-033)", () => {
+      const s = synthFor(variant);
+      s.synth.setSampleWave("nTri", [0, 0.5, 1, 0.5, 0, -0.5, -1, -0.5]);
+      s.synth.setHarmonicWave("wOrg", [0, 0, 0], [0, 1, 0.5]);
+      s.synth.noiseBuf.nLegacy = s.synth.noiseBuf.n0; // TinyChip writes buffers into noiseBuf itself (D-031)
+      s.synth.setTimbre(0, 3, [{ w: "nTri", t: "2", v: " 0.4 " }, { w: "wOrg", g: "1", t: 1 }, { w: "nLegacy", g: 12 }]);
+      expect(s.synth.program[3].p.map((o) => [o.w, o.g, o.t, o.v])).toEqual([["nTri", 0, 2, 0.4], ["wOrg", 1, 1, 0.5], ["nLegacy", 12, 1, 0.5]]);
+      for (const w of ["nOther", "wTri", "n__proto__", "nhasOwnProperty", "toString"]) {
+        const e = thrown(() => s.synth.setTimbre(0, 4, [{ w }]));
+        expect([e && e.name, e && e.message]).toEqual(["TypeError", "unknown wave: " + w]);
+      }
+      const lazy = synthFor(variant, { lazy: true }); // no context yet: no noiseBuf, so only built-in and registered names
+      lazy.synth.setSampleWave("nTri", [0, 1]);
+      expect(thrown(() => lazy.synth.setTimbre(0, 3, [{ w: "nTri" }]))).toBe(null);
+      expect(thrown(() => lazy.synth.setTimbre(0, 3, [{ w: "nLegacy" }])).message).toBe("unknown wave: nLegacy");
+    });
+
     test("rejections: waves, routing, fields, operators and arrays, with nothing installed", () => {
       const GOOD = { w: "sine", v: 0.5 };
       const BAD = [
-        ["unknown wave", [{ w: "saw" }], "TypeError", "operator 0 w"],
-        ["unregistered w name", [{ w: "w1" }], "TypeError", "operator 0 w"],
-        ["unknown n name", [{ w: "n2" }], "TypeError", "operator 0 w"],
-        ["wave that is not a string", [{ w: 5 }], "TypeError", "operator 0 w"],
-        ["null wave", [{ w: null }], "TypeError", "operator 0 w"],
+        ["unknown wave", [{ w: "saw" }], "TypeError", "unknown wave: "],
+        ["unregistered w name", [{ w: "w1" }], "TypeError", "unknown wave: "],
+        ["unknown n name", [{ w: "n2" }], "TypeError", "unknown wave: "],
+        ["wave that is not a string", [{ w: 5 }], "TypeError", "unknown wave: "],
+        ["null wave", [{ w: null }], "TypeError", "unknown wave: "],
         ["FM from operator 0", [{ g: 1 }], "RangeError", "operator 0 g"],
         ["AM from operator 0", [{ g: 11 }], "RangeError", "operator 0 g"],
         ["FM into itself", [GOOD, { g: 2 }], "RangeError", "operator 1 g"],

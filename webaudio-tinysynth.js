@@ -1098,7 +1098,7 @@ function WebAudioTinySynthCore(target) {
     },
     _op:(o,i)=>{
       /* A normalized copy of operator i. Missing or undefined fields take the defaults below,
-         and other keys are copied and ignored. w is a known wave (_checkWave). g is 0 (output),
+         and other keys are copied and ignored. w is a known wave (below). g is 0 (output),
          1-10 (FM into operator g-1) or 11 and up (AM into operator g-11), and that operator
          comes earlier. a, h, d, r and q (times) are finite and >= 0; t, f, v, s, p and k
          are finite. */
@@ -1111,22 +1111,19 @@ function WebAudioTinySynthCore(target) {
           c[k]=d[k];
         if(k!="w")
           c[k]=this._num(e+k,c[k],k=="g" ? 10+i : 1/0,k=="g","ghadrq".includes(k) ? 0 : -1/0);
-        else
-          this._checkWave(c.w); // T11 (#26): built-in, registered or legacy names
+        else{
+          /* A built-in, a name registered with setHarmonicWave/setSampleWave (#26), or, as an
+             unsupported compatibility path, an n* or w* name a caller wrote into noiseBuf or wave
+             itself, as TinyChip does (D-031); _note plays that one as before (440 basis). */
+          const w=c.w,b=typeof w=="string" && (w[0]=="n" ? this.noiseBuf : w[0]=="w" && this.wave);
+          if(!"sine square sawtooth triangle w9999 n0 n1".split(" ").includes(w) && !this._wv.has(w) && !(b && {}.hasOwnProperty.call(b,w)))
+            throw new TypeError("unknown wave: "+w);
+        }
       }
       if(c.g>i && c.g<11)
         throw new RangeError(e+"g: "+c.g+" is not an earlier operator");
       this._checkFilter(c); // T12 (#27): filter fields, on the copy
       return c;
-    },
-    _checkWave:(w)=>{
-      /* setTimbre's wave check (#26, D-006): an operator's w is undefined (the default, sine), a
-         built-in or a registered name. Anything else throws a TypeError; nothing else happens.
-         Unsupported compatibility path: a name a caller wrote into noiseBuf (n*) or wave (w*)
-         itself, as TinyChip does, is accepted too; _note plays it as before (440 basis). */
-      const o=typeof w=="string" && (w[0]=="n" ? this.noiseBuf : w[0]=="w" && this.wave);
-      if(w!==undefined && !"sine square sawtooth triangle w9999 n0 n1".split(" ").includes(w) && !this._wv.has(w) && !(o && {}.hasOwnProperty.call(o,w)))
-        throw new TypeError("unknown wave: "+w);
     },
     _pruneNote:(nt)=>{
       for(let k=nt.o.length-1;k>=0;--k){
