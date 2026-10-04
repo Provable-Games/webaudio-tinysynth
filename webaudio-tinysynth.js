@@ -996,8 +996,11 @@ function WebAudioTinySynthCore(target) {
     },
     _checkWave:(w)=>{
       /* setTimbre's wave check (#26, D-006): an operator's w is undefined (the default, sine), a
-         built-in or a registered name. Anything else throws a TypeError; nothing else happens. */
-      if(w!==undefined && !"sine square sawtooth triangle w9999 n0 n1".split(" ").includes(w) && !this._wv.has(w))
+         built-in or a registered name. Anything else throws a TypeError; nothing else happens.
+         Unsupported compatibility path: a name a caller wrote into noiseBuf (n*) or wave (w*)
+         itself, as TinyChip does, is accepted too; _note plays it as before (440 basis). */
+      const o=typeof w=="string" && (w[0]=="n" ? this.noiseBuf : w[0]=="w" && this.wave);
+      if(w!==undefined && !"sine square sawtooth triangle w9999 n0 n1".split(" ").includes(w) && !this._wv.has(w) && !(o && {}.hasOwnProperty.call(o,w)))
         throw new TypeError("unknown wave: "+w);
     },
     _pruneNote:(nt)=>{

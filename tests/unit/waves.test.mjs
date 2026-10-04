@@ -255,8 +255,30 @@ describe.each(variants)("$name: playing registered waves (#26)", (variant) => {
     s.synth.send([0xc0, 3]);
     const [o] = sourcesBy(s, (y) => y.noteOn(0, 69, 100, 1));
     expect([o.buffer, o.rate, o.loopEnd]).toEqual([s.synth.noiseBuf.nDirect._id, 1, undefined]);
-    // setTimbre accepts only built-in and registered names (D-026), so such a timbre must be written past it.
-    expect(thrown(() => s.synth.setTimbre(1, 38, lead("nDirect")))).toMatchObject({ name: "TypeError" });
+  });
+
+  test("unsupported compatibility path (D-031): setTimbre accepts a name the caller wrote into noiseBuf or wave itself, while it is there", () => {
+    const s = make(variant);
+    const ctx = s.synth.getAudioContext();
+    s.synth.noiseBuf.nDirect = ctx.createBuffer(1, 44100, 44100);
+    s.synth.wave.wDirect = ctx.createPeriodicWave([0, 0], [0, 1]);
+    expect(thrown(() => s.synth.setTimbre(1, 38, [{ w: "nDirect", t: 0, f: 264 }]))).toBe(null);
+    expect(thrown(() => s.synth.setTimbre(0, 3, lead("wDirect")))).toBe(null);
+    const [hit] = sourcesBy(s, (y) => y.noteOn(9, 38, 100, 1));
+    expect([hit.buffer, hit.rate, hit.loopEnd]).toEqual([s.synth.noiseBuf.nDirect._id, 264 / 440, undefined]); // the 440 basis, as before T11
+    s.synth.send([0xc0, 3]);
+    const [osc] = sourcesBy(s, (y) => y.noteOn(0, 57, 100, 1.5));
+    expect(osc.wave).toBe(s.synth.wave.wDirect._id);
+    // Only own properties under the matching prefix, and only strings, count.
+    for (const w of [["nDirect"], "nOther", "Direct"]) expect(thrown(() => s.synth.setTimbre(1, 39, [{ w }]))).toMatchObject({ name: "TypeError" });
+    s.synth.noiseBuf.wSwap = s.synth.noiseBuf.nDirect;
+    expect(thrown(() => s.synth.setTimbre(1, 39, [{ w: "wSwap" }]))).toMatchObject({ name: "TypeError" });
+    // A new context builds new noiseBuf and wave objects: the caller's entries are gone, and so is the name.
+    s.synth.setAudioContext(s.Ctx());
+    expect(thrown(() => s.synth.setTimbre(1, 38, [{ w: "nDirect" }]))).toMatchObject({ name: "TypeError" });
+    // Before the context exists (lazy), only built-in and registered names are known.
+    const lazy = make(variant, { lazy: true });
+    expect(thrown(() => lazy.synth.setTimbre(1, 38, [{ w: "nDirect" }]))).toMatchObject({ name: "TypeError" });
   });
 
   test("a drum override on a registered wave: p 0.28 from 160 Hz", () => {

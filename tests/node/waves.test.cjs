@@ -187,3 +187,54 @@ test("TinyChip's 32,767-step LFSR registers directly (D-028) and replays at k = 
     }
   }
 });
+
+/*
+ * TinyChip's current integration (midi_fun_contract b16c8ef, tinychip.js lines 15-43): it writes 1 s
+ * buffers at 440 cycles per second into synth.noiseBuf, writes presets into program slots above 127
+ * and installs its drum kit with setTimbre. That is the unsupported compatibility path (D-031): the
+ * flow must keep working and play exactly as on upstream (the reference build, with the fork's
+ * tempo patch only), call for call.
+ */
+function tinyChipFlow(source, label) {
+  const { synth, env, trace } = H.createSynth(source, label);
+  // tinychip.js: the waveform generators and registerWaves(), verbatim apart from formatting.
+  const bits = (len, tap) => { const out = []; let r = 1; for (let i = 0; i < len; i++) { const fb = (r & 1) ^ ((r >> tap) & 1); r = (r >> 1) | (fb << 14); out.push(r & 1 ? 0.5 : -0.5); } return out; };
+  const SHORT = bits(93, 6), LONG = bits(32767, 1);
+  const tri4 = (x) => { const s = Math.floor(x * 32); return ((s < 16 ? 15 - s : s - 16) / 7.5 - 1) * 0.6; };
+  const saw4 = (x) => (Math.floor(x * 16) / 7.5 - 1) * 0.45;
+  const pulse = (duty) => (x) => (x < duty ? 0.5 : -0.5);
+  const ac = synth.getAudioContext(), sr = ac.sampleRate;
+  const make = (fill) => { const b = ac.createBuffer(1, sr, sr), d = b.getChannelData(0); for (let i = 0; i < sr; i++) d[i] = fill(i); return b; };
+  const cyc = (shape) => make((i) => shape(((i * 440) / sr) % 1));
+  Object.assign(synth.noiseBuf, {
+    nP12: cyc(pulse(0.125)), nP25: cyc(pulse(0.25)), nP50: cyc(pulse(0.5)), nTRI: cyc(tri4), nSAW: cyc(saw4),
+    nNOI: make((i) => LONG[i % 32767]), nMET: make((i) => SHORT[i % 93]),
+  });
+  // install(): presets at 129 + bank number, filled with the operator defaults; the drum kit through setTimbre.
+  const DEFAULTS = { g: 0, w: "sine", t: 1, f: 0, v: 0.5, a: 0, h: 0.01, d: 0.01, s: 0, r: 0.05, p: 1, q: 1, k: 0 };
+  const presets = SETUP.timbres.filter((t) => !t.drum && /^TinyChip /.test(t.name));
+  for (const t of presets) synth.program[129 + t.slot] = { name: t.name, p: t.operators.map((o) => ({ ...DEFAULTS, ...o })) };
+  const drums = SETUP.timbres.filter((t) => t.drum);
+  for (const t of drums) synth.setTimbre(1, t.slot, (t.tinychipOperators || t.operators).map((o) => ({ ...o })));
+  // Play every preset and drum.
+  const from = trace.length;
+  presets.forEach((t, i) => {
+    synth.setProgram(i % 8, 129 + t.slot);
+    synth.noteOn(i % 8, 57 + i * 3, 100, 1 + i * 0.25);
+    synth.noteOff(i % 8, 57 + i * 3, 1.2 + i * 0.25);
+  });
+  drums.forEach((t, i) => synth.noteOn(9, t.slot, 110, 4 + i * 0.25));
+  H.runUntil(env, () => false, 8000);
+  return { trace: trace.slice(from), synth, presets, drums };
+}
+
+test("TinyChip's current noiseBuf and setTimbre flow plays exactly as on upstream (unsupported compatibility path)", () => {
+  const ref = tinyChipFlow(H.referenceSource(), "upstream+patches");
+  assert.ok(ref.trace.length > 200, "the flow plays: " + ref.trace.length + " calls");
+  assert.ok(ref.drums.some((t) => (t.tinychipOperators || []).some((o) => o.w === "nNOI")) && ref.presets.length >= 7);
+  for (const variant of H.forkVariants()) {
+    const fork = tinyChipFlow(variant.source, variant.name);
+    assert.deepEqual(fork.trace, ref.trace, variant.name);
+    assert.equal(fork.synth._wv.size, 0, "nothing was registered");
+  }
+});
