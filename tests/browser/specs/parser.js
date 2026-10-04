@@ -219,4 +219,4 @@ function cases(shared) {
   return out;
 }
 
-module.exports = { cases, OP_DEADLINE };
+module.exports = { cases, inputs, PREVIOUS, MARKER_PROGRAM, OP_DEADLINE };

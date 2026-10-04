@@ -380,4 +380,4 @@ function cases(shared) {
   return out;
 }
 
-module.exports = { cases, scenario, song, seconds, noteTicks, notes, opAt, b64, on, off, tempo, PPQ, SINE, SQUARE, TIME_TOL, fmt };
+module.exports = { cases, scenario, SONGS, song, seconds, noteTicks, notes, opAt, b64, on, off, tempo, PPQ, SINE, SQUARE, TIME_TOL, fmt };
