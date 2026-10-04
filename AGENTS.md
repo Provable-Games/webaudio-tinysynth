@@ -6,6 +6,15 @@
 
 `tests/` contains regression scripts and the shared mock WebAudio harness. `ws.mid` is a playback fixture; `test-midi/` documents additional MIDI fixtures. The demos are `simple.html`, `soundedit.html`, and `jstest.html`. Vendored demo controls and image assets live in `bower_components/webaudio-controls/`.
 
+## Agent Skills (Core Responsibility)
+
+Agent skills are part of this project's tooling. Keeping them correct is a core responsibility of every agent working here, not optional cleanup.
+
+- **Find them first.** Before starting a task, check for skills that cover it: the skills listed in your session, any `.claude/skills/` directory, and the shared [Provable-Games/agent-skills](https://github.com/Provable-Games/agent-skills) repository (for example, `github-ci` for CI and AI review workflows). Read the relevant ones and follow them.
+- **Treat their correctness as vital.** Other agents act on skills without re-deriving them. Verify the commands, versions, flags, APIs, and claims you rely on. When the code, a tool, or a measured result contradicts a skill, the skill is wrong until it is fixed.
+- **Fix what you learn.** When your work reveals an error, gap, outdated pin, or a better verified technique, update the skill as part of the task. Update it here directly, or open a focused PR to the skills repository and follow its `CONTRIBUTING.md`. Cite the evidence (PR, run, issue, or measurement). Keep secrets and private project details out of shared skills.
+- **Close the loop.** Record skill follow-ups in your task notes. Complete them, or hand them off explicitly, before reporting the task done.
+
 ## Build, Test, and Development Commands
 
 - `npm install`: install development tools; the library has no runtime dependencies.
