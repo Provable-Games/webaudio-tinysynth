@@ -40,8 +40,17 @@ function mulberry32(seed) {
   };
 }
 
-/* Stream k (convBuf 0, n0 1, n1 2) starts at (seed + k * 2^30) mod 2^32. Each buffer is generated alone from its stream. */
-const stream = (seed, k) => mulberry32((BigInt(seed) + BigInt(k) * 0x40000000n) & 0xffffffffn);
+/* murmur3's fmix32 in BigInt uint32 arithmetic: the seed mix. */
+function fmix32(x) {
+  const M = 0xffffffffn;
+  let h = BigInt(x) & M;
+  h = ((h ^ (h >> 16n)) * 0x85ebca6bn) & M;
+  h = ((h ^ (h >> 13n)) * 0xc2b2ae35n) & M;
+  return h ^ (h >> 16n);
+}
+
+/* Stream k (convBuf 0, n0 1, n1 2) starts at (fmix32(seed) + k * 2^30) mod 2^32. Each buffer is generated alone from its stream. */
+const stream = (seed, k) => mulberry32((fmix32(seed) + BigInt(k) * 0x40000000n) & 0xffffffffn);
 const reference = {
   convBuf(seed, sr) {
     const blen = Math.floor(sr / 2), r = stream(seed, 0), d1 = new Float32Array(blen), d2 = new Float32Array(blen);
@@ -118,7 +127,12 @@ describe("the seeded expectations", () => {
     }
   }, SLOW);
 
-  test("the streams are 2^30 draws apart in the seed's sequence, far more than a buffer draws", () => {
+  test("the seed mix maps 0 to 0, so the default seed's data does not depend on it", () => {
+    expect(fmix32(0)).toBe(0n);
+    expect(fmix32(1)).not.toBe(1n);
+  });
+
+  test("the streams are 2^30 draws apart in the mixed seed's sequence, far more than a buffer draws", () => {
     // mulberry32's state advances by 0x6d2b79f5 per draw, so stream k's start, seed + k * 2^30,
     // is the state after k * 2^30 draws exactly when 2^30 * 0x6d2b79f5 = 2^30 (mod 2^32).
     expect((2n ** 30n * 0x6d2b79f5n) % 2n ** 32n).toBe(2n ** 30n);
@@ -126,6 +140,24 @@ describe("the seeded expectations", () => {
     const blen = 768000 / 2;
     expect(Math.max(3 * blen, blen, 128)).toBeLessThan(2 ** 30);
   });
+});
+
+describe("stream independence on the library itself", () => {
+  test("a copy of the source that skips the convBuf loop when useReverb is 0 keeps n0 and n1", () => {
+    // The library always fills convBuf today (skipping it is #18's work); this copy stops the
+    // convBuf loop at its first sample, so its stream draws nothing, and n0 and n1 must not move.
+    const source = variants.find((v) => v.name === "webaudio-tinysynth.js").source;
+    const anchor = "if(i/blen<g()){";
+    expect(source.split(anchor).length - 1).toBe(1);
+    const l = load({ name: "skip-conv.js", source: source.replace(anchor, "if(!this.useReverb)break;" + anchor) });
+    for (const sr of RATES) {
+      const skipped = hashesOf(new l.Synth({ context: l.at(sr), seed: 1, useReverb: 0 }));
+      expect(skipped.convBuf, "the convBuf loop was skipped @" + sr).toBe(sha([new Float32Array(sr / 2), new Float32Array(sr / 2)]));
+      expect({ n0: skipped.n0, n1: skipped.n1 }, "@" + sr).toEqual({ n0: E.hashes[sr][1].n0, n1: E.hashes[sr][1].n1 });
+      expect(hashesOf(new l.Synth({ context: l.at(sr), seed: 1 })), "reverb on @" + sr).toEqual(E.hashes[sr][1]);
+    }
+    expect(l.random.calls).toBe(0);
+  }, SLOW);
 });
 
 for (const variant of variants) {
@@ -167,7 +199,7 @@ for (const variant of variants) {
       }
     }, SLOW);
 
-    test("useReverb: 0, lazy start, setQuality() and context replacement give the same buffers", () => {
+    test("useReverb: 0 (which still fills convBuf), lazy start, setQuality() and context replacement give the same buffers", () => {
       const l = load(variant);
       const want = E.hashes[44100][1];
       expect(hashesOf(new l.Synth({ context: l.at(44100), seed: 1, useReverb: 0 }))).toEqual(want);
@@ -185,6 +217,27 @@ for (const variant of variants) {
       synth.setAudioContext(l.at(48000));
       expect(hashesOf(synth)).toEqual(E.hashes[48000][1]);
       expect(l.random.calls).toBe(0);
+    }, SLOW);
+
+    test("seeds that differ by mulberry32's increment or by 2^30 do not give shifted copies of each other's buffers", () => {
+      // Without the fmix32 mix, seed 0x6d2b79f5 is seed 0 one draw on: its n0 was seed 0's n0 shifted by one sample.
+      const l = load(variant);
+      const of = (seed) => buffersOf(new l.Synth({ context: l.at(44100), seed }));
+      const base = of(0);
+      const sameAtShift = (x, y, d) => {
+        let n = 0;
+        for (let i = 0; i + d < y.length && i < x.length; ++i) if (x[i] === y[i + d]) ++n;
+        return n;
+      };
+      for (const seed of [0x6d2b79f5, 2 * 0x6d2b79f5, 0x40000000, 0x80000000, 0xc0000000]) {
+        const other = of(seed);
+        for (const k of ["n0", "n1"]) {
+          for (let d = 0; d <= 4; ++d) {
+            expect(sameAtShift(other[k][0], base[k][0], d), k + " of seed " + seed + " vs seed 0 shifted " + d).toBeLessThan(50);
+            expect(sameAtShift(base[k][0], other[k][0], d), k + " of seed 0 vs seed " + seed + " shifted " + d).toBeLessThan(50);
+          }
+        }
+      }
     }, SLOW);
 
     test("repeated construction repeats the data; each synth and context gets its own buffers (no cache)", () => {
@@ -208,19 +261,20 @@ for (const variant of variants) {
       for (const k of ["convBuf", "n0", "n1"]) expect(new Set(all.map((h) => h[k])).size, k).toBe(seeds.length);
     }, SLOW);
 
-    test("the seed is an unsigned 32-bit integer: edge values are accepted, -0 reads as 0", () => {
+    test("the seed is an unsigned 32-bit integer: edge values are accepted, -0 reads as 0, null and undefined mean the default", () => {
       const l = load(variant);
-      for (const [seed, want] of [[0, 0], [-0, 0], [2 ** 31, 2 ** 31], [4294967295, 4294967295], [7.0, 7]]) {
+      for (const [seed, want] of [[0, 0], [-0, 0], [2 ** 31, 2 ** 31], [4294967295, 4294967295], [7.0, 7], [null, E.defaultSeed], [undefined, E.defaultSeed]]) {
         const synth = new l.Synth({ lazy: true, seed });
         expect(Object.is(synth.seed, want), String(seed)).toBe(true);
       }
       expect(hashesOf(new l.Synth({ context: l.at(44100), seed: -0 }))).toEqual(E.hashes[44100][0]);
+      expect(hashesOf(new l.Synth({ context: l.at(44100), seed: null }))).toEqual(E.hashes[44100][E.defaultSeed]);
     }, SLOW);
 
     test("an invalid seed throws a TypeError or RangeError naming it, before any context, node or timer is created", () => {
       const l = load(variant);
       const cases = [
-        [null, "TypeError"], ["1", "TypeError"], ["", "TypeError"], [1n, "TypeError"], [true, "TypeError"],
+        ["1", "TypeError"], ["", "TypeError"], [1n, "TypeError"], [true, "TypeError"],
         [{}, "TypeError"], [[1], "TypeError"], [() => 1, "TypeError"], [Symbol("seed"), "TypeError"],
         [-1, "RangeError"], [1.5, "RangeError"], [-0.5, "RangeError"], [NaN, "RangeError"], [Infinity, "RangeError"],
         [-Infinity, "RangeError"], [2 ** 32, "RangeError"], [4294967295.5, "RangeError"], [2 ** 53, "RangeError"],

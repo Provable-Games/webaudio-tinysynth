@@ -5,7 +5,8 @@
  *
  * Generation version 1: convBuf, n0 and n1 each come from their own
  * mulberry32 stream, stream k (convBuf 0, n0 1, n1 2) seeded with
- * (seed + k * 2^30) mod 2^32 (see the comment above mulberry32() in
+ * (fmix32(seed) + k * 2^30) mod 2^32, where fmix32 is murmur3's finalizer
+ * and fmix32(0) = 0 (see the comment above mulberry32() in
  * webaudio-tinysynth.js). Each value is the SHA-256 of the buffer's Float32
  * sample data, little-endian, channels in order (convBuf: left, then right).
  * The data depends on the sample rate (the buffers are 0.5 s long).
@@ -29,19 +30,19 @@ const SEED_EXPECTED = {
         n1: "e4ff95d4e406ca64e26904749a4e800b064e32f47ab5f7edf3c36f91e6389d21",
       },
       1: {
-        convBuf: "7b42349da3d95c6a306997310e92c94fafec7293a921010b0da657345e69b81b",
-        n0: "a8297643d75fa6abbdff5efd6c7eadfb937be8f18bbd43ff755efe07230d3d83",
-        n1: "82e1110724341dde4b9566897b6b599f3f468ccb3d95318ac163fd9edac56d18",
+        convBuf: "f446d5f48609c90c4a0f009cfaf7735290403452951028256826f802898f9e39",
+        n0: "24f284e6d0106569310e2e62c081332756e97030c193c767e3fd84671e6214f0",
+        n1: "69b90b676a17d1e4d0aef2cda32455398e137b93d67a39671961e327f671e0e8",
       },
       0x5eed0001: {
-        convBuf: "a9e354d667c6f28fa2764574c508f0798157b35b459b70951e173787b907a30e",
-        n0: "550b553c3c5fe56883a923205521f0f83015b5fa602d9c10090af58b651dfc7d",
-        n1: "cd651f5c0bc02eb1510918b8ea0a404572a4ba4a7ddb65c5e14b2d9c541ceb2d",
+        convBuf: "6b14a5aaeda60acf4cb070b50793f5e8cd1ba6c1643302bc7ec0c7ee2f1b6a9f",
+        n0: "66c190fde8a16f381d08f0b61b62c3ae7537ef85360f9d2469550d5491205c8a",
+        n1: "2c388dcbd16d976b53a16c239f78410b5373665b096f7fdfe079100d649b9079",
       },
       0xffffffff: {
-        convBuf: "74f41279333feb4f76817afcbf985644a23f5323e60bac2145cc44d30f171002",
-        n0: "b2862f9123f133b0270002969468f397836246786aa630acb6a88a8a6c139d05",
-        n1: "4c0421f82004f01b1524a99351732610f98f09a1682a52b422c32771acabfaaf",
+        convBuf: "2506dbc9ff40440ba8efdae7c3c2c77ecd3bbd03d9c9d1927a233d8d09382ef1",
+        n0: "8ec7d2892661bea180da8684992842d775e5a220cd5b7265b45173b3db2c1211",
+        n1: "686ca26720336e35b519a5037bda842b21498c5c1133ef8f2dcdc136b8fe440f",
       },
     },
     48000: {
@@ -51,19 +52,19 @@ const SEED_EXPECTED = {
         n1: "d9cee503e9ad32a5c4c1de0844c04a73e499a6f2a61458aabac7f6f17cd75fce",
       },
       1: {
-        convBuf: "d41c7d1f3703bd27bfa1ce1ae39be31f6984295231e2cc3ca01c9ac99bf4d7c5",
-        n0: "cb0b1cac1cfadd85243666be94efff857c27475de548f5e7db69068ace7f9729",
-        n1: "096c889a3704067615b54cc40f286e657ff88fba089655d3fa4f5da6a1202bfb",
+        convBuf: "50e81125e98097f8b50ea5ed88ab750146d09205e35b3bc0577ce75a79d8b019",
+        n0: "64582d22e21fd8d1b0df08004f369a1b0c06c8ca1a2ba870f562ec814f8a7470",
+        n1: "854d1dfdcd2bf1cc9506e6dd05fd570ec44fd8726106d5df31cb93eacfc6bb45",
       },
       0x5eed0001: {
-        convBuf: "3ae12f7d0ae1d5bac3300456b8db505af495da33f06d3efb481c35d2da0fdfd8",
-        n0: "5e4f7ca5df344f5f7d3d1e3f3f4ece78bc92fd5d6d159ef7c59ec2c96eb00e82",
-        n1: "3e9e3f2982e41b334be59b84aa06611b6b6c16ae4890251766912696176f2118",
+        convBuf: "4e41b0b5d26b97209e775dc9050bae9887239c70090eff7cc1bb879d86c989ff",
+        n0: "a94e91f857eb4f848e68f408acd4d236810d4d502161e53574d6a2a8b9751fc2",
+        n1: "38bd0499b94fedaee90d5a3b057919c83fa6a2cb2d051ba8d91781dfe094e723",
       },
       0xffffffff: {
-        convBuf: "8c40085f3bb64a708e043de17e3dea5132ed6ea6c4462959c09692b8dbd309ed",
-        n0: "248d4a263deecba5dbee58bc73e3d267e632b0d213a4cf795e36f95896fc6287",
-        n1: "14f295ce435b39752a470458b3a4415d5f99ba368c045427103a1bcc9111d0cd",
+        convBuf: "7dba2560bfa2ac4416045e80943799d8198740c8fce961e99762f574390e9f4f",
+        n0: "cb5383397b798c007612cb71d602ae7c6c87ff818f52eab7bda24c07baaea742",
+        n1: "dd16f5ec82d1e7647b77adb92bcbc4be16a32e7e012c0dd53f3e552059352c5d",
       },
     },
   },
