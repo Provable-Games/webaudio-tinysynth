@@ -768,7 +768,7 @@ function WebAudioTinySynthCore(target) {
       const s=o ? o.signal : null,r=new Promise((res,rej)=>{
         // The signal's reason, or an AbortError when it has none (or a falsy one)
         const why=()=>s.reason || (window.DOMException ? new window.DOMException("Aborted","AbortError") : Object.assign(Error("Aborted"),{name:"AbortError"}));
-        if(!url || s!=null && !(typeof s.aborted=="boolean" && typeof s.addEventListener=="function"))
+        if(!url || s!=null && !(typeof s.aborted=="boolean" && typeof s.addEventListener=="function" && typeof s.removeEventListener=="function"))
           throw new TypeError(url ? "signal" : "url"); // an AbortSignal (by its shape), undefined or null
         if(this._dead)
           throw CodedError("SYNTH_DISPOSED");

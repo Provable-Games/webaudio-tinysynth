@@ -725,10 +725,11 @@ for (const variant of variants) {
       expect((await settle(p))[0]).toBe("resolved");
     });
 
-    test("a signal that is not shaped like an AbortSignal (an EventTarget, a falsy value, a look-alike with a reason) rejects TypeError and leaves a pending load alone (PR #48 review)", async () => {
+    test("a signal that is not shaped like an AbortSignal (an EventTarget, a falsy value, a look-alike with a reason or without removeEventListener) rejects TypeError and leaves a pending load alone (PR #48 review)", async () => {
       const s = withXHR();
       const older = s.synth.loadMIDIUrl("old.mid");
-      for (const signal of [new EventTarget(), false, 0, "", NaN, { aborted: true, reason: new Error("its reason") }, { aborted: "no", addEventListener() {} }]) {
+      for (const signal of [new EventTarget(), false, 0, "", NaN, { aborted: true, reason: new Error("its reason") }, { aborted: "no", addEventListener() {}, removeEventListener() {} },
+        { aborted: false, addEventListener() {} }, { aborted: false, addEventListener() {}, removeEventListener: 1 }]) { // no removeEventListener: settling could not unhook it (PR #48 round 2)
         const [how, e] = await settle(s.synth.loadMIDIUrl("x.mid", { signal }));
         expect([String(signal), how, e.name, e.message]).toEqual([String(signal), "rejected", "TypeError", "signal"]);
       }
