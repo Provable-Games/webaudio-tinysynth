@@ -357,3 +357,7 @@ Unchanged: the refactor (T7), the #18 performance work, the T9 documentation pas
 - **Firefox.** nNOI played at a literal `t` runs at about 327·t, and Firefox renders that slowly (0.3× real time at t = 16). The consumer's reported 0.12× for t = 64 at A4 was not reproduced, measuring 50–70× real time. Consumer note: retune.
 - **Size.** +596 B gzip (+5.4 %), documented under D-024/D-028. nNOI uses 131,072 B per context plus a 131,068 B stored copy.
 - AI review flake (2026-10-03, PR #39 at b4335c8): the Claude review output `lgtm` together with extra text, and the parser rejected it as incomplete, failing closed as designed. The supervisor re-ran the workflow (run 37169754193). Follow-up for T1B (later CI extensions): if this recurs, add one bounded automatic retry of a review whose output is malformed (never one that has findings), or tighten the prompt's output instruction. Track how often it happens.
+- T11 review outcome (2026-10-04, review 61deb9f): approved with changes; the TinyChip compatibility delta passes. Fixes:
+  - M1: extreme finite harmonic coefficients render NaN that persists in Firefox. Fix: power-of-two rescale, a natural limit like T12's `fq` floor.
+  - L1: legacy buffers written over registered names play at about 440× pitch. Fix: tag the registered buffers.
+  - L2: build the registry objects before installing them in `setAudioContext`.
