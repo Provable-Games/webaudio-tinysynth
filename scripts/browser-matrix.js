@@ -10,7 +10,9 @@
  *   --observe                           also run the observe-only specs (hang, variation)
  *   --seed=N                            Math.random seed for the test pages
  *   --source=PATH --min=PATH            test another copy of a build (for example a
- *                                       deliberately broken scratch copy)
+ *                                       deliberately broken scratch copy). Without
+ *                                       --min, the min build is a fresh build of the
+ *                                       current source (scripts/test-build.js)
  *   --out=DIR                           write results.json, renders (WAV) and logs there
  *   --list                              print the matrix and exit
  *
@@ -243,6 +245,8 @@ function stepSummary(all, cross, o, status) {
 async function orchestrate(o) {
   printMatrix(o);
   if (o.list) return 0;
+  // The min build is a fresh build of the current source unless --min names a file.
+  if (!o.overrides.min) await require("./test-build").prepare();
   console.log("\n== Analysis self-test");
   const st = analysis.selfTest();
   for (const r of st) console.log("  " + (r.ok ? "ok  " : "FAIL") + " " + r.name + " (" + r.detail + ")");

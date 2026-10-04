@@ -7,7 +7,6 @@
 "use strict";
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const path = require("node:path");
 const vm = require("node:vm");
 const H = require("../harness");
 
@@ -88,7 +87,7 @@ for (const variant of variants) {
     });
 
     test("Node require(): exports the class and sets no global", () => {
-      const file = path.join(H.ROOT, variant.name);
+      const file = variant.file;
       delete require.cache[file];
       const Synth = require(file);
       assert.equal(typeof Synth, "function");

@@ -1,4 +1,5 @@
 * text=auto
 # The minified build and its map are hashed artifacts: never convert their line endings.
-webaudio-tinysynth.min.js -text
-webaudio-tinysynth.min.js.map -text
+# CI regenerates them on improve/integration (.github/workflows/dist.yml); PRs do not change them.
+webaudio-tinysynth.min.js -text linguist-generated=true
+webaudio-tinysynth.min.js.map -text linguist-generated=true

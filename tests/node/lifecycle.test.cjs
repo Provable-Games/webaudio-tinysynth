@@ -26,7 +26,7 @@ const builds = H.forkVariants();
 function child(build, body, timeout = DEADLINE_MS) {
   const code = [
     "const H = require(" + JSON.stringify(path.join(H.ROOT, "tests", "harness.js")) + ");",
-    "const Synth = require(" + JSON.stringify(path.join(H.ROOT, build.name)) + ");",
+    "const Synth = require(" + JSON.stringify(build.file) + ");",
     "const Ctx = H.createEnvironment([]).sandbox.AudioContext;",
     "const ctx = new Ctx();",
     body,

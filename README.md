@@ -384,10 +384,10 @@ Use Node 24.21.0 (`.nvmrc`), which comes with npm 11.19.0, and install the locke
 | Command | What it does |
 | --- | --- |
 | `npm run lint` | ESLint with the recommended rules (`eslint.config.mjs`). |
-| `npm run build` | Minifies `webaudio-tinysynth.js` into `webaudio-tinysynth.min.js` and its source map with the pinned Terser. Every option is in `scripts/build.js`. |
+| `npm run build` | Minifies `webaudio-tinysynth.js` into `webaudio-tinysynth.min.js` and its source map with the pinned Terser. Every option is in `scripts/build.js`. `npm run build -- DIR` writes them to `DIR` instead of the repository root. CI runs this build after each merge; see below. |
 | `npm run verify` | Rebuilds into a temporary directory and fails if the committed `webaudio-tinysynth.min.js` or its map differ. Also fails if the minified file or the source contains `</script`, `<script` or `<!--` in any letter case, or a non-ASCII byte. Prints sizes and SHA-256. |
-| `npm run size` | Raw size, gzip size and SHA-256 of the source, the minified file and the map. |
-| `npm run pack:check` | Checks the files `npm pack` would publish, installs the tarball in a scratch project outside the repository and `require()`s it there. |
+| `npm run size` | Raw size, gzip size and SHA-256 of the source and of a fresh build of it (minified file and map). |
+| `npm run pack:check` | Checks the files `npm pack` would publish, then packs them with a fresh build of the minified file and map, installs the tarball in a scratch project outside the repository and `require()`s it there. |
 | `npm test` | `test:unit`, `test:node` and `test:regression`, in that order. It stops at the first failing suite. |
 | `npm run test:unit` | Vitest unit tests, `tests/unit/**/*.test.mjs` (`scripts/run-unit-tests.js` runs `vitest run`). |
 | `npm run test:node` | `node:test` tests, `tests/node/**/*.test.cjs` (`scripts/run-node-tests.js`), killed after 600 s. |
@@ -395,20 +395,31 @@ Use Node 24.21.0 (`.nvmrc`), which comes with npm 11.19.0, and install the locke
 | `npm run test:browser` | Offline smoke test of both builds in headless Chromium. Install the browser first with `npx playwright-core install --with-deps --only-shell chromium`. A missing browser fails the test. Chromium runs with autoplay allowed, so the test does not show that audio starts after a user gesture. |
 
 - The regressions compare against upstream commit `3d75aee`, read from git history. Clone with full history (a shallow clone fails), or set `TINYSYNTH_REFERENCE` to upstream's `webaudio-tinysynth.js` at that commit.
-- Never edit `webaudio-tinysynth.min.js` or its map by hand. After changing the source, run `npm run build` and commit both files. CI fails if they differ from a fresh build.
+- Pull requests do not change `webaudio-tinysynth.min.js` or its map, except a release pull request (see "Releases" below), and nobody edits them by hand. After each merge into `improve/integration`, CI (`.github/workflows/dist.yml`) rebuilds both with the pinned build, runs the tests against the new bytes and commits them as `github-actions[bot]`, titled `Rebuild webaudio-tinysynth.min.js for <commit>`. The `build-verify` check fails a pull request that changes either file, unless its branch is `improve/integration` or `release/*` and both equal a fresh build. Restore them with `git checkout origin/<base branch> -- webaudio-tinysynth.min.js webaudio-tinysynth.min.js.map` and commit. `node scripts/check-dist.js --unchanged-from=origin/<base branch>` runs the same check locally.
+- The test commands, `pack:check` and `size` build the current source into the ignored `.build/` directory first and test that, never the committed `webaudio-tinysynth.min.js`, so they leave tracked files unchanged. To test another copy, set `TINYSYNTH_MIN=path/to/file.min.js`. A test file run on its own reads `.build/`; refresh it with `node scripts/test-build.js`.
 - The test commands fail closed. `test:unit` and `test:node` fail when no test file matches, when a file passes no test, when a `node:test` file exits before its tests finish, or when fewer files ran or fewer tests passed than the floors committed in `package.json` (`--min-files`, `--min-tests`). When you add tests, raise the floors to the new counts printed at the end of the run. `test:regression` and `test:browser` require each script to exit 0 and print a final `PASS:` line.
 - The test commands use POSIX process groups to stop hung tests, so they run on Linux and macOS.
-- CI (`.github/workflows/ci.yml`) runs the `lint`, `build-verify`, `test` and `browser-smoke` jobs on pull requests and on pushes to `main`.
+- CI (`.github/workflows/ci.yml`) runs the `lint`, `build-verify`, `test` and `browser-smoke` jobs on pull requests and on pushes to `main`. On pushes to `main` they build and test the current source but do not compare the committed minified file with it: between releases it may be older than the source.
 
 ## Verifying the minified build
 
 The onchain player embeds the exact bytes of `webaudio-tinysynth.min.js` and publishes their SHA-256. To check that a copy was built from this source:
 
-1. Check out the commit with full history and LF line endings (on Windows, `git clone -c core.autocrlf=false`), use the Node version in `.nvmrc`, and run `npm ci`.
+1. Check out a release tag (`vX.Y.Z`) or a `Rebuild webaudio-tinysynth.min.js for …` commit by `github-actions[bot]` on `improve/integration`, with full history and LF line endings (on Windows, `git clone -c core.autocrlf=false`). Use the Node version in `.nvmrc`, and run `npm ci`.
 2. Run `npm run verify`. It rebuilds the minified file and its map with the pinned Terser, requires both to equal the committed files byte for byte, and prints their SHA-256.
 3. Hash your copy (`sha256sum webaudio-tinysynth.min.js`, or `shasum -a 256` on macOS) and compare.
 
+Elsewhere on `main`, the committed minified file may be older than the source, and `npm run verify` fails there. So does `improve/integration` right after a merge, until CI's rebuild commit lands (about ten minutes).
+
 The minified file starts with the source's license header and has no `sourceMappingURL` comment; to debug it, load `webaudio-tinysynth.min.js.map` next to it. Minification renames local variables only: the class, its methods, options and properties keep their names.
+
+### Releases
+
+On `main`, the minified file and its map change only in a release, made by hand. The steps for the first release, `v2.0.0`, cut once `improve/integration` has been merged into `main`:
+
+1. From `main`, create `release/v2.0.0`. Set the version in `package.json` and `package-lock.json` if it is not already the release's (`npm version 2.0.0 --no-git-tag-version`), run `npm run build`, and commit both generated files.
+2. Open a pull request into `main`; `build-verify` requires both files to equal a fresh build. After it is squash-merged, tag the merge commit and push the tag: `git tag -s v2.0.0 <merge sha>` and `git push origin v2.0.0`.
+3. Run `gh release create v2.0.0 webaudio-tinysynth.min.js webaudio-tinysynth.min.js.map` from a checkout of the tag, with the SHA-256 and sizes from `npm run size` in the notes.
 
 ## License
 

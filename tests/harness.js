@@ -11,6 +11,7 @@ const path = require("path");
 const vm = require("vm");
 const crypto = require("crypto");
 const { execFileSync } = require("child_process");
+const testBuild = require("../scripts/test-build");
 
 const ROOT = path.resolve(__dirname, "..");
 const UPSTREAM_COMMIT = "3d75aee4b3f43cbd932265e7d60201fd5b770397";
@@ -83,11 +84,17 @@ function referenceSource() {
   return applyPatches(upstreamSource(), FORK_PATCHES);
 }
 
-/* This repo's builds. */
+/*
+ * This repo's builds: the source, and the minified build of the current
+ * source (scripts/test-build.js: .build/, or TINYSYNTH_MIN), never the
+ * committed min.js, which CI regenerates after merging. `name` labels the
+ * build; `file` is the path that was read.
+ */
 function forkVariants() {
-  return ["webaudio-tinysynth.js", "webaudio-tinysynth.min.js"].map((name) => ({
-    name, source: fs.readFileSync(path.join(ROOT, name), "utf8"),
-  }));
+  return [
+    { name: "webaudio-tinysynth.js", file: path.join(ROOT, "webaudio-tinysynth.js") },
+    { name: "webaudio-tinysynth.min.js", file: testBuild.existingMinPath() },
+  ].map((v) => ({ ...v, source: fs.readFileSync(v.file, "utf8") }));
 }
 
 /* ---------- mock WebAudio + hand-driven clock ---------- */

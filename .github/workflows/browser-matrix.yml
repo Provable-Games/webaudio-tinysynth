@@ -57,10 +57,10 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
       - run: npm ci
-      - name: Build and fail on artifact drift
-        run: |
-          npm run build
-          git diff --exit-code -- webaudio-tinysynth.min.js webaudio-tinysynth.min.js.map
+      # The committed min.js can be older than the source in a pull request
+      # (dist.yml regenerates it after merging); the matrix tests a fresh build.
+      - name: Fresh build of the current source into .build/
+        run: node scripts/test-build.js
       - name: Install the pinned Playwright's browser and system libraries
         run: |
           read -r -a args <<< "$INSTALL"

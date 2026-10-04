@@ -28,7 +28,7 @@
     "lint": "eslint .",
     "test": "npm run test:unit && npm run test:node && npm run test:regression",
     "test:unit": "node scripts/run-unit-tests.js --min-files=11 --min-tests=894",
-    "test:node": "node scripts/run-node-tests.js --min-files=11 --min-tests=131",
+    "test:node": "node scripts/run-node-tests.js --min-files=12 --min-tests=150",
     "test:regression": "node scripts/run-regressions.js",
     "test:browser": "node scripts/run-regressions.js --deadline=180 tests/browser-smoke.js \"tests/browser-smoke.js test-midi/all-gm-sounds.mid\"",
     "test:browser:matrix": "node scripts/browser-matrix.js",

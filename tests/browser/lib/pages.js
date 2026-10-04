@@ -1,26 +1,29 @@
 /*
  * Test page construction for the browser matrix.
  *
- * Library builds: "source" is webaudio-tinysynth.js and "min" is
- * webaudio-tinysynth.min.js. Either path can be replaced with --source=PATH or
- * --min=PATH, for example to show that a deliberately broken scratch copy
- * fails the checks; the repository files are never modified.
+ * Library builds: "source" is webaudio-tinysynth.js and "min" is the
+ * minified build of the current source (scripts/test-build.js: .build/, or
+ * TINYSYNTH_MIN), not the committed webaudio-tinysynth.min.js. Either path can
+ * be replaced with --source=PATH or --min=PATH, for example to show that a
+ * deliberately broken scratch copy fails the checks; the repository files are
+ * never modified.
  */
 "use strict";
 const fs = require("fs");
 const path = require("path");
+const testBuild = require("../../../scripts/test-build");
 
 const ROOT = path.resolve(__dirname, "..", "..", "..");
 const PAGE_DIR = path.resolve(__dirname, "..", "page");
 
 const BUILDS = {
-  source: "webaudio-tinysynth.js",
-  min: "webaudio-tinysynth.min.js",
+  source: () => path.join(ROOT, "webaudio-tinysynth.js"),
+  min: () => testBuild.existingMinPath(),
 };
 
 function libraryPath(build, overrides = {}) {
   if (!BUILDS[build]) throw new Error("unknown build " + build);
-  return path.resolve(overrides[build] || path.join(ROOT, BUILDS[build]));
+  return path.resolve(overrides[build] || BUILDS[build]());
 }
 
 function readLibrary(build, overrides) {
