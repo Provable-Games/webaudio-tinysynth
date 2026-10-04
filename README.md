@@ -31,12 +31,14 @@ This is [g200kg/webaudio-tinysynth](https://github.com/g200kg/webaudio-tinysynth
   - With `loopEnd` set, the first pass keeps the rest before the song's first event, as every later pass already did: `playMIDI()` from the start (after `loadMIDI()` or `locateMIDI(0)`, or on a finished song) sounds tick 0 0.1 s later and each event at its own tick's time. Upstream, and this fork with `loopEnd` unset, plays the first event at once. A seek to a later tick still resumes at the next event.
 - `stopMIDI()` now also stops drums and queued controller changes: every drum hit, sounding or already scheduled, stops, and channel volume, pan and modulation changes scheduled for later are cancelled. A seek (`locateMIDI()`) stops the same way. Upstream let drum hits scheduled up to 0.2 s ahead, and queued controller changes, play on after a stop.
 - An instance can start from a user gesture and release everything it uses: the constructor options `context`, `destination` and `lazy`, `resume()` and `dispose()` are new (see [Functions](#functions)). `setAudioContext()` now stops and disconnects the previous graph, and closes the previous context if the synth created it. Ended voices are disconnected, `send()` no longer leaves unhandled promise rejections, and on an `OfflineAudioContext`, `playMIDI()` throws an `Error` with `code` `AUDIO_CONTEXT_OFFLINE` (schedule notes with explicit times instead). Upstream kept every context, graph and timer alive.
-- `setTimbre()` checks waveform names and filter fields before changing anything. It throws a `TypeError` or `RangeError` for an operator whose `w` is neither built in nor registered, a filter field without `fl`, an unknown `fl`, a filter on a modulator (`g` ≠ 0), or an `ff`, `fq` or `fk` out of range. Timbres that use only built-in waveforms and no filter fields are accepted as before.
+- Public functions check their arguments before changing anything. Channels are 0–15; notes, programs, velocities and controller values 0–127 (`setProgram` also selects a program slot you added to `synth.program` yourself; a slot that does not exist throws a `RangeError`); bends and bend ranges 0–16383; times finite and ≥ 0 (or omitted); `setQuality` 0 or 1; `setVoices` a whole number ≥ 1; `setLoopEnd` whole ticks ≥ 0; volumes and reverb levels ≥ 0, within the float32 range AudioParams use. Numeric strings such as `"64"` are accepted. Anything else throws a `TypeError` or `RangeError` and changes nothing; `setQuality("0")` now selects quality 0 (upstream selected 1), and an out-of-range `setTimbre` slot throws instead of being ignored. A malformed raw message passed to `send()` (too short for its status byte, or a data byte above 127) is ignored.
+- `setTimbre()` checks the timbre (known or registered waveform, routing only into an earlier operator, finite values, times ≥ 0, valid filter fields) and stores a copy with the defaults filled in: your objects are no longer modified, and the built-in tables are no longer changed by edits to the installed timbre. An invalid timbre throws a `TypeError` or `RangeError` and changes nothing.
+- `loadMIDIUrl()` returns a promise and accepts `{signal}` to cancel. It resolves once the song is installed and rejects with a coded error otherwise; a newer load or a direct `loadMIDI()` wins over a pending one; `dispose()` cancels it. Ignoring the result never leaves an unhandled rejection.
 - The reverb and noise sounds are the same on every load. The reverb impulse and the two noise buffers (`n0`, used by most drums, and `n1`, the metallic noise of cymbals and hi-hats) are generated from a seed instead of `Math.random`, so a given seed, sample rate and library version always produce the same buffer data. The default seed is `0`; pass `seed` to the constructor to choose another. Compared with upstream, the reverb and noise texture changes once and then stays fixed. Upstream drew new random buffers each time an AudioContext was installed. Rendered audio can still differ slightly between browsers and between sample rates.
 
 **What is added:** the `loopEnd` property and `setLoopEnd(ticks)`. When looping, each pass can start on a bar boundary instead of on the song's last event (see `setLoopEnd()` below). Unset, looping works exactly as upstream. `getPlayStatus()` has a fourth field, `startTime`: when tick 0 of the current pass sounds, for syncing visuals to the music. Custom waveforms: `setSampleWave(name, samples)` registers a single-cycle table (for example a 4-bit stepped triangle, a 12.5 % pulse or an LFSR noise table) and `setHarmonicWave(name, real, imag)` a harmonic wave; a timbre operator uses one through its `w` field. Registered waves survive `setQuality()` (custom timbres still need reinstalling) and context changes. Optional fixed filters on an operator's output: the timbre fields `fl`, `ff`, `fq` and `fk` (see [Timbre Object Structure](#timbre-object-structure)); a timbre without `fl` builds exactly the same graph as before.
 
-**What is unchanged:** `new WebAudioTinySynth(options)`, every upstream function documented below apart from the `loadMIDI`, `playMIDI`, `locateMIDI`, `stopMIDI` and `getPlayStatus` changes above, and the CommonJS / AMD / `window.WebAudioTinySynth` exports.
+**What is unchanged:** `new WebAudioTinySynth(options)`, every upstream function documented below apart from the changes above, and the CommonJS / AMD / `window.WebAudioTinySynth` exports.
 
 **Tests:** `npm test` runs the unit tests, the native Node tests and the regression scripts. The differential regression plays every MIDI file in this repository through upstream's file (with the tempo change above applied, and nothing else) and through this one, against a mock WebAudio, and checks that both make exactly the same calls. The others check note timing at fractional tempos (`tests/tempo.js`) and `loopEnd` looping (`tests/loop-end.js`). See [Development](#development) for every command.
 
@@ -169,7 +171,8 @@ Settings are changed with the functions below (`setMasterVol()`, `setReverbLev()
 **setQuality(q)**
 > Switch timbre set.  
 > q=0 : chip tune like 1 osc / note.  
-> q=1 : FM based 2 (or more) osc / note.
+> q=1 : FM based 2 (or more) osc / note.  
+> `q` is 0 or 1 (a numeric string is accepted). Reinstalls the built-in timbres, so custom timbres must be set again afterwards.
 
 **setMasterVol(lev)**
 > Master volume setting. default=0.5.
@@ -196,8 +199,8 @@ Settings are changed with the functions below (`setMasterVol()`, `setReverbLev()
 > load MIDI data to built-in sequencer. mididata is a arraybuffer of SMF (.mid file contents).  
 > Throws an `Error` with an `SMF_*` `code` when it cannot parse or does not support the data (see [What behaves differently](#about-this-fork)); the previous song is kept. Some irregular files still load, so it is not a strict validator. Use `try`/`catch` for files you did not create.
 
-**loadMIDIUrl(url)**
-> load MIDI data from specified url
+**loadMIDIUrl(url, opts)**
+> Loads a Standard MIDI File from `url` and returns a promise that resolves with the response's `ArrayBuffer` once the song is installed. It rejects, leaving the current song, with an `Error` whose `code` is `HTTP_STATUS` (with `status`; statuses 200–299 succeed), `NETWORK_ERROR`, `LOAD_SUPERSEDED` (a newer `loadMIDIUrl()` or a direct `loadMIDI()` came first), `SYNTH_DISPOSED`, or an `SMF_*` code from `loadMIDI()`; with `opts.signal`'s reason when that `AbortSignal` aborts (an `AbortError` if the reason is missing or falsy); or with a `TypeError` for a missing `url` or an `opts.signal` that is not an `AbortSignal` (for example an `AbortController` passed instead of its `.signal`). It never throws. Fire and forget is safe: `synth.loadMIDIUrl("song.mid")` leaves no unhandled rejection. To show errors: `synth.loadMIDIUrl(url).then(() => synth.playMIDI(), (e) => show(e.code || e.name))`.
 
 **playMIDI()**
 > play loaded MIDI data. On a finished song, starts again from the beginning at the song's initial tempo and channel state. Does nothing for a song with no playable events.
@@ -230,8 +233,8 @@ Settings are changed with the functions below (`setMasterVol()`, `setReverbLev()
 > `m=0` : timbre for normal channel.  
 > `m=1` : timbre for rhythm channel (ch=9).  
 > `n` : program number for normal channel or notenumber for rhythm channel.  
-> `p` : timbre object. Source of this object can be created by soundedit.html **(Details are not yet documented)**  
-> Every operator's `w` must be a built-in waveform (`sine`, `square`, `sawtooth`, `triangle`, `w9999`, `n0`, `n1`) or a registered name, and filter fields must be valid (see [Timbre Object Structure](#timbre-object-structure)); otherwise `setTimbre` throws a `TypeError` or `RangeError` and changes nothing. For compatibility, a name that code has written into the synth's internal `noiseBuf` or `wave` objects is still accepted and plays as before. This is unsupported: those objects are rebuilt whenever the AudioContext changes, and they do not exist before a lazy synth's first use. Register waves with `setSampleWave()` or `setHarmonicWave()` instead.
+> `p` : timbre, a non-empty array of operator objects (see [Timbre Object Structure](#timbre-object-structure)); soundedit.html can create one.  
+> `setTimbre` checks every operator before changing anything. `w` must be a built-in waveform (`sine`, `square`, `sawtooth`, `triangle`, `w9999`, `n0`, `n1`) or a registered name. `g` must be 0 (output), `n` (FM into operator `n−1`, `n` ≤ 10) or `10+n` (AM into operator `n−1`), where operator `n−1` comes earlier in the array. `a`, `h`, `d`, `r` and `q` must be finite and ≥ 0; `t`, `f`, `v`, `s`, `p` and `k` finite; filter fields as described there. Numeric strings are read with `Number()`, and missing fields take their defaults. `p` is copied: unknown keys are kept and ignored, and later changes to your objects do not reach the synth. An invalid `p`, an `m` other than 0 or 1, or an `n` out of range (0–127 for `m=0`, 35–81 for `m=1`) throws a `TypeError` or `RangeError` and changes nothing. For compatibility, a name that code has written into the synth's internal `noiseBuf` or `wave` objects is still accepted and plays as before. This is unsupported: those objects are rebuilt whenever the AudioContext changes, and they do not exist before a lazy synth's first use. Register waves with `setSampleWave()` or `setHarmonicWave()` instead.
 
 **reset()**
 > Reset all channel to initial state. Including all controllers, program, chVol, pan and bendRange.
@@ -243,7 +246,8 @@ Settings are changed with the functions below (`setMasterVol()`, `setReverbLev()
 > The timeline of `t` is depends on timestampmode that is set by setTsMode() function.
 > If timestampmode == 0 (default), `t` is a time (sec) in timeline of the in use audioContext.currentTime.  If timestampmode == 1, `t` is a time (msec) in HighResolutionTime (performance.now()) timeline.  
 > In both timestamp mode, this message will be immediately processed if `t`=0 or omitted.
-> If timestampmode is omitted, the mode depends on the `tsmode` property (default 0, see `setTsMode()`).
+> If timestampmode is omitted, the mode depends on the `tsmode` property (default 0, see `setTsMode()`).  
+> A message that is too short for its status byte, or has a data byte that is not 0–127, is ignored. `t` must be omitted, 0 or a finite time ≥ 0.
 
 #### Channel Message Functions
 
@@ -279,10 +283,10 @@ Almost function has the timestamp, `t` parameter. That specify accurate timing o
 > Set sustain pedal state. While sustain is on, generated notes in that channel are sustained even corresponding noteOff() is called. Note that `val` is judged as 'on' if `val>=64`. Usually use `0` and `127` as a value.
 
 **setProgram(ch, pg)**
-> Set timbre for that channel. `pg` range is 0-127 that is timbre number in GM map.
+> Set timbre for that channel. `pg` range is 0-127 that is timbre number in GM map, or a slot you added to `synth.program` yourself (an unsupported compatibility path, as TinyChip uses); a program that does not exist throws a `RangeError` and changes nothing. A MIDI program change through `send()` is 0–127.
 
 **setBend(ch, val, t)**
-> Set pitch bend state. Notes in this channel are all affected to this pitch modification. `val` range is 0 to 16384 and the center with no bend is 8192. sensitivity is depends on `setBendRange()` setting. Default state is `8192`.
+> Set pitch bend state. Notes in this channel are all affected to this pitch modification. `val` range is 0 to 16383 and the center with no bend is 8192. sensitivity is depends on `setBendRange()` setting. Default state is `8192`.
 
 **setBendRange(ch, val)**
 > Set bend sensitivity for that channel. `val` unit is 100/127 cent. That means +-1 octave if 0x600, +-1 semitone if 0x80.
@@ -366,6 +370,8 @@ Each element of the array means a oscillator and object member means :
 * ff: cutoff (low- and high-pass) or centre (band-pass) frequency, a normal positive 32-bit float (at least 2^-126): Hz, or with `fk:1` a multiple of the note's frequency (including master, channel and scale tuning; not the operator's `t` or `f`, bend or pitch envelope). Required with `fl`. Clamped to 0.45 × the sample rate.
 * fq: resonance as a linear Q, a normal positive 32-bit float (at least 2^-126), default 0.7071 (`Math.SQRT1_2`). Low- and high-pass are given `20·log10(fq)` dB, band-pass `fq`.
 * fk: 1 to track the note frequency, 0 (default) for fixed Hz.
+
+Like the other numeric fields, `ff`, `fq` and `fk` also accept a numeric string such as `"1000"`, read with `Number()`.
 
 The filter is fixed for the life of the note, and is released with the voice. Example, a hi-hat through a 3 kHz high-pass: `[{w:"n1",t:0,f:440,v:0.3,d:0.04,fl:"highpass",ff:3000}]`.
 
