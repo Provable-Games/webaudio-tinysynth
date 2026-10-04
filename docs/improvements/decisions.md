@@ -420,3 +420,18 @@ The user observed that regenerating `webaudio-tinysynth.min.js` and its map in e
 - Commits made with `GITHUB_TOKEN` start no workflows. When #31's head is a bot commit, its required checks need a human commit on top, or a re-run.
 - Consumers pin a rebuild commit, or any SHA where `npm run verify` passes. A merge commit may carry a stale min.js until the rebuild lands.
 - This supersedes the "final rebuild commit" part of D-003 for tasks that start after T1-dist merges. CONCURRENCY.md rule 12 carries it to agents. AGENTS.md on `main` still says to commit the generated files, and T9 updates it. Task: T1-dist.
+
+## D-037 Manual releases for main; first release v2.0.0 (2026-10-04)
+
+The user decided not to automate `main` ("lets just stick with manual releases as this should be infrequent anyways"), and chose 2.0.0 as the version.
+
+- **`main` releases are manual:**
+  1. Create `release/vX.Y.Z` from `main`. Set the version and run `npm run build`.
+  2. Commit the min.js and its map, signed, and open a PR. CI accepts changed generated files only from a `release/*` or `improve/integration` head, and only if they equal a fresh build. The user squash-merges.
+  3. Tag the merge commit (`git tag -s vX.Y.Z`) and run `gh release create vX.Y.Z webaudio-tinysynth.min.js webaudio-tinysynth.min.js.map`, with the sha256 and sizes in the notes.
+
+  Publishing stays the user's step (D-002). No GitHub App or ruleset bypass is needed.
+- **`main` between releases:** pushes build and test a fresh min.js. They do not require the committed file to match, because it lags the source until the next release. Consumers pin a release tag, or an `improve/integration` rebuild commit during this project, and run `npm run verify` there.
+- **The `improve/integration` rebuild bot (D-036) stays,** as the supervisor recommended: it needs no credentials, and the consumer pins integration SHAs after every merge. The user can still drop it.
+- **Version:** `package.json` moves from upstream's 1.1.4 to 2.0.0 (PR #53). The input validation (#13) and the `loadMIDIUrl` promise (#14) are breaking changes. v2.0.0 is cut after #31 brings integration to `main`. The npm package name still matches upstream's; publishing to npm remains a separate decision (T9A P2).
+- This supersedes D-036's "automating `main` is a later decision". PR #51 (T1-dist) implements the `release/*` rule and the README release steps.
