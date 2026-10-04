@@ -13,7 +13,8 @@
  *     which are computed by an independent reference in Node. Equal hashes in
  *     every engine are cross-engine identity of the data. `seed` and
  *     `bufferVersion` read back. The same holds in a second, fresh page
- *     (another load of the library);
+ *     (another load of the library). The hashes read back for different seeds
+ *     differ pairwise in every buffer, whatever the table holds;
  *   - the realtime default path, new WebAudioTinySynth() with its internal
  *     AudioContext: the default-seed buffers for that context's rate, and the
  *     same data on both loads;
@@ -124,15 +125,21 @@ function cases(shared) {
               const p = await t.newPage({ offline: true });
               await p.page.setContent(seedPage(build, options));
               const got = await p.page.evaluate(BUFFERS, { sr, list });
-              const bad = [];
+              const bad = [], bySeed = new Map();
               got.forEach((r, i) => {
                 const seed = list[i].seed === undefined ? E.defaultSeed : list[i].seed;
                 const h = hashes(r);
+                if (list[i].useReverb === undefined) bySeed.set(seed, h);
                 if (r.seed !== seed || r.bufferVersion !== E.bufferVersion || r.sr !== sr) bad.push(label(list[i]) + ": seed/version/rate " + [r.seed, r.bufferVersion, r.sr].join("/"));
                 for (const k of ["convBuf", "n0", "n1"]) if (h[k] !== want[seed][k]) bad.push(label(list[i]) + " " + k + " " + h[k].slice(0, 16));
               });
               t.check("load " + (load + 1) + ": convBuf, n0 and n1 equal the seeded expectations at " + sr + " Hz (default seed, " + Object.keys(want).length + " seeds, useReverb 0); seed and bufferVersion " + E.bufferVersion + " read back", !bad.length,
                 bad.length ? bad.slice(0, 3).join(" | ") : "default " + want[E.defaultSeed].convBuf.slice(0, 12) + "/" + want[E.defaultSeed].n0.slice(0, 12) + "/" + want[E.defaultSeed].n1.slice(0, 12));
+
+              // Read back from the engine, independently of the table's values (#7: different seeds differ).
+              const same = ["convBuf", "n0", "n1"].filter((k) => new Set([...bySeed.values()].map((h) => h[k])).size !== bySeed.size);
+              t.check("load " + (load + 1) + ": the " + bySeed.size + " seeds give pairwise different convBuf, n0 and n1 (hashes read back)", bySeed.size >= 2 && !same.length,
+                same.length ? "repeated across seeds: " + same.join(", ") : [...bySeed.keys()].join(", "));
 
               const rt = await p.page.evaluate(REALTIME);
               const h = hashes(rt);
