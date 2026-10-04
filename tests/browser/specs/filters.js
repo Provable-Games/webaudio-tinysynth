@@ -19,7 +19,7 @@
  *     Normalization: the same render without the filter fields. The ratio must equal the RBJ
  *     magnitude at F within PROBE_DB: low-, high- and band-pass with Q in dB and linear,
  *     a +20 dB resonance, key tracking (-3.01 dB at every note), the Nyquist clamp on key-
- *     tracked high notes, and a drum;
+ *     tracked high notes, a drum, and a registered sample wave (#26) through a filter;
  *   - the smallest accepted fq, 2^-126 (the least normal float; review F1), on low-, high- and
  *     band-pass notes: the render stays finite and a later note on another channel is unchanged;
  *   - the consumer fixture (tests/fixtures/consumer/filters-setup.json) end to end: its three
@@ -220,12 +220,17 @@ function probes(sr) {
   }
   add("drum 42: high-pass 1 kHz at 500 Hz", 1, 42, sineOp({ f: 500, d: 0.15, fl: "highpass", ff: 1000 }), 500);
   add("drum 44: low-pass fk 1 ff 1 at the drum note's frequency", 1, 44, sineOp({ t: 1, d: 0.15, fl: "lowpass", ff: 1, fk: 1 }), noteHz(44));
+  // A registered sample wave (#26) through a filter on the same operator: the filter tracks the
+  // note frequency, not the buffer's home pitch. The fit window holds whole periods (below), so the
+  // pulse's harmonics do not leak into the fundamental's estimate.
+  add("registered sample wave nPulse8 through low-pass fk 1 ff 1 at note 60 (-3.01 dB at the fundamental)", 0, 60, sineOp({ w: "nPulse8", t: 1, fl: "lowpass", ff: 1, fk: 1 }), noteHz(60));
   return list;
 }
 const SLOT = 0.6, ON = 0.05, OFF = 0.5, W0 = 0.2, W1 = 0.45;
 const strip = (op) => { const o = Object.assign({}, op); delete o.fl; delete o.ff; delete o.fq; delete o.fk; return o; };
+const PULSE8 = [0.5, -0.5, -0.5, -0.5, -0.5, -0.5, -0.5, -0.5];
 function probeSpec(list, sr, seed, filtered) {
-  const steps = [];
+  const steps = [{ call: "setSampleWave", args: ["nPulse8", PULSE8] }];
   list.forEach((p, k) => {
     const t = k * SLOT;
     steps.push({ call: "setTimbre", args: [p.m, p.m ? p.n : 0, [filtered ? p.op : strip(p.op)]] });
@@ -353,7 +358,8 @@ function cases(shared) {
           const un = await render(p, probeSpec(list, sr, options.seed, false));
           const x = fr.channels[0], y = un.channels[0];
           const rows = list.map((pr, k) => {
-            const i0 = Math.round((k * SLOT + ON + W0) * sr), i1 = Math.round((k * SLOT + ON + W1) * sr);
+            // The window holds a whole number of periods of F (exact for a pure tone either way).
+            const i0 = Math.round((k * SLOT + ON + W0) * sr), i1 = i0 + Math.round(Math.floor((W1 - W0) * pr.F) / pr.F * sr);
             const ratio = toneAmp(x, sr, pr.F, i0, i1) / toneAmp(y, sr, pr.F, i0, i1);
             const e = mag(expected(pr.op, pr.n, sr), pr.F, sr);
             return { label: pr.label, measuredDb: A.db(ratio), expectedDb: A.db(e), diff: Math.abs(A.db(ratio) - A.db(e)), unfiltered: toneAmp(y, sr, pr.F, i0, i1) };

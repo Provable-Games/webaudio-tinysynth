@@ -540,6 +540,93 @@ describe.each(variants)("$name", (variant) => {
   });
 });
 
+/*
+ * With T11's registry (#26): a filter on an operator that plays a registered wave, and failed
+ * allocation (review F3, PR #46 Codex LOW). A note whose wave cannot be resolved is dropped before
+ * any source, gain or filter exists; setTimbre rejects an unknown wave before installing anything.
+ */
+describe.each(variants)("$name: filters with registered waves, and failed allocation", (variant) => {
+  const PULSE8 = [0.5, -0.5, -0.5, -0.5, -0.5, -0.5, -0.5, -0.5];
+  test("a registered sample wave through a filter on the same operator: buffer at its home pitch, filter on the note frequency", () => {
+    const s = make(variant);
+    s.synth.setSampleWave("nPulse", PULSE8);
+    s.synth.setTimbre(0, 0, [{ w: "nPulse", s: 1, r: 0.05, fl: "lowpass", ff: 2, fk: 1, fq: 3 }]);
+    const from = s.trace.length;
+    s.synth.noteOn(5, 60, 100);
+    const c = calls(s.trace, from);
+    const src = c.find(([op, id]) => op === "create" && id.startsWith("src#"))[1];
+    const gain = c.find(([op, id]) => op === "create" && id.startsWith("gain#"))[1];
+    const [bq] = biquads(s.trace, from);
+    const k = Math.round(44100 / (440 * 8)), base = 44100 / (8 * k); // D-027 held storage
+    expect(c.find(([op, id]) => op === "value" && id === src + ".playbackRate")[2]).toBeCloseTo(noteHz(60) / base, 12);
+    expect(bq).toMatchObject({ type: "lowpass", Q: 20 * Math.log10(3) });
+    expect(bq.frequency).toBeCloseTo(2 * noteHz(60), 9); // the note's frequency, not the buffer's home pitch
+    const conn = c.filter(([op]) => op === "connect").map(([, x, y]) => [x, y]);
+    expect(conn).toContainEqual([src, gain]);
+    expect(conn).toContainEqual([gain, bq.id]);
+    expect(conn).toContainEqual([bq.id, s.synth.chvol[5]._id]);
+    s.synth.noteOff(5, 60);
+    s.step(1000);
+    s.ended();
+    expect(filterEdges(s.trace)).toEqual([]);
+    expect(heldFilters(s.synth)).toEqual([]);
+  });
+
+  test("a registered harmonic wave through a band-pass, and the pair through replacement and dispose()", async () => {
+    const s = make(variant);
+    s.synth.setHarmonicWave("wOdd", [0, 0, 0, 0], [0, 1, 0, 1 / 3]);
+    s.synth.setSampleWave("nPulse", PULSE8);
+    s.synth.setTimbre(0, 1, [{ w: "wOdd", s: 1, fl: "bandpass", ff: 1200, fq: 4 }, { w: "nPulse", s: 1, fl: "highpass", ff: 300 }]);
+    s.synth.setProgram(5, 1);
+    const from = s.trace.length;
+    s.synth.noteOn(5, 64, 100);
+    expect(calls(s.trace, from).some(([op]) => op === "setPeriodicWave")).toBe(true);
+    expect(biquads(s.trace, from).map((x) => [x.type, x.frequency])).toEqual([["bandpass", 1200], ["highpass", 300]]);
+    expect(filterEdges(s.trace).length).toBe(4);
+    s.synth.setAudioContext(new s.Base()); // the synth's own context: torn down at once; waves rebuilt for the new one
+    expect(filterEdges(s.trace)).toEqual([]);
+    s.synth.setProgram(5, 1);
+    s.synth.noteOn(5, 64, 100);
+    expect(filterEdges(s.trace).length).toBe(4);
+    await s.synth.dispose();
+    s.ended();
+    expect(filterEdges(s.trace)).toEqual([]);
+    expect(heldFilters(s.synth)).toEqual([]);
+  });
+
+  test("failed allocation: setTimbre rejects an unknown wave next to a filter before installing anything", () => {
+    const s = make(variant);
+    const before = s.synth.program[0].p;
+    const timbre = [{ w: "sine", s: 1, fl: "lowpass", ff: 1000 }, { w: "wmissing" }]; // PR #46 Codex LOW
+    let error = null;
+    try {
+      s.synth.setTimbre(0, 0, timbre);
+    } catch (e) {
+      error = e;
+    }
+    expect(error && error.name).toBe("TypeError");
+    expect(s.synth.program[0].p).toBe(before);
+    expect(timbre[0]).toEqual({ w: "sine", s: 1, fl: "lowpass", ff: 1000 });
+  });
+
+  test("failed allocation: a note whose later operator's wave is missing creates no source, gain or filter", () => {
+    const s = make(variant, { voices: 4 });
+    const full = (o) => Object.assign({ g: 0, w: "sine", t: 1, f: 0, v: 0.3, a: 0, h: 0.01, d: 0.01, s: 1, r: 0.05, p: 1, q: 1, k: 0 }, o);
+    s.synth.noteOn(1, 50, 100); // a sounding voice that must not be stolen for the dropped notes
+    const voices = s.synth.notetab.length;
+    for (const missing of ["wmissing", "nmissing"]) {
+      // written past setTimbre, as TinyChip writes program slots: operator 0 is filtered, operator 1's wave is missing
+      s.synth.program[0].p = [full({ fl: "lowpass", ff: 1000 }), full({ w: missing })];
+      const from = s.trace.length;
+      for (let k = 0; k < 3; ++k) s.synth.noteOn(0, 60 + k, 100);
+      expect(calls(s.trace, from)).toEqual([]);
+      expect(s.synth.notetab.length).toBe(voices);
+    }
+    expect(biquads(s.trace)).toEqual([]);
+    expect(filterEdges(s.trace)).toEqual([]);
+  });
+});
+
 describe("source and minified builds", () => {
   test("make identical WebAudio calls with filtered timbres", () => {
     const traces = variants.map((variant) => {
