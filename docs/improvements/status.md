@@ -38,7 +38,7 @@ States: `pending`, `running`, `review`, `accepted`, `blocked`.
 | T7 | #17 | `t7/architecture` | after G1 | pending | | |
 | T8 | #7 #18 | seed: `t8/seed`; perf later | seed d1f0e26 | #7 seed: independent review approved (6ea7e54); fmix32 seed hash and static `Math.random` guard being added; #18 after T7 | | D-004. mulberry32 streams, `bufferVersion` 1, default seed 0. The matrix passes in 3 engines. min.js 40,694 / 11,334 B. |
 | T11 | #26 | `t11/waveforms` | d1f0e26 (T4 head) | running | | D-006, D-021, D-027 (held storage) |
-| T12 | #27 | `t12/filters` | d1f0e26 (T4 head) | done (7223f3a, signed); independent review running | | D-007, D-028. Integrates after T11 and T8-seed. |
+| T12 | #27 | `t12/filters` | d1f0e26 (T4 head) | review requested fixes (9716d63): F1 `fq` NaN floor; fixes in progress | | D-007, D-028. Integrates after T11 and T8-seed. |
 | T9 | #19 #20, docs for #26/#27 | demos: `t9/demos`; docs later | demos 413f36c | demos integrated (merge 5946c28, head 0818b76; PR #38 green at 284c61b); docs after T7, accepted after T12 | | T9-D covers the engine-independent #19 demo fixes: 11/11 cases in 3 engines, and the demos make zero remote requests offline. T9-3/5/8 deferred to T4/T5. |
 | T1B | later CI extensions | `t1/ci-ext` | after T6/T7/T12 | pending | | |
 | T10 | all (independent verification) | `t10/verify` | after T8 T9 T1B T11 T12 | pending | | Gate G2 |
