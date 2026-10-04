@@ -441,21 +441,31 @@ describe.each(variants)("$name: the registry across contexts (#26, D-018)", (var
     const s = make(variant, { lazy: true });
     s.synth.setHarmonicWave("wOrg", [0, 0], [0, 1]);
     const Base = s.env.sandbox.AudioContext, made = [];
+    let refuse = (re) => re.length === 2; // the registered wave, built before anything is installed; w9999 has 5 coefficients
     s.env.sandbox.AudioContext = class extends Base {
       constructor() {
         super();
         made.push(this);
       }
       createPeriodicWave(re, im) {
-        if (re.length === 2) throw new Error("refused"); // the registered wave; w9999 has 5 coefficients
+        if (refuse(re)) throw new Error("refused");
         return super.createPeriodicWave(re, im);
       }
     };
     for (let i = 0; i < 3; ++i) expect(thrown(() => s.synth.noteOn(0, 60, 100))).toEqual({ name: "Error", message: "refused" });
     expect(made.map((c) => c.state)).toEqual(["closed", "closed", "closed"]);
     expect([s.synth.getAudioContext(), s.synth.chvol.length]).toEqual([null, 0]);
+    // A failure after the context is installed (here w9999, built late in setAudioContext(); PR #47 Claude LOW):
+    // the synth is left without a context, not on the closed one, so the next use retries.
+    refuse = (re) => re.length === 5; // w9999 only: the registered wave builds, the install then fails
+    expect(thrown(() => s.synth.noteOn(0, 60, 100))).toEqual({ name: "Error", message: "refused" });
+    expect([made[3].state, s.synth.getAudioContext()]).toEqual(["closed", null]);
+    refuse = () => false;
+    s.synth.noteOn(0, 60, 100);
+    expect([made.length, made[4].state, s.synth.getAudioContext()]).toEqual([5, "running", made[4]]);
     await s.synth.dispose();
-    expect(calls(s.trace).filter((c) => c[0] === "close")).toHaveLength(3); // dispose() had nothing more to close
+    expect(made.map((c) => c.state)).toEqual(["closed", "closed", "closed", "closed", "closed"]); // the working one is synth-owned
+    expect(calls(s.trace).filter((c) => c[0] === "close")).toHaveLength(5); // each closed once
     // A caller-owned context that refuses a wave is never closed by the synth.
     const t = make(variant);
     t.synth.setHarmonicWave("wOrg", [0, 0], [0, 1]);
