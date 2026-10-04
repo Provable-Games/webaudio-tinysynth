@@ -279,8 +279,10 @@ const SONGS = {
 /*
  * Runs one scenario in a fresh page under the external deadline. Returns the
  * records, or null after a failed check (no return, an exception in the page).
+ * With opts.unfinishedOk, a run that ends with steps left is returned with
+ * `unfinished: true` instead of failing (the caller retries it).
  */
-async function scenario(t, build, spec, label) {
+async function scenario(t, build, spec, label, opts = {}) {
   const { server, options } = t.shared;
   const pageId = "transport-" + build;
   server.registerPage(pageId, pages.inlinePage({ library: pages.readLibrary(build, options.overrides), seed: options.seed, after: ["(" + HARNESS.toString() + ")();"] }));
@@ -292,8 +294,9 @@ async function scenario(t, build, spec, label) {
   const tag = label ? label + ": " : "";
   if (!t.check(tag + "the scenario returned within the " + SCENARIO_DEADLINE + " s deadline", r.ok,
     r.timedOut ? "no return (a scheduler or page hang); the page is closed by the case cleanup" : r.ok ? "" : short(r.error))) return null;
-  if (!t.check(tag + "the scenario reached its last step", !r.value.timedOut, r.value.timedOut ? "steps left after " + full.maxSeconds + " s; status " + JSON.stringify(r.value.status) : "")) return null;
   t.check(tag + "no page error", !p.pageErrors.length, p.pageErrors.join(" | "));
+  if (r.value.timedOut && opts.unfinishedOk) return Object.assign(r.value, { unfinished: true });
+  if (!t.check(tag + "the scenario reached its last step", !r.value.timedOut, r.value.timedOut ? "steps left after " + full.maxSeconds + " s; status " + JSON.stringify(r.value.status) : "")) return null;
   return r.value;
 }
 

@@ -32,6 +32,8 @@
 const T = require("./transport");
 
 const SEEK_TICK = 960;
+// Attempts at catching the scheduler's lookahead (see the "while playing" case).
+const QUEUE_ATTEMPTS = 3;
 const PROGRAMS = [[0, 0, T.SINE], [0, 1, T.SQUARE]];
 const SONG = T.song([
   [0, [0xc0, 1]], [0, [0xb0, 7, 90]], [0, [0xb0, 10, 40]], [0, [0xe0, 0x00, 0x60]], // bend 12288
@@ -150,18 +152,38 @@ function cases(shared) {
       run: async (t) => {
         const ref = await reference(t);
         if (!ref) return;
-        const r = await T.scenario(t, build, {
-          timbres: PROGRAMS,
-          steps: [
-            { when: "now", ops: [{ load: song }, { call: "playMIDI" }] },
-            { when: { curTick: 1440 }, ops: [{ call: "locateMIDI", args: [SEEK_TICK] }] },
-            ...end,
-          ],
-        }, "history");
+        /*
+         * The seek runs right after the scheduler tick that sends tick 1200's
+         * changes, which are then due up to 0.2 s (the lookahead) later. A tick
+         * that comes 0.2 s or more after the previous one (a loaded runner) sends
+         * them already due, or sends the rest of the song so that it ends before
+         * the seek step: then nothing queued is left to cancel, the attempt does
+         * not exercise the case, and it is repeated, at most QUEUE_ATTEMPTS times,
+         * each in a fresh page. Every attempt is recorded.
+         */
+        const attempts = [];
+        let r = null, seek = null;
+        for (let k = 1; k <= QUEUE_ATTEMPTS && !t.isAbandoned(); ++k) {
+          const x = await T.scenario(t, build, {
+            timbres: PROGRAMS,
+            steps: [
+              { when: "now", ops: [{ load: song }, { call: "playMIDI" }] },
+              { when: { curTick: 1440 }, ops: [{ call: "locateMIDI", args: [SEEK_TICK] }] },
+              ...end,
+            ],
+          }, "history, attempt " + k, { unfinishedOk: true });
+          if (!x) return;
+          const s = T.opAt(x, "locateMIDI");
+          const sent = s ? x.params.filter((p) => p.param === "vol" && p.m === "setValueAtTime" && p.seq < s.seq && p.v === vol(50)) : [];
+          attempts.push("attempt " + k + ": " + (!s ? "the song ended before the seek step (a late tick sent the rest)" : x.unfinished ? "steps left after the seek" : sent.length ? "due " + T.fmt(sent[0].t - s.at) + " s after the seek" : "not sent before the seek"));
+          r = x;
+          seek = s;
+          if (s && !x.unfinished && sent.length === 1 && sent[0].t > s.at) break;
+        }
         if (!r) return;
-        const seek = T.opAt(r, "locateMIDI");
-        const queued = r.params.filter((p) => p.param === "vol" && p.m === "setValueAtTime" && p.seq < seek.seq && p.t > seek.at && p.v === vol(50));
-        t.check("(precondition) the song's tick-1200 volume change was queued for after the seek (scheduler lookahead)", queued.length === 1, queued.length ? "due " + T.fmt(queued[0].t - seek.at) + " s after the seek" : "not queued (a late timer)");
+        t.observe("lookahead attempts", attempts);
+        const queued = seek && !r.unfinished ? r.params.filter((p) => p.param === "vol" && p.m === "setValueAtTime" && p.seq < seek.seq && p.t > seek.at && p.v === vol(50)) : [];
+        if (!t.check("(precondition) the song's tick-1200 volume change was queued for after the seek (scheduler lookahead), within " + QUEUE_ATTEMPTS + " attempts", queued.length === 1, attempts.join("; "))) return;
         const got = pass(r, seek);
         t.observe("pass after the seek", got);
         const d = compare(got, ref, 0);

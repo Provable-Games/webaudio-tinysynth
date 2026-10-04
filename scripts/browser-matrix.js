@@ -324,7 +324,8 @@ function launch(argv) {
     if (!m || typeof m.status !== "number" || reported !== null) return;
     reported = m.status;
     grace = setTimeout(() => {
-      console.log("note: the orchestrator did not exit within " + EXIT_GRACE + " s of reporting its result; it was killed (exit status " + reported + " kept)");
+      // stderr: the orchestrator's PASS:/FAIL: line stays the last line on stdout.
+      console.error("note: the orchestrator did not exit within " + EXIT_GRACE + " s of reporting its result; it was killed (exit status " + reported + " kept)");
       child.kill("SIGKILL");
       process.exit(reported);
     }, EXIT_GRACE * 1000);
