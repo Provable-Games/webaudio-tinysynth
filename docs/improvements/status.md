@@ -33,12 +33,12 @@ States: `pending`, `running`, `review`, `accepted`, `blocked`.
 | T3 | #8 #9 #10 #21 | `t3/transport` | 09922b9 | accepted | 99177f4 | The independent review accepted after two rounds (`tasks/T3-review.md`, 0cf4495). PR #34 green, Codex and Claude `lgtm`. min.js `b49e8ceb…`, 36,960 / 9,948 B. D-005, D-019. F11 is a T6-B test; F12 is a documented residual. |
 | T4 | #11 #12 | `t4/lifecycle` | e5866e1 | accepted | 25c4f79 (merge 4fc3b0c) | Independent review plus delta re-review accepted (`tasks/T4-review.md`, 24581b8). PR #37 green. min.js `6f5b1f79…`, 40,245 / 10,991 B. D-018, D-023, D-025. LOW follow-up: CC11 (expression) resume test, assigned to T6-B. |
 | T3.1 | #21 (consumer D-023) | `t3/leading-rest` | d1f0e26 (T4 head) | done (d096501, signed); independent review running; waits for T4 to land | | Leading rest on the first `loopEnd` pass, plus `getPlayStatus().startTime`. Runs in parallel with T11 (D-026). |
-| T5 | #13 #14 | `t5/api` | d1f0e26 (T4 head) | running | | Integrates last among engine tasks and folds in the T11/T12 helpers (D-030). The `_note` guard is deferred to T5.2. |
+| T5 | #13 #14 | `t5/api` | d1f0e26 (T4 head) | done pending merge of T4 (decisions: T3 test diff approved, invalidate-on-dispose kept); review after merge | | Integrates last among engine tasks and folds in the T11/T12 helpers (D-030). The `_note` guard is deferred to T5.2. |
 | T6 | #16 #7 (validation) | `t6/validation` | 25d2a3d | phases A and A.1 integrated (merges 346b782 and af3ea7a; PRs #33 and #36 green); phase B.1 running (`t6/phase-b`, 413f36c: T2/T3 assertions, F11, the double-count LOW); the remaining phase-B rows follow their tasks | | PR #33 green, including the arm64 matrix in 3 engines. The integrated tree passes `test:browser:matrix` locally (42 cases). Two deferred Codex MEDIUM test-strength fixes are in A.1. Full acceptance at G1. |
 | T7 | #17 | `t7/architecture` | after G1 | pending | | |
 | T8 | #7 #18 | seed: `t8/seed`; perf later | seed d1f0e26 | #7 seed done (6e74155, signed); independent review running; #18 after T7 | | D-004. mulberry32 streams, `bufferVersion` 1, default seed 0. The matrix passes in 3 engines. min.js 40,694 / 11,334 B. |
 | T11 | #26 | `t11/waveforms` | d1f0e26 (T4 head) | running | | D-006, D-021, D-027 (held storage) |
-| T12 | #27 | `t12/filters` | d1f0e26 (T4 head) | running | | D-007, D-028. Integrates after T11 and T8-seed. |
+| T12 | #27 | `t12/filters` | d1f0e26 (T4 head) | done (7223f3a, signed); independent review running | | D-007, D-028. Integrates after T11 and T8-seed. |
 | T9 | #19 #20, docs for #26/#27 | demos: `t9/demos`; docs later | demos 413f36c | demos integrated (merge 5946c28, head 0818b76; PR #38 green at 284c61b); docs after T7, accepted after T12 | | T9-D covers the engine-independent #19 demo fixes: 11/11 cases in 3 engines, and the demos make zero remote requests offline. T9-3/5/8 deferred to T4/T5. |
 | T1B | later CI extensions | `t1/ci-ext` | after T6/T7/T12 | pending | | |
 | T10 | all (independent verification) | `t10/verify` | after T8 T9 T1B T11 T12 | pending | | Gate G2 |
@@ -72,6 +72,7 @@ Local checks at f01ca19 all exit 0: `npm ci`, lint, verify, `pack:check`, `npm t
 
 ## Consumer coordination
 
+- 2026-10-03: the T4 pin `a6d3f0e` (min.js `6f5b1f79…`, 40,245 / 10,991 B) was sent to the coordinator, now likely `webaudio-tinysynth-03` after the second crash. This supervisor is now `webaudio-tinysynth-a0`.
 - Session names change after restarts. After the 2026-10-03 container crash, the consumer coordinator is `webaudio-tinysynth-33` (formerly `webaudio-tinysynth-15`; the D-028 note first went to `onchain-tinysynth-9b`, a read-only helper, by mistake), and this supervisor is `webaudio-tinysynth-b1` (formerly `-88`). Run `ListAgents` and confirm before messaging.
 - 2026-10-03: interim pinning was offered to the onchain-tinysynth agent (session `webaudio-tinysynth-15`): pin an `improve/integration` SHA plus its min.js sha256, with no class declaration against interim pins. The pin candidate offered was `4b29ff1` / min.js `b49e8ceb…`, and the consumer adopted it (below).
 - Whenever T4 (caller stop), T3.1 (leading rest, `startTime`), #7, #26 or #27 integrates, send that session the new integration SHA and min.js sha256, and flag any change to `playTime`, `playTick`, `chvol`, `chmod` or `chpan` (D-023).
