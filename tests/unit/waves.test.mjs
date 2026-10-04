@@ -437,6 +437,34 @@ describe.each(variants)("$name: the registry across contexts (#26, D-018)", (var
     expect([s.synth.noiseBuf.nTRI, s.synth._wv.get("nTRI"), s.synth._wv.has("nNew"), "nNew" in s.synth.noiseBuf]).toEqual([tri, def, false, false]);
   });
 
+  test("a lazy start whose context refuses a registered wave closes that context and stays uninstalled (PR #40 Codex MEDIUM)", async () => {
+    const s = make(variant, { lazy: true });
+    s.synth.setHarmonicWave("wOrg", [0, 0], [0, 1]);
+    const Base = s.env.sandbox.AudioContext, made = [];
+    s.env.sandbox.AudioContext = class extends Base {
+      constructor() {
+        super();
+        made.push(this);
+      }
+      createPeriodicWave(re, im) {
+        if (re.length === 2) throw new Error("refused"); // the registered wave; w9999 has 5 coefficients
+        return super.createPeriodicWave(re, im);
+      }
+    };
+    for (let i = 0; i < 3; ++i) expect(thrown(() => s.synth.noteOn(0, 60, 100))).toEqual({ name: "Error", message: "refused" });
+    expect(made.map((c) => c.state)).toEqual(["closed", "closed", "closed"]);
+    expect([s.synth.getAudioContext(), s.synth.chvol.length]).toEqual([null, 0]);
+    await s.synth.dispose();
+    expect(calls(s.trace).filter((c) => c[0] === "close")).toHaveLength(3); // dispose() had nothing more to close
+    // A caller-owned context that refuses a wave is never closed by the synth.
+    const t = make(variant);
+    t.synth.setHarmonicWave("wOrg", [0, 0], [0, 1]);
+    const caller = t.Ctx();
+    caller.createPeriodicWave = () => { throw new Error("refused"); };
+    expect(thrown(() => t.synth.setAudioContext(caller))).toEqual({ name: "Error", message: "refused" });
+    expect(caller.state).toBe("running");
+  });
+
   test("dispose() releases the context's waves and keeps the definitions; later calls change nothing audible", async () => {
     const s = make(variant);
     s.synth.setSampleWave("nTRI", TRI64);

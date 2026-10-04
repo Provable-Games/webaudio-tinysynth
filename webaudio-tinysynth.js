@@ -555,9 +555,16 @@ function WebAudioTinySynthCore(target) {
       this.isReady=1;
     },
     _create:()=>{
-      /* Create and install the synth-owned context. */
+      /* Create and install the synth-owned context. If installing it fails (a registered wave the
+         context refuses, #26), it is closed and the error propagates: nothing is left open. */
       window.AudioContext = window.AudioContext || window.webkitAudioContext;
-      this.setAudioContext(new AudioContext());
+      const c=new AudioContext();
+      try{
+        this.setAudioContext(c);
+      }catch(e){
+        c.close().catch(()=>{});
+        throw e;
+      }
       this._own=1;
       return this.actx;
     },
