@@ -1,0 +1,227 @@
+name: Dist
+
+# Regenerates webaudio-tinysynth.min.js and its source map on
+# improve/integration after each push (normally a merged pull request) and
+# commits them back. Pull requests do not carry these files
+# (scripts/check-dist.js); this workflow is their only writer on that branch.
+# main is not automated: GITHUB_TOKEN cannot push there under its ruleset.
+# Design, trust boundary and the main branch: docs/improvements/tasks/T1-dist.md.
+#
+#   build          read-only token. npm ci, the pinned build, the inline-safety
+#                  checks, and the unit, native Node and regression suites run
+#                  against the exact bytes built. Uploads the two files only if
+#                  every step passed.
+#   browser-smoke  read-only token. Offline Chromium smoke test of a fresh build
+#                  (about 40 s, in parallel with build's ~8 min of tests).
+#   commit         write token, no npm and no repository code. Compares the
+#                  artifact with the files at the pushed commit and, if they
+#                  differ, commits it with GraphQL createCommitOnBranch (signed
+#                  by GitHub) and expectedHeadOid = the pushed commit, so a build
+#                  of older source can never land on a newer head.
+#
+# A commit made with GITHUB_TOKEN starts no workflow run, so the rebuild commit
+# triggers nothing, including this workflow. The loop guard below skips a push
+# whose head is a rebuild commit anyway.
+
+on:
+  push:
+    branches: [improve/integration]
+  workflow_dispatch:
+
+permissions: {}
+
+# The newest push wins: it cancels an older run of the same branch, whose
+# build could no longer be committed anyway (expectedHeadOid).
+concurrency:
+  group: dist-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: build
+    if: >-
+      github.event_name != 'push' ||
+      !(github.event.head_commit.author.name == 'github-actions[bot]' &&
+        startsWith(github.event.head_commit.message, 'Rebuild webaudio-tinysynth.min.js for '))
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0 # the regressions read the upstream reference from git history
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - name: Pinned build
+        run: |
+          node scripts/build.js "$RUNNER_TEMP/dist"
+          # Every later step tests these exact bytes (scripts/test-build.js).
+          echo "TINYSYNTH_MIN=$RUNNER_TEMP/dist/webaudio-tinysynth.min.js" >> "$GITHUB_ENV"
+      - name: Safe to inline (no </script, <script or <!--; ASCII only)
+        run: node scripts/check-dist.js --inline-only
+      - name: Unit tests (Vitest)
+        run: npm run test:unit
+      - name: Native Node tests
+        run: npm run test:node
+      - name: Regression scripts
+        run: npm run test:regression
+      - name: Upload the build
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist
+          path: |
+            ${{ runner.temp }}/dist/webaudio-tinysynth.min.js
+            ${{ runner.temp }}/dist/webaudio-tinysynth.min.js.map
+          if-no-files-found: error
+          retention-days: 7
+
+  browser-smoke:
+    name: browser-smoke
+    if: >-
+      github.event_name != 'push' ||
+      !(github.event.head_commit.author.name == 'github-actions[bot]' &&
+        startsWith(github.event.head_commit.message, 'Rebuild webaudio-tinysynth.min.js for '))
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - name: Install the pinned Playwright's Chromium headless shell and system libraries
+        run: npx playwright-core install --with-deps --only-shell chromium
+      - name: Offline browser smoke test of a fresh build
+        run: npm run test:browser
+
+  commit:
+    name: commit
+    needs: [build, browser-smoke]
+    # Only improve/integration is rebuilt in place; a manual run elsewhere stops after the checks.
+    if: github.ref == 'refs/heads/improve/integration'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      FILES: webaudio-tinysynth.min.js webaudio-tinysynth.min.js.map
+    steps:
+      - name: Download the build
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: ${{ runner.temp }}/built
+      - name: Fetch the committed files at the pushed commit, as data
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: committed
+          persist-credentials: false
+          sparse-checkout: |
+            webaudio-tinysynth.min.js
+            webaudio-tinysynth.min.js.map
+          sparse-checkout-cone-mode: false
+      - name: Commit the build if it differs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          built="$RUNNER_TEMP/built"
+          committed="$GITHUB_WORKSPACE/committed"
+          summary() { echo "$1" >> "$GITHUB_STEP_SUMMARY"; }
+
+          # The artifact is data from the build job: exactly the two files,
+          # non-empty, and the minified file safe to inline in <script>.
+          listed=$(find "$built" -mindepth 1 -printf '%P\n' | sort | tr '\n' ' ')
+          if [ "$listed" != "webaudio-tinysynth.min.js webaudio-tinysynth.min.js.map " ]; then
+            echo "::error::unexpected artifact contents: $listed"
+            exit 1
+          fi
+          for f in $FILES; do
+            [ -s "$built/$f" ] || { echo "::error::$f is empty"; exit 1; }
+          done
+          if grep -qiE '</script|<script|<!--' "$built/webaudio-tinysynth.min.js" ||
+             LC_ALL=C grep -q '[^[:print:][:space:]]' "$built/webaudio-tinysynth.min.js"; then
+            echo "::error::the built webaudio-tinysynth.min.js is not safe to inline"
+            exit 1
+          fi
+
+          short=${GITHUB_SHA:0:7}
+          summary "### Generated files for $short on $GITHUB_REF_NAME"
+          summary ""
+          summary "| file | bytes | gzip -9 -n | sha256 |"
+          summary "| --- | ---: | ---: | --- |"
+          for f in $FILES; do
+            summary "| $f | $(stat -c %s "$built/$f") | $(gzip -9 -n -c "$built/$f" | wc -c) | \`$(sha256sum "$built/$f" | cut -d' ' -f1)\` |"
+          done
+          summary ""
+
+          same=1
+          for f in $FILES; do cmp -s "$built/$f" "$committed/$f" || same=0; done
+          if [ "$same" = 1 ]; then
+            echo "up to date: the committed files at $GITHUB_SHA equal the build"
+            summary "Up to date: the committed files at \`$GITHUB_SHA\` equal the build. Nothing committed."
+            exit 0
+          fi
+
+          min_sha=$(sha256sum "$built/webaudio-tinysynth.min.js" | cut -d' ' -f1)
+          map_sha=$(sha256sum "$built/webaudio-tinysynth.min.js.map" | cut -d' ' -f1)
+          body=$(printf 'Source: %s\nwebaudio-tinysynth.min.js sha256: %s\nwebaudio-tinysynth.min.js.map sha256: %s\n\nBuilt by %s' \
+            "$GITHUB_SHA" "$min_sha" "$map_sha" "$RUN_URL")
+          # The contents go in a request file: the map's base64 is near the
+          # 128 KiB limit for a single command-line argument.
+          base64 -w0 "$built/webaudio-tinysynth.min.js" > "$RUNNER_TEMP/min.b64"
+          base64 -w0 "$built/webaudio-tinysynth.min.js.map" > "$RUNNER_TEMP/map.b64"
+          jq -n \
+            --arg repo "$GITHUB_REPOSITORY" --arg branch "$GITHUB_REF_NAME" --arg head "$GITHUB_SHA" \
+            --arg headline "Rebuild webaudio-tinysynth.min.js for $short" --arg body "$body" \
+            --rawfile min "$RUNNER_TEMP/min.b64" --rawfile map "$RUNNER_TEMP/map.b64" \
+            '{query: "mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid url } } }",
+              variables: {input: {
+                branch: {repositoryNameWithOwner: $repo, branchName: $branch},
+                expectedHeadOid: $head,
+                message: {headline: $headline, body: $body},
+                fileChanges: {additions: [
+                  {path: "webaudio-tinysynth.min.js", contents: $min},
+                  {path: "webaudio-tinysynth.min.js.map", contents: $map}]}}}}' > "$RUNNER_TEMP/request.json"
+
+          if gh api graphql --input "$RUNNER_TEMP/request.json" > "$RUNNER_TEMP/response.json" 2> "$RUNNER_TEMP/error.txt" &&
+             oid=$(jq -re '.data.createCommitOnBranch.commit.oid' "$RUNNER_TEMP/response.json"); then
+            echo "committed $oid"
+            summary "Committed \`$oid\` (source \`$GITHUB_SHA\`)."
+            exit 0
+          fi
+          # Refused. If the branch moved, a newer push's run rebuilds it.
+          now=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$GITHUB_REF_NAME" --jq .object.sha)
+          if [ "$now" != "$GITHUB_SHA" ]; then
+            echo "::notice::$GITHUB_REF_NAME moved from $short to ${now:0:7} during this run; nothing committed. The newer push's run rebuilds it."
+            summary "Not committed: \`$GITHUB_REF_NAME\` moved to \`$now\` during this run (expectedHeadOid). The newer push's run rebuilds it."
+            exit 0
+          fi
+          cat "$RUNNER_TEMP/response.json" "$RUNNER_TEMP/error.txt" || true
+          if grep -qs 'Resource not accessible by integration' "$RUNNER_TEMP/response.json" "$RUNNER_TEMP/error.txt"; then
+            echo "::error::GITHUB_TOKEN may not write to $GITHUB_REF_NAME (repository setting or ruleset); see docs/improvements/tasks/T1-dist.md"
+          else
+            echo "::error::createCommitOnBranch failed and $GITHUB_REF_NAME is still at $GITHUB_SHA"
+          fi
+          summary "FAILED: createCommitOnBranch was refused; see the job log."
+          exit 1
