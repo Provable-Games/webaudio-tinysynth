@@ -126,6 +126,39 @@ describe.each(variants)("$name: leading rest and startTime (D-023)", (variant) =
     expectAligned(fx, s.notes.slice(n, 2 * n), starts[1], fx.ticks, "pass 2");
   });
 
+  test("loopEnd unset: a later pass keeps the tempo the previous one ended on until its first tempo event; startTime is extrapolated at that tempo", () => {
+    // No tempo event at tick 0; 60 BPM from tick 240, so pass 2 starts at 60 BPM (upstream carry-over, D-005).
+    const fx = fixture([[240, 1000000]], [96, 192, 288], 384);
+    const s = synthFor(variant);
+    load(s, fx);
+    s.synth.setLoop(1);
+    s.synth.playMIDI();
+    const starts = wraps(s, 1);
+    const n = fx.ticks.length;
+    expect(H.runUntil(s.env, () => s.notes.length >= n + 2, 10000)).toBe(true);
+    // Pass 2's first event plays on pass 1's last event (the note-off at 336), as upstream.
+    close(s.notes[n][0], starts[0] + at(fx, 336));
+    // Its events before the tempo event at 240 sound at startTime + tick x the inherited 60 BPM (1/96 s per tick),
+    // not at the song's 120 BPM opening.
+    const inherited = 60 / 60 / PPQ;
+    expect(s.notes.slice(n, n + 2).map((x) => x[2])).toEqual([60, 61]);
+    [96, 192].forEach((tick, i) => close(s.notes[n + i][0], starts[1] + tick * inherited, "pass 2, note at tick " + tick));
+  });
+
+  test.each([-1, NaN])("locateMIDI(%s) counts as tick 0: with loopEnd, the pass keeps its leading rest", (tick) => {
+    const s = synthFor(variant);
+    load(s, CONSUMER);
+    s.synth.setLoop(1);
+    s.synth.setLoopEnd(768);
+    s.synth.locateMIDI(tick);
+    expect(s.synth.getPlayStatus().curTick).toBe(96);
+    const t0 = now(s);
+    s.synth.playMIDI();
+    expect(startTime(s)).toBe(t0 + 0.1);
+    expect(H.runUntil(s.env, () => s.notes.length >= 2, 10000)).toBe(true);
+    expectAligned(CONSUMER, s.notes.slice(0, 2), t0 + 0.1, [96, 192], "after locateMIDI(" + tick + ")");
+  });
+
   test("a seek into the leading rest keeps next-event positioning; the next pass starts one loop after the virtual tick 0", () => {
     const s = synthFor(variant);
     load(s, CONSUMER);
