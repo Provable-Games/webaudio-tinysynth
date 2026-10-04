@@ -466,6 +466,33 @@ describe.each(variants)("$name: the registry across contexts (#26, D-018)", (var
     await s.synth.dispose();
     expect(made.map((c) => c.state)).toEqual(["closed", "closed", "closed", "closed", "closed"]); // the working one is synth-owned
     expect(calls(s.trace).filter((c) => c[0] === "close")).toHaveLength(5); // each closed once
+    // A failure part-way through the graph (the sixth createGain, a channel node; PR #47 Codex LOW): the error
+    // is the original one, and what was installed is disconnected and released before the context is closed.
+    const u = make(variant, { lazy: true }), UBase = u.env.sandbox.AudioContext, umade = [];
+    u.env.sandbox.AudioContext = class extends UBase {
+      constructor() {
+        super();
+        umade.push(this);
+        this.gains = 0;
+      }
+      createGain() {
+        if (++this.gains === 6) throw new Error("no more gains");
+        return super.createGain();
+      }
+    };
+    expect(thrown(() => u.synth.noteOn(0, 60, 100))).toEqual({ name: "Error", message: "no more gains" });
+    const graph = (y) => [y.getAudioContext(), y.out, y.comp, y.conv, y.rev, y.lfo, y.wave, y.noiseBuf, y.convBuf, y.chvol.length, y.chmod.length, y.chpan.length];
+    expect(graph(u.synth)).toEqual([null, null, null, null, null, null, null, null, null, 0, 0, 0]);
+    expect(umade[0].state).toBe("closed");
+    const made0 = calls(u.trace).filter((c) => c[0] === "create" || c[0] === "connect");
+    const live = new Set();
+    for (const [op, from, to] of calls(u.trace)) {
+      if (op === "connect") live.add(from + ">" + to);
+      if (op === "disconnect") for (const k of [...live]) if (k.startsWith(from + ">") && (to === null || k === from + ">" + to)) live.delete(k);
+    }
+    expect(made0.length > 10 && live.size === 0).toBe(true); // every connection the failed install made is undone
+    await u.synth.dispose();
+    expect(graph(u.synth)).toEqual([null, null, null, null, null, null, null, null, null, 0, 0, 0]);
     // A caller-owned context that refuses a wave is never closed by the synth.
     const t = make(variant);
     t.synth.setHarmonicWave("wOrg", [0, 0], [0, 1]);
