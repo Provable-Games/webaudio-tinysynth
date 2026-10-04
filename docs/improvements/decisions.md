@@ -361,3 +361,18 @@ Unchanged: the refactor (T7), the #18 performance work, the T9 documentation pas
   - M1: extreme finite harmonic coefficients render NaN that persists in Firefox. Fix: power-of-two rescale, a natural limit like T12's `fq` floor.
   - L1: legacy buffers written over registered names play at about 440× pitch. Fix: tag the registered buffers.
   - L2: build the registry objects before installing them in `setAudioContext`.
+
+## D-032 Skill correctness is a core responsibility (2026-10-04)
+
+The user asked that maintaining and refining agent skills become a core responsibility, and that AI code review check for skills and treat their correctness as vital.
+
+- **AGENTS.md (PR #44 → `main`).** A new section, "Agent Skills (Core Responsibility)": find the relevant skills first, treat their correctness as vital, fix what you learn (here, or by a focused PR to Provable-Games/agent-skills, citing evidence and keeping secrets and private details out), and close the loop before reporting done. Main's required checks come from workflows that exist only on `improve/integration`, so they cannot report on this PR until #31 merges or an admin bypass is used.
+- **AI review rule (PR #45 → `improve/integration`, `.github/prompts/review-policy.md`).** Skills (`SKILL.md`, `skills/`, `.claude/skills/`) and agent instructions (`AGENTS.md`, `CLAUDE.md`) are reviewed as rigorously as production code. Incorrect, unverified or contradicted instructions are HIGH, and so is a change that makes an existing skill or instruction wrong. The same canonical wording goes into the shared `github-ci` skill.
+- **Shared skill (Provable-Games/agent-skills, `github-ci`).** One PR adds the review-workflow lessons from PRs #28, #30 and #39, with sources:
+  - the bounded retry for malformed output
+  - the visible provider heading
+  - Bun/Codex/Claude credential-boundary vectors
+  - effort validation and gate integrity
+  - credential lifetime and the leak guard
+
+  It is opened with the `no-auto-merge` label, because that repository auto-merges reviewed PRs and merging requires the user's authorization.

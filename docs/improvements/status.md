@@ -88,6 +88,12 @@ Running in parallel: T4 (fix round), T3.1, T11, T8-seed, T12, T5, T6-B.1 and T9-
 - **Container crashes, two of them.** The probable cause is vacuity runs that loaded the pre-T2 parser in WebKit: unbounded allocation on malformed MIDI reached 18–35 GB per WPEWebProcess. CONCURRENCY.md rule 10 now forbids unbounded pre-fix cases in browsers (run them in Node with a heap cap and a deadline). Rule 8 serializes heavy browser runs behind a flock.
 - **GPG forwarding outage.** After the second crash the VS Code GPG-agent forwarding was gone. The supervisor's `gpgconf --launch` briefly shadowed the socket; it was stopped. The user reconnected VS Code. Unsigned commits made during the outage were re-signed before any push (rule 9).
 
+## Skills work (D-032)
+
+- PR #44 (`docs/agents-skills` → `main`): the AGENTS.md skills responsibility.
+- PR #45 (`review/skills-rule` → `improve/integration`): the review-policy rule for skills and agent instructions.
+- Provable-Games/agent-skills `github-ci/review-lessons`: the skill update, opened with `no-auto-merge` (agent in progress).
+
 ## Next actions
 
 1. T4 fix round (resumed after the container crash): push, PR #37 replies, re-run; then delta re-review and integration.
