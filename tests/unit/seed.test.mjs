@@ -311,6 +311,40 @@ for (const variant of variants) {
       expect(l.random.calls).toBe(0);
     }, SLOW);
 
+    test("a lazy start whose first install fails, then succeeds, gets the seed's buffers (with #47's cleanup)", () => {
+      // #47 closes a lazy synth's new context when installing it fails, and the next use retries.
+      // Each install makes fresh generators from the seed, so neither a failure after the buffers
+      // were generated (w9999, built later in setAudioContext) nor one part-way through generating
+      // them (the second createBuffer, n0) changes what the retry generates.
+      for (const [seed, failAt] of [[1, "periodicWave"], [0, "periodicWave"], [0x5eed0001, "secondBuffer"]]) {
+        const l = load(variant);
+        const synth = new l.Synth({ lazy: true, seed });
+        const Base = l.env.sandbox.AudioContext, made = [];
+        l.env.sandbox.AudioContext = class extends Base {
+          constructor() {
+            super();
+            made.push(this);
+            this.buffers = 0;
+          }
+          createPeriodicWave(re, im) {
+            if (failAt === "periodicWave" && made.length === 1) throw new Error("refused");
+            return super.createPeriodicWave(re, im);
+          }
+          createBuffer(ch, len, sr) {
+            if (failAt === "secondBuffer" && made.length === 1 && ++this.buffers === 2) throw new Error("refused");
+            return super.createBuffer(ch, len, sr);
+          }
+        };
+        const e = thrown(() => synth.noteOn(9, 42, 100, 0));
+        expect(e && e.message, failAt).toBe("refused");
+        expect([made[0].state, synth.getAudioContext(), synth.convBuf, synth.noiseBuf], failAt).toEqual(["closed", null, null, null]);
+        synth.noteOn(9, 42, 100, 0);
+        expect([made.length, synth.getAudioContext() === made[1], synth.seed]).toEqual([2, true, seed]);
+        expect(hashesOf(synth), seed + " after a failed " + failAt).toEqual(E.hashes[44100][seed]);
+        expect(l.random.calls).toBe(0);
+      }
+    }, SLOW);
+
     test("the mock trace does not depend on the seed (it records buffer creation, not sample data)", () => {
       const traces = [0, 0xffffffff].map((seed) => {
         const l = load(variant);
