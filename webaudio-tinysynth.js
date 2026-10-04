@@ -978,9 +978,10 @@ function WebAudioTinySynthCore(target) {
     _checkFilter:(o)=>{
       /* setTimbre's filter check (#27, D-007 and D-028) for operator o: throws a TypeError or
          RangeError, and changes nothing. Without fl, none of ff, fq and fk is given. With fl
-         ("lowpass", "highpass" or "bandpass"), o outputs audio (g absent or 0), ff is a number
-         > 0, fq is absent or a number > 0 (ff and fq finite as 32-bit floats, the AudioParam
-         type), and fk is absent, 0 or 1. An undefined field counts as absent. */
+         ("lowpass", "highpass" or "bandpass"), o outputs audio (g absent or 0), ff is a number,
+         fq is absent or a number, both normal positive 32-bit floats (the AudioParam type:
+         from 2^-126; a smaller low- or high-pass fq gives NaN coefficients, and a smaller ff a
+         0 Hz or subnormal cutoff), and fk is absent, 0 or 1. Undefined counts as absent. */
       const u=k=>o[k]===undefined,c=(k,ok)=>{
         if(typeof o[k]!="number")
           throw new TypeError(k+": "+String(o[k]));
@@ -999,7 +1000,7 @@ function WebAudioTinySynthCore(target) {
         throw new TypeError("fl on a modulator");
       for(const k of ["ff","fq"])
         if(k=="ff" || !u(k))
-          c(k,o[k]>0 && isFinite(Math.fround(o[k])));
+          c(k,o[k]>=2**-126 && isFinite(Math.fround(o[k])));
       if(!u("fk"))
         c("fk",o.fk==0 || o.fk==1);
     },
