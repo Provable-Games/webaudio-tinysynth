@@ -3,7 +3,7 @@
 | Item | Value |
 | --- | --- |
 | Task | T1-dist: pull requests stop carrying `webaudio-tinysynth.min.js` and `webaudio-tinysynth.min.js.map`. After each push to `improve/integration`, CI rebuilds both with the pinned build and commits them with `GITHUB_TOKEN` through GraphQL `createCommitOnBranch`. A pull request may change them only from `improve/integration` or a `release/*` branch, and only to a fresh build; `main` changes them only in manual releases (§12). Local tests build into an ignored directory. |
-| Base commit | `197772d` (`origin/improve/integration` after #50 and #48); first based on `19cb982`, rebased in §12 |
+| Base commit | `3d965d1` (`origin/improve/integration` after #50, #48, D-037 `fa573d3`, #53 and #52); first based on `19cb982`, rebased in §12 and §13 |
 | Branch / worktree | `t1/dist-ci` in `/workspace/webaudio-tinysynth-worktrees/t1-dist` |
 | Assignment | `_evidence/assignments/T1-dist.md`, `CONCURRENCY.md` (rules 1–12), and the coordinator's base update and design adjustment of 2026-10-04 (§12) |
 | Evidence outside the repo | `/workspace/webaudio-tinysynth-worktrees/_evidence/t1-dist/`: `npm-test-*.log`, `test-browser.log`, `matrix-*.log`, `pack-check.log`, `vacuity-loaders.log`, `pr-scenario.log` (and its script `pr-scenario.sh`), `selftest/` (run logs, commit and verification JSON) |
@@ -15,21 +15,23 @@ All GPG-signed (`git log --format='%h %G?'` shows `G`).
 
 | Commit | Subject | Files |
 | --- | --- | --- |
-| `ac1a667` | Test a fresh min.js build in .build instead of the committed copy | `scripts/test-build.js` (new), `tests/harness.js`, `tests/node/{exports,lifecycle,seed}.test.cjs`, `tests/browser/lib/pages.js`, `tests/browser-smoke.js`, `scripts/{browser-server,browser-matrix,run-unit-tests,run-node-tests,run-regressions,size,check-pack}.js`, `.gitignore`, `eslint.config.mjs` (see §8) |
-| `ef90e02` | Require feature pull requests to leave the generated files unchanged | `scripts/check-dist.js` (new), `scripts/verify-dist.js` (exports its inline check), `tests/node/check-dist.test.cjs` (new), `.github/workflows/ci.yml`, `.github/workflows/browser-matrix.yml`, `.gitattributes` |
-| `78d3320` | Rebuild the generated files in CI after each push to improve/integration | `.github/workflows/dist.yml` (new) |
-| `f46b93e` | Document that CI generates min.js and which commits to pin | `README.md` (see §8) |
-| `a95d587` | Point a fresh-rule failure at CI's rebuild commit | `scripts/check-dist.js` (message) |
-| `a32712f`, `ab7e897`, `9a1bd9e` | Record T1-dist; README draft; review round | this record |
-| `d78078d` | Require a fresh build on every pull request into main (review round 1, §11; superseded by §12) | `scripts/check-dist.js`, its test, `ci.yml` comments, `README.md` |
-| `56b1183` | Load the fresh build in the API node test from #48 | `tests/node/api.test.cjs` |
-| `758e730` | Let only improve/integration and release/* PRs change the generated files (§12) | `scripts/check-dist.js`, `tests/node/check-dist.test.cjs`, `package.json` (node floors 12/148), `ci.yml` and `dist.yml` comments, `scripts/verify-dist.js` (comment) |
-| `eb63c8c` | Document manual releases and which commits npm run verify accepts (§12) | `README.md` |
-| this update | Record the base update and the design adjustment | this record |
+| `d1ed4e3` | Test a fresh min.js build in .build instead of the committed copy | `scripts/test-build.js` (new), `tests/harness.js`, `tests/node/{exports,lifecycle,seed}.test.cjs`, `tests/browser/lib/pages.js`, `tests/browser-smoke.js`, `scripts/{browser-server,browser-matrix,run-unit-tests,run-node-tests,run-regressions,size,check-pack}.js`, `.gitignore`, `eslint.config.mjs` (see §8) |
+| `cc41303` | Require feature pull requests to leave the generated files unchanged | `scripts/check-dist.js` (new), `scripts/verify-dist.js` (exports its inline check), `tests/node/check-dist.test.cjs` (new), `.github/workflows/ci.yml`, `.github/workflows/browser-matrix.yml`, `.gitattributes` |
+| `26eeb25` | Rebuild the generated files in CI after each push to improve/integration | `.github/workflows/dist.yml` (new) |
+| `baab0ad` | Document that CI generates min.js and which commits to pin | `README.md` (see §8) |
+| `95cab8e` | Point a fresh-rule failure at CI's rebuild commit | `scripts/check-dist.js` (message) |
+| `8981bac`, `e98a13a`, `1af3bb5`, `366e537` | Record T1-dist; README draft; review round; base update and design | this record |
+| `1477039` | Require a fresh build on every pull request into main (review round 1, §11; superseded by §12) | `scripts/check-dist.js`, its test, `ci.yml` comments, `README.md` |
+| `00af704` | Load the fresh build in the API node test from #48 | `tests/node/api.test.cjs` |
+| `c8be774` | Let only improve/integration and release/* PRs change the generated files (§12) | `scripts/check-dist.js`, `tests/node/check-dist.test.cjs`, `package.json` (node floors), `ci.yml` and `dist.yml` comments, `scripts/verify-dist.js` (comment) |
+| `2391543` | Document manual releases and which commits npm run verify accepts (§12) | `README.md` |
+| `6575886` | Require a release branch's generated files to equal a fresh build (review round 2, §13) | `scripts/check-dist.js`, `tests/node/check-dist.test.cjs` |
+| `4cf9c1f` | Use v2.0.0 as the release example, cut after integration reaches main (§13) | `README.md` |
+| this update | Record round 2 and the second rebase | this record, `package.json` (node floor) |
 
-Commits before §12 were rebased onto `197772d`; their hashes before the rebase were `a37544a`, `0937626`, `df1fa8c`, `4545631`, `d0e1ed6`, `2fa7967`, `91fd11b`, `a8d4e15`, `d0bfff4`. The rebase conflicted only on the `package.json` floors, resolved to the base's values and then set from the runner output (rule 5).
+The branch was rebased twice: from `19cb982` onto `197772d` (§12; conflicts only in the `package.json` floors, resolved to the base's values and then set from the runner output, rule 5), and onto `3d965d1` (§13; no conflicts). All commits are signed.
 
-The committed min.js and map are byte-identical to the base (`git diff 197772d -- webaudio-tinysynth.min.js*` is empty), so this pull request passes its own new rule.
+The committed min.js and map are byte-identical to the base (`git diff 3d965d1 -- webaudio-tinysynth.min.js*` is empty), so this pull request passes its own new rule.
 
 ## 2. Design as built
 
@@ -59,12 +61,13 @@ Job names are unchanged (`lint`, `build-verify`, `test`, `browser-smoke`, `brows
 | Event | Rule |
 | --- | --- |
 | `pull_request`, both files unchanged from the base | **pass**: in the merge commit both files' blobs equal `HEAD^1`'s (the base tip) |
-| `pull_request` from this repository's `improve/integration` (#31, CI's rebuild) or a `release/*` branch, files changed | **pass only if** both equal a fresh pinned build (built into a temporary directory, independent of `TINYSYNTH_MIN`) |
+| `pull_request` from this repository's `improve/integration` (#31, CI's rebuild), files changed | **pass only if** both equal a fresh pinned build (built into a temporary directory, independent of `TINYSYNTH_MIN`) |
+| `pull_request` from this repository's `release/*` branch | **pass only if** both equal a fresh pinned build, whether or not they changed (review round 2, §13) |
 | any other `pull_request` that changes either file (feature, docs, hotfix or stacked pull requests; a fork's branch named `improve/integration` or `release/*`) | **fail**, listing the files and `git checkout origin/<base> -- webaudio-tinysynth.min.js webaudio-tinysynth.min.js.map` |
 | `push` (to `main`), `workflow_dispatch` | **inline-only**: no committed copy is compared, because between releases `main`'s may lag its source. The `test` and `browser-smoke` jobs build and test the fresh source |
 | always | a fresh build and the source are inline-safe |
 
-Locally, `--unchanged-from=REF` applies merge semantics: it passes if HEAD's copy equals REF's or the merge base's (the branch did not touch it), and the working tree has no uncommitted change to or deletion of either file. In the merge-ref checkout both collapse to `HEAD == HEAD^1`. `--fresh` is `npm run verify`. `decide()`, `fromGithub()`, `checkUnchanged()`, `compareWithFresh()` and `checkPullRequest()` are exported and tested by `tests/node/check-dist.test.cjs` (17 tests on scratch git repositories with isolated git config, including the four cases feature unchanged, feature changed, `release/*` fresh and `release/*` stale).
+Locally, `--unchanged-from=REF` applies merge semantics: it passes if HEAD's copy equals REF's or the merge base's (the branch did not touch it), and the working tree has no uncommitted change to or deletion of either file. In the merge-ref checkout both collapse to `HEAD == HEAD^1`. `--fresh` is `npm run verify`. `decide()`, `fromGithub()`, `checkUnchanged()`, `compareWithFresh()` and `checkPullRequest()` are exported and tested by `tests/node/check-dist.test.cjs` (19 tests on scratch git repositories with isolated git config, including the four cases feature unchanged, feature changed, `release/*` fresh and `release/*` stale, plus a release that skipped the rebuild).
 
 ### 2.3 Local development
 
@@ -144,10 +147,10 @@ Pull request rule, locally on simulated merge refs (`pr-scenario.log`, `pr-scena
 
 ### Draft README/NOTICE text (CONCURRENCY rule 4)
 
-The README changes as committed, verbatim (`git diff 197772d -- README.md`), for pasting if those commits are dropped:
+The README changes as committed, verbatim (`git diff 3d965d1 -- README.md`), for pasting if those commits are dropped:
 
 ```diff
-@@ -378,10 +378,10 @@ Use Node 24.21.0 (`.nvmrc`), which comes with npm 11.19.0, and install the locke
+@@ -384,10 +384,10 @@ Use Node 24.21.0 (`.nvmrc`), which comes with npm 11.19.0, and install the locke
  | Command | What it does |
  | --- | --- |
  | `npm run lint` | ESLint with the recommended rules (`eslint.config.mjs`). |
@@ -161,7 +164,7 @@ The README changes as committed, verbatim (`git diff 197772d -- README.md`), for
  | `npm test` | `test:unit`, `test:node` and `test:regression`, in that order. It stops at the first failing suite. |
  | `npm run test:unit` | Vitest unit tests, `tests/unit/**/*.test.mjs` (`scripts/run-unit-tests.js` runs `vitest run`). |
  | `npm run test:node` | `node:test` tests, `tests/node/**/*.test.cjs` (`scripts/run-node-tests.js`), killed after 600 s. |
-@@ -389,21 +389,32 @@ Use Node 24.21.0 (`.nvmrc`), which comes with npm 11.19.0, and install the locke
+@@ -395,21 +395,32 @@ Use Node 24.21.0 (`.nvmrc`), which comes with npm 11.19.0, and install the locke
  | `npm run test:browser` | Offline smoke test of both builds in headless Chromium. Install the browser first with `npx playwright-core install --with-deps --only-shell chromium`. A missing browser fails the test. Chromium runs with autoplay allowed, so the test does not show that audio starts after a user gesture. |
  
  - The regressions compare against upstream commit `3d75aee`, read from git history. Clone with full history (a shallow clone fails), or set `TINYSYNTH_REFERENCE` to upstream's `webaudio-tinysynth.js` at that commit.
@@ -188,11 +191,11 @@ The README changes as committed, verbatim (`git diff 197772d -- README.md`), for
  
 +### Releases
 +
-+On `main`, the minified file and its map change only in a release, made by hand:
++On `main`, the minified file and its map change only in a release, made by hand. The steps for the first release, `v2.0.0`, cut once `improve/integration` has been merged into `main`:
 +
-+1. From `main`, create `release/vX.Y.Z`. Bump the version with `npm version X.Y.Z --no-git-tag-version` (it updates `package.json` and `package-lock.json`), run `npm run build`, and commit the version change and both files.
-+2. Open a pull request into `main`; `build-verify` requires both files to equal a fresh build. After it is squash-merged, tag the merge commit and push the tag: `git tag -s vX.Y.Z <merge sha>` and `git push origin vX.Y.Z`.
-+3. Run `gh release create vX.Y.Z webaudio-tinysynth.min.js webaudio-tinysynth.min.js.map` from a checkout of the tag, with the SHA-256 and sizes from `npm run size` in the notes.
++1. From `main`, create `release/v2.0.0`. Set the version in `package.json` and `package-lock.json` if it is not already the release's (`npm version 2.0.0 --no-git-tag-version`), run `npm run build`, and commit both generated files.
++2. Open a pull request into `main`; `build-verify` requires both files to equal a fresh build. After it is squash-merged, tag the merge commit and push the tag: `git tag -s v2.0.0 <merge sha>` and `git push origin v2.0.0`.
++3. Run `gh release create v2.0.0 webaudio-tinysynth.min.js webaudio-tinysynth.min.js.map` from a checkout of the tag, with the SHA-256 and sizes from `npm run size` in the notes.
 +
  ## License
  
@@ -209,7 +212,7 @@ The user does not want `main` automated (§12). On `main` the generated files ch
 
 - **#31 checks after each merge** (§4): red `build-verify` after each human merge, then an unchecked bot head. Needs a reopen or a human commit before merging into `main`.
 - **`main` lags its source between releases.** A consumer who pins an arbitrary `main` commit can get a min.js older than that commit's source; `npm run verify` fails there. The README tells consumers to pin a release tag or a rebuild commit.
-- **A release pull request that forgets to rebuild passes** (both files unchanged is always allowed). The release steps in the README include `npm run build`; the tag is still made by hand.
+- **Releases are manual.** `build-verify` makes a `release/*` pull request carry a fresh build, but the tag and the GitHub Release are made by hand; a tag on the wrong commit is not caught.
 - **Rebuild window.** For about eight to nine minutes after each merge, `improve/integration`'s committed min.js is older than its source and `npm run verify` fails there. If `build` or `browser-smoke` fails, there is no rebuild until the next push or a manual run (`workflow_dispatch`, once `dist.yml` is on `main`), and the failure appears only in the Dist run, not on a pull request.
 - **Runner-image tools.** `commit` relies on `gh`, `jq`, `base64`, `gzip` and GNU `find` from the `ubuntu-24.04-arm` image; the self-test used them.
 - **Artifact integrity** rests on the build job's dependencies (§3).
@@ -240,3 +243,19 @@ The `fresh`-for-every-pull-request-into-`main` rule from this round was replaced
 4. §9 now records that `main` automation is not needed. The #31 note in §4 stands.
 
 **Validation after both changes** (logs `_evidence/t1-dist/rebase-*.log`, `pr-scenario.log`): `npm ci`, lint and actionlint clean; `test:unit` 11/894, `test:node` 12/148 (with `check-dist.test.cjs` 17 of 17), `test:regression` 3 of 3, each on `.build/`; `pack:check` PASS; `test:browser` (heavy-run) 2 of 2; `browser-matrix --engines=chromium --specs=api-url` 2 of 2 on `.build/`; `npm run verify` PASS on the branch. Simulated merge commits with the real pinned build (`pr-scenario.sh`): feature source-only into `improve/integration` passes; feature carrying its rebuild fails with the fix command; `release/v9.9.9` carrying a fresh build into `main` passes; the same with the source changed after the rebuild fails ("differs from a fresh build of this source"); `improve/integration` with that stale build (as #31 before CI's rebuild) fails; a fork's `improve/integration` changing them fails as a feature; a push event checks inline safety only and passes; `--unchanged-from` fails before and passes after the fix command. `dist.yml` changed only in its header comment, so the §5 self-test still covers it.
+
+## 13. D-037, second rebase and review round 2
+
+**D-037 and the base.** The user confirmed manual releases for `main` (D-037, `fa573d3`) and chose 2.0.0. `improve/integration` moved to `3d965d1` (`fa573d3`, #53 setting `version` 2.0.0 in `package.json` and `package-lock.json`, and #52, docs). `t1/dist-ci` was rebased onto it with no conflicts; the version change and this branch's floors sit on different lines.
+
+**README** (`4cf9c1f`): the release subsection uses `v2.0.0` as its example and says it is cut once `improve/integration` has been merged into `main` (#31). Because #53 already set 2.0.0, step 1 bumps the version only if it is not already the release's.
+
+**Review round 2** (head `99fd9f8`: every check green; Codex "lgtm"; Claude one MEDIUM):
+
+| Finding | Decision | Change |
+| --- | --- | --- |
+| Claude MEDIUM: a `release/*` pull request that left both files unchanged passed `build-verify` even when its source had changed (it skipped `npm run build`), so a release tag could carry a min.js not built from its source, while the README says `build-verify` requires a fresh build there. | Accepted. It tightens the coordinator's rule only for `release/*`: "unchanged" no longer passes on its own there. It costs nothing in a correct release: if nothing changed since the last release, the old files are the fresh build. | `decide()` sets `mustBeFresh` for this repository's `release/*`; `checkPullRequest()` then compares with a fresh build directly. `improve/integration` keeps the unchanged pass (`main` may lag between releases). Tests: a release that skipped the rebuild fails; a release with nothing changed since the last one passes; `decide()` flags. |
+
+Against the previous `check-dist.js`, 3 of the 19 tests fail (`_evidence/t1-dist/review2-vacuity.log`); all pass with the fix. The scenario script with the real build adds "release/v9.9.9 that changed the source but skipped the rebuild -> main": FAIL, as intended; every other case is unchanged (`pr-scenario.log`).
+
+**Final validation** on `3d965d1` plus this branch (logs `_evidence/t1-dist/final-*.log`): `npm ci`, lint, actionlint and shellcheck clean; `test:unit` 11 files / 894 tests; `test:node` 12 files / 150 tests (`check-dist.test.cjs` 19 of 19; node floor raised from 148 to the printed 150); `test:regression` 3 of 3; `pack:check` PASS; `npm run verify` PASS; `test:browser` through `heavy-run.sh` 2 of 2. Every suite ran on `.build/`, and no tracked file was modified.
