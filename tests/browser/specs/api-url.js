@@ -14,6 +14,23 @@
  *
  * The page script below is inlined after page/xhr.js, which records each
  * request's loadend (the library's onload has returned by then).
+ *
+ * "api-url guard" (T5.2, #13 follow-up) asserts per build, on an
+ * OfflineAudioContext whose create* methods are counted:
+ *   - setTimbre rejects a, h, d, r and q that are not finite as float32
+ *     (RangeError) and installs nothing;
+ *   - a note whose AudioParam values overflow float32 (an FM chain, FM depth,
+ *     a large k, 0 times an overflow, a pitch envelope, a sustain level, AM, a
+ *     noise operator's rate) does not throw, creates no node and takes no
+ *     voice, and a valid note afterwards plays;
+ *   - with tsmode 1, performance.now() times from before the context's time 0
+ *     (negative once converted) play at once and do not throw;
+ *   - the render is finite and audible;
+ *   - an empty array-like SysEx creates no lazy context, and loadMIDIUrl()
+ *     with a throwing opts.signal getter returns a promise that rejects with
+ *     that error and sends nothing.
+ * It also records, as observations, which out-of-range WebAudio calls the
+ * engine itself rejects (why the guard matters per engine).
  */
 "use strict";
 const fs = require("fs");
@@ -63,6 +80,85 @@ function pageScript() {
     },
   };
 }
+/* eslint-enable no-undef */
+
+/* eslint-disable no-undef -- runs in the page (T5.2) */
+const GUARD = async (url) => {
+  const err = (fn) => { try { fn(); return null; } catch (e) { return e.name + ": " + e.message; } };
+  const out = {};
+  // What the engine itself rejects (observed, not asserted).
+  {
+    const c = new OfflineAudioContext(1, 128, 44100), g = c.createGain().gain, o = c.createOscillator();
+    out.engine = {
+      "frequency.value = 1e39": err(() => { o.frequency.value = 1e39; }),
+      "setValueAtTime(NaN, 0)": err(() => g.setValueAtTime(NaN, 0)),
+      "setValueAtTime(0, -1)": err(() => g.setValueAtTime(0, -1)),
+      "setTargetAtTime(0, 0, 1e39)": err(() => g.setTargetAtTime(0, 0, 1e39)),
+      "start(-1)": err(() => o.start(-1)),
+    };
+  }
+  const ctx = new OfflineAudioContext(1, 44100, 44100);
+  const made = { n: 0 };
+  for (const m of ["createOscillator", "createBufferSource", "createGain", "createBiquadFilter"]) {
+    const f = ctx[m].bind(ctx);
+    ctx[m] = () => { ++made.n; return f(); };
+  }
+  const synth = new WebAudioTinySynth({ quality: 1, useReverb: 0, voices: 64, context: ctx });
+  const before = JSON.stringify(synth.program[5].p);
+  out.timbre = ["a", "h", "d", "r", "q"].map((k) => err(() => synth.setTimbre(0, 5, [{}, { g: 1, [k]: 1e39 }])));
+  out.timbreKept = JSON.stringify(synth.program[5].p) === before;
+  const T = [
+    ["an FM chain", [{}, ...Array.from({ length: 10 }, (_, i) => ({ g: i + 1, t: 1e4, v: 1 }))], 60],
+    ["FM depth", [{}, { g: 1, v: 1e37 }], 60],
+    ["a large k", [{ k: 30 }], 127],
+    ["0 times an overflow", [{ v: 0, k: 1000 }], 127],
+    ["the pitch envelope", [{ p: 1e37 }], 60],
+    ["the sustain level", [{ v: 1, s: 1e39 }], 60],
+    ["AM", [{}, { g: 11, v: 1e39 }], 60],
+    ["a noise operator's rate", [{ w: "n0", t: 1e39 }], 60],
+  ];
+  out.notes = T.map(([label, timbre, note], i) => {
+    synth.setTimbre(0, 10 + i, timbre);
+    synth.setProgram(i, 10 + i);
+    const n = made.n, v = synth.notetab.length;
+    const error = err(() => synth.noteOn(i, note, 100, 0.1));
+    return { label, error, made: made.n - n, voices: synth.notetab.length - v };
+  });
+  synth.setProgram(0, 0);
+  let n = made.n;
+  out.valid = err(() => { synth.noteOn(0, 69, 100, 0.2); synth.noteOff(0, 69, 0.5); });
+  out.validMade = made.n - n;
+  // performance.now() times 1 and 2 ms after the page's time origin, before this context's time 0 (it was made
+  // later): negative once converted.
+  synth.setTsMode(1);
+  n = made.n;
+  out.ts = err(() => {
+    synth.noteOn(1, 72, 100, 1);
+    synth.setChVol(1, 110, 1);
+    synth.setBend(1, 9000, 1);
+    synth.noteOff(1, 72, 2);
+    synth.noteOn(9, 38, 100, 1);
+  });
+  out.tsMade = made.n - n;
+  synth.setTsMode(0);
+  const d = (await ctx.startRendering()).getChannelData(0);
+  let peak = 0, finite = true;
+  for (let i = 0; i < d.length; ++i) {
+    if (!Number.isFinite(d[i])) finite = false;
+    else peak = Math.max(peak, Math.abs(d[i]));
+  }
+  out.render = { finite, peak };
+  await synth.dispose();
+  const lazy = new WebAudioTinySynth({ lazy: true });
+  out.sysex = err(() => lazy.send({ 0: 0xf0, length: 0 }));
+  out.sysexNoContext = lazy.getAudioContext() === null;
+  let p = null;
+  out.urlThrow = err(() => { p = lazy.loadMIDIUrl(url, { get signal() { throw new Error("getter"); } }); });
+  out.url = p && typeof p.then === "function" ? await p.then(() => "resolved", (e) => "rejected: " + e.message) : null;
+  await lazy.dispose();
+  out.rejections = window.__t6.rejections.slice();
+  return out;
+};
 /* eslint-enable no-undef */
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -295,7 +391,32 @@ function cases(shared) {
         t.check("fire and forget: no page errors", !q.pageErrors.length, q.pageErrors.join(" | "));
       }
     },
-  }));
+  })).concat(matrix.builds.map((build) => ({
+    id: "api-url guard " + build,
+    dims: { build },
+    deadline: 120,
+    run: async (t) => {
+      const pageId = "api-url-guard-" + build;
+      server.registerPage(pageId, pages.inlinePage({ library: pages.readLibrary(build, options.overrides), seed: options.seed }));
+      const p = await t.newPage();
+      await p.page.goto(server.origin + "/html/" + pageId);
+      const url = "/midi/ok/ws.mid?t52=" + build + "-" + Date.now();
+      const o = await p.page.evaluate(GUARD, url);
+      await sleep(300);
+      t.observe("engine: out-of-range WebAudio calls", o.engine);
+      t.check("setTimbre: a, h, d, r and q of 1e39 throw a RangeError naming the operator; nothing is installed",
+        o.timbre.every((e, i) => e === "RangeError: operator 1 " + "ahdrq"[i] + " out of range: 1e+39") && o.timbreKept, JSON.stringify(o.timbre));
+      for (const r of o.notes)
+        t.check("a note whose values overflow float32 (" + r.label + "): no throw, no node, no voice", r.error === null && r.made === 0 && r.voices === 0, JSON.stringify(r));
+      t.check("a valid note afterwards plays", o.valid === null && o.validMade > 0, JSON.stringify([o.valid, o.validMade]));
+      t.check("tsmode 1: performance.now() times before the context's time 0 play at once, no throw", o.ts === null && o.tsMade > 0, JSON.stringify([o.ts, o.tsMade]));
+      t.check("the render is finite and audible", o.render.finite && o.render.peak > 0, JSON.stringify(o.render));
+      t.check("send(): an empty array-like SysEx creates no lazy context", o.sysex === null && o.sysexNoContext, JSON.stringify([o.sysex, o.sysexNoContext]));
+      t.check("loadMIDIUrl(): a throwing opts.signal getter rejects with its error and sends nothing",
+        o.urlThrow === null && o.url === "rejected: getter" && !server.requests.some((r) => r.path === url), JSON.stringify([o.urlThrow, o.url]));
+      t.check("no page errors and no unhandled rejection", !p.pageErrors.length && !o.rejections.length, JSON.stringify([p.pageErrors, o.rejections]));
+    },
+  })));
 }
 
 module.exports = { cases };

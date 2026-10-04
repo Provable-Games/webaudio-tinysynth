@@ -108,6 +108,7 @@ const DROPPED = [
   ["a large k on an FM operator: f(127)·2^(67/12·25)", [{}, { g: 1, v: 1, k: 25 }], 127, 60],
   ["0 times an overflow: v 0, 2^(67/12·1000) is Infinity, NaN", [{ v: 0, k: 1000 }], 127, 60],
   ["the pitch-envelope target, f(60)·1e37", [{ p: 1e37 }], 60, 0],
+  ["the pitch alone, f(60)·1e37, while its envelope target, ·1e-3, fits", [{ t: 1e37, p: 1e-3 }], 60, 0],
   ["the sustain level, 1e39·vp", [{ v: 1, s: 1e39 }], 60, null],
   ["AM: operator 1's level, 1e39", [{}, { g: 11, v: 1e39 }], 60, null],
   ["a noise operator's playback rate, f(60)·1e39/440", [{ w: "n0", t: 1e39 }], 60, null],
