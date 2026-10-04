@@ -3,9 +3,9 @@
  * Offline browser smoke test (npm run test:browser; not part of `npm test`).
  *
  * Opens a page in headless Chromium with every network request aborted.
- * The page inlines webaudio-tinysynth.js (then webaudio-tinysynth.min.js)
- * and a MIDI fixture. It constructs the synth, calls loadMIDI and
- * playMIDI, and asserts:
+ * The page inlines webaudio-tinysynth.js (then the minified build of the
+ * current source, from scripts/test-build.js) and a MIDI fixture. It
+ * constructs the synth, calls loadMIDI and playMIDI, and asserts:
  *   - getPlayStatus().play === 1 and maxTick > 0 right after playMIDI;
  *   - the AudioContext is running and curTick advances;
  *   - window.WebAudioTinySynth exists and no <webaudio-tinysynth> element is defined;
@@ -25,12 +25,15 @@ const fs = require("fs");
 const path = require("path");
 
 const ROOT = path.resolve(__dirname, "..");
+const testBuild = require("../scripts/test-build");
 const { chromium } = require(process.env.PLAYWRIGHT_CORE || "playwright-core");
 const fixture = process.argv[2] || "ws.mid";
 const midiB64 = fs.readFileSync(path.resolve(ROOT, fixture)).toString("base64");
 
+const BUILDS = { "webaudio-tinysynth.js": path.join(ROOT, "webaudio-tinysynth.js"), "webaudio-tinysynth.min.js": testBuild.existingMinPath() };
+
 function page(scriptFile) {
-  const js = fs.readFileSync(path.join(ROOT, scriptFile), "utf8").replace(/<\/script/gi, "<\\/script");
+  const js = fs.readFileSync(BUILDS[scriptFile], "utf8").replace(/<\/script/gi, "<\\/script");
   return `<!doctype html><html><head><meta charset="utf-8"><title>tinysynth smoke</title>
 <script>${js}</script></head><body>
 <script>

@@ -8,7 +8,8 @@
  * and outcome, so a test can see exactly what the page asked for.
  *
  * Routes (GET only; anything else is 405):
- *   /lib/source.js, /lib/min.js     the library builds (honours --source/--min overrides)
+ *   /lib/source.js, /lib/min.js     the library builds (honours --source/--min overrides; min.js is
+ *                                   the fresh build from scripts/test-build.js, not the committed copy)
  *   /html/<id>                      a page registered with registerPage(id, html)
  *   /midi/ok/<fixture>              200 with the fixture bytes
  *   /midi/status/<code>/<fixture>   that status code, with the fixture bytes (no body for 204/304)
@@ -31,6 +32,9 @@
 const fs = require("fs");
 const http = require("http");
 const path = require("path");
+
+const { libraryPath } = require("../tests/browser/lib/pages");
+const { prepare } = require("./test-build");
 
 const ROOT = path.resolve(__dirname, "..");
 const TYPES = {
@@ -70,9 +74,7 @@ function startServer({ overrides = {}, staticFiles = false, port = 0 } = {}) {
       const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
       const rest = (n) => parts.slice(n).join("/");
       if (parts[0] === "lib" && (parts[1] === "source.js" || parts[1] === "min.js")) {
-        const build = parts[1] === "source.js" ? "source" : "min";
-        const file = overrides[build] || path.join(ROOT, build === "source" ? "webaudio-tinysynth.js" : "webaudio-tinysynth.min.js");
-        return send(200, fs.readFileSync(file), TYPES[".js"]);
+        return send(200, fs.readFileSync(libraryPath(parts[1] === "source.js" ? "source" : "min", overrides)), TYPES[".js"]);
       }
       if (parts[0] === "html" && pages.has(rest(1))) return send(200, Buffer.from(pages.get(rest(1))), TYPES[".html"]);
       if (parts[0] === "midi") {
@@ -162,7 +164,7 @@ module.exports = { startServer, refusedOrigin, fixture };
 
 if (require.main === module) {
   const portArg = process.argv.slice(2).map((a) => /^--port=(\d+)$/.exec(a)).find(Boolean);
-  startServer({ staticFiles: true, port: portArg ? Number(portArg[1]) : 8000 }).then((s) => {
+  prepare().then(() => startServer({ staticFiles: true, port: portArg ? Number(portArg[1]) : 8000 })).then((s) => {
     console.log("serving " + ROOT + " read-only at " + s.origin + "/ (Ctrl-C to stop)");
     console.log("  demos: " + s.origin + "/simple.html  " + s.origin + "/jstest.html  " + s.origin + "/soundedit.html");
     const shown = new Set();
