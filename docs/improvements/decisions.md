@@ -388,3 +388,12 @@ T5 review (9054e84) requested changes on #13 and #14. Decisions:
 - **Size:** adopt the reviewer's set, which nets −7 B gzip.
 
 **One coercion rule.** Every numeric timbre field, including T12's `ff`, `fq` and `fk` and any numeric wave parameter, follows T5's general rule. Numeric strings are coerced with `Number()`, then checked as finite and within their natural range. `fl` and wave names stay string enums or names. T5 applies this rule when it folds T11's `_checkWave` and T12's `_checkFilter`.
+
+## D-034 Skills live in onchain-tinysynth; this repo is defined by README and AGENTS.md (2026-10-04)
+
+The user clarified that the skills they meant are the composer-facing skills in Provable-Games/onchain-tinysynth, used by onchain music composers such as Casey Wescott. webaudio-tinysynth keeps no skills section. `README.md` and `AGENTS.md` must clearly define the MIDI engine, and composer skills stay in onchain-tinysynth.
+
+- The user merged #44, then removed its Agent Skills section from `AGENTS.md` on `main` (e93359b). PR #45 (the review rule) was closed by the user.
+- This partly supersedes D-032. The agent-skills PR #41 (`github-ci` lessons) stays open with `no-auto-merge` for the user to keep, trim or close. Its review-workflow lessons are org-wide, and its skills-review rule fits repositories that contain skills, such as onchain-tinysynth.
+- T9's documentation pass (#20) treats `README.md` and `AGENTS.md` (now tracked on `main`) as the authoritative definition of the engine. Before #31, `improve/integration` must merge `main` so it picks up `AGENTS.md`/`CLAUDE.md`.
+- `.github/`, `docs/` and `scripts/` exist only on `improve/integration`. `main` gains them, and its required checks gain their workflows, only when #31 merges.
