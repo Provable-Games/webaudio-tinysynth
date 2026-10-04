@@ -3,20 +3,22 @@
  * The pull request rule for the generated files, webaudio-tinysynth.min.js
  * and webaudio-tinysynth.min.js.map (CI's build-verify job).
  *
- * Pull requests do not carry the generated files. After each merge into
- * improve/integration, .github/workflows/dist.yml rebuilds them with the
- * pinned build and commits them. So:
+ * After each merge into improve/integration, .github/workflows/dist.yml
+ * rebuilds the generated files with the pinned build and commits them.
+ * Nothing rebuilds them on main. So:
  *
- *   unchanged  A feature pull request must leave both files as they are on
- *              its base branch. With --github this compares the checked-out
- *              merge commit with its first parent (the base tip). Locally,
- *              --unchanged-from=REF passes when HEAD's copy equals REF's or
- *              the merge base's (the branch did not touch it), and the
- *              working tree has no uncommitted change to either file.
+ *   unchanged  A pull request into any branch other than main must leave
+ *              both files as they are on its base branch: they reach
+ *              improve/integration, where CI regenerates them. With --github
+ *              this compares the checked-out merge commit with its first
+ *              parent (the base tip). Locally, --unchanged-from=REF passes
+ *              when HEAD's copy equals REF's or the merge base's (the branch
+ *              did not touch it), and the working tree has no uncommitted
+ *              change to either file.
  *   fresh      The committed files must equal a fresh pinned build:
- *              scripts/verify-dist.js (`npm run verify`). For the
- *              improve/integration -> main pull request, pushes to main and
- *              manual runs.
+ *              scripts/verify-dist.js (`npm run verify`). For every pull
+ *              request into main (normally improve/integration -> main, which
+ *              carries CI's rebuild), pushes to main and manual runs.
  *
  * Either way it also builds the current source (scripts/test-build.js) and
  * requires that build and the source to be safe to inline in a <script>
@@ -34,16 +36,20 @@ const { spawnSync } = require("child_process");
 
 const ROOT = path.resolve(__dirname, "..");
 const INTEGRATION_BRANCH = "improve/integration";
+const MAIN_BRANCH = "main";
 const GENERATED = ["webaudio-tinysynth.min.js", "webaudio-tinysynth.min.js.map"];
 
 /*
  * Which rule applies. `pr` describes a pull_request event: {headRef,
- * headRepo, baseRef}; `repo` is the repository the workflow runs in. Only the
- * improve/integration branch of this repository carries CI's rebuild; a
- * fork's branch of the same name is a feature branch.
+ * headRepo, baseRef}; `repo` is the repository the workflow runs in. main is
+ * not rebuilt by CI, so everything merged into it must already carry a fresh
+ * build. Only the improve/integration branch of this repository carries CI's
+ * rebuild; a fork's branch of the same name is a feature branch.
  */
 function decide({ eventName, repo, pr }) {
   if (eventName === "pull_request") {
+    if (pr.baseRef === MAIN_BRANCH)
+      return { rule: "fresh", reason: "pull request into " + MAIN_BRANCH + ": CI does not rebuild it, so the committed files must equal a fresh build" };
     if (pr.headRef === INTEGRATION_BRANCH && pr.headRepo === repo)
       return { rule: "fresh", reason: "pull request from " + INTEGRATION_BRANCH + ": it carries CI's rebuild, which must equal a fresh build" };
     return {
@@ -99,9 +105,9 @@ function checkUnchanged(base, { cwd = ROOT, files = GENERATED } = {}) {
     else if (head !== want && head !== forkPoint)
       problems.push(file + " differs from " + base + (forkPoint && forkPoint !== want ? " and from the merge base" : "") +
         " (HEAD blob " + head.slice(0, 12) + ", " + base + " blob " + (want ? want.slice(0, 12) : "missing") + ")");
-    if (head !== null && fs.existsSync(path.join(cwd, file))) {
-      const work = git(["hash-object", "--", file], cwd).out;
-      if (work !== head) problems.push(file + " has uncommitted changes in the working tree");
+    if (head !== null) {
+      if (!fs.existsSync(path.join(cwd, file))) problems.push(file + " is deleted in the working tree");
+      else if (git(["hash-object", "--", file], cwd).out !== head) problems.push(file + " has uncommitted changes in the working tree");
     }
   }
   return problems;
@@ -161,7 +167,7 @@ async function main(argv) {
   return 0;
 }
 
-module.exports = { INTEGRATION_BRANCH, GENERATED, decide, fromGithub, checkUnchanged, fixCommand };
+module.exports = { INTEGRATION_BRANCH, MAIN_BRANCH, GENERATED, decide, fromGithub, checkUnchanged, fixCommand };
 
 if (require.main === module) {
   main(process.argv.slice(2)).then((status) => process.exit(status), (e) => {

@@ -26,17 +26,21 @@ test.describe("decide()", () => {
     assert.equal(d.fixRef, "origin/improve/integration");
   });
 
-  test("a pull request into main from another branch must leave them unchanged too", () => {
-    assert.deepEqual([D.decide(pr("docs/agents-skills", "main")).rule, D.decide(pr("docs/agents-skills", "main")).fixRef],
-      ["unchanged", "origin/main"]);
+  test("a pull request into another feature branch (stacked) must leave them unchanged", () => {
+    assert.deepEqual([D.decide(pr("t5/api-part2", "t5/api")).rule, D.decide(pr("t5/api-part2", "t5/api")).fixRef], ["unchanged", "origin/t5/api"]);
   });
 
   test("the improve/integration -> main pull request must carry a fresh build", () => {
     assert.equal(D.decide(pr("improve/integration", "main")).rule, "fresh");
   });
 
+  test("every other pull request into main must carry a fresh build too: CI does not rebuild main (review finding)", () => {
+    for (const head of ["docs/agents-skills", "fix/hotfix-source-change"]) assert.equal(D.decide(pr(head, "main")).rule, "fresh", head);
+    assert.equal(D.decide(pr("improve/integration", "main", "someone/webaudio-tinysynth")).rule, "fresh", "fork into main");
+  });
+
   test("a fork's branch named improve/integration is a feature branch", () => {
-    assert.equal(D.decide(pr("improve/integration", "main", "someone/webaudio-tinysynth")).rule, "unchanged");
+    assert.equal(D.decide(pr("improve/integration", "improve/integration", "someone/webaudio-tinysynth")).rule, "unchanged");
   });
 
   test("pushes and manual runs require a fresh build", () => {
@@ -124,6 +128,14 @@ test.describe("checkUnchanged()", () => {
     write(MIN, "min 2\n");
     assert.deepEqual(check("base"), [MIN + " has uncommitted changes in the working tree"]);
     git("checkout", "-q", "--", MIN);
+    fs.rmSync(path.join(dir, MAP));
+    assert.deepEqual(check("base"), [MAP + " is deleted in the working tree"], "an unstaged deletion (review finding)");
+    git("rm", "-q", "--cached", MIN);
+    assert.deepEqual(check("base"), [MAP + " is deleted in the working tree"], "a staged-only removal leaves the file and HEAD intact");
+    git("reset", "-q", "--hard");
+    git("rm", "-q", MIN);
+    assert.deepEqual(check("base"), [MIN + " is deleted in the working tree"], "a staged deletion");
+    git("reset", "-q", "--hard");
     git("rm", "-q", MAP);
     git("commit", "-q", "-m", "delete the map");
     assert.deepEqual(check("base"), [MAP + " is missing at HEAD (deleted)"]);
