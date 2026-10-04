@@ -61,6 +61,12 @@ Modifications by Provable Games, based on upstream commit
     seed constructor option and read-only seed and bufferVersion
     properties. The generated reverb and noise texture differs from
     upstream once and is then the same on every load.
+  - webaudio-tinysynth.js: public functions validate their arguments and
+    timbres before changing anything (TypeError/RangeError), setTimbre()
+    stores a validated copy instead of modifying the caller's objects,
+    malformed raw MIDI messages are ignored, and loadMIDIUrl() returns a
+    cancellable promise that rejects on HTTP, network and parse errors
+    and ignores stale responses.
   - webaudio-tinysynth.min.js and its source map are regenerated from
     the modified source.
   - Demo pages and README updated to use the JavaScript API; tests added.
