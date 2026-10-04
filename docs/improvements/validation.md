@@ -212,6 +212,29 @@ Phase A of T6 on `t6/validation` (base `25d2a3d`). Record: [tasks/T6.md](tasks/T
   - the GM 119/125 short-note silence (upstream behavior, identical at `3d75aee`);
   - the WebKit re-render policy.
 
+### Phase B.1
+
+Branch `t6/phase-b` (base `413f36c`, then `improve/integration` `7b4f5c5` merged with T4). Record: [tasks/T6.md §17](tasks/T6.md#17-phase-b1). Evidence: `/workspace/webaudio-tinysynth-worktrees/_evidence/t6-phase-b/`.
+
+- **Summary count.** A fatal worker stop now counts its case once. A forced fatal stop on a one-case run prints "0 of 1 cases passed" (it was "-1 of 1"), and the run still exits 1.
+- **New assert specs** (both builds, all three engines):
+  - `parser` (#4, #6): truncated, malformed and unsupported files throw their D-013 code within an external 5 s deadline and keep the previous song, playback status and channel state. The documented End-of-Track recoveries load. A truncated URL response is handled without a hang.
+  - `transport` (#8, #9, #10, D-019, T3 review F11), in a realtime context's instrumented graph: zero-duration loops play once and stop; a padded `loopEnd` loops; empty and tempo-only songs stay stopped; replay timing equals the tempo map; a replay keeps the previous pass's notes; a seek right after it stops them.
+  - `seek` (#21, D-005): a seek applies the song's state, and the pass after it equals a fresh seek's after a completed play with manual overrides and caller-scheduled automation, and while playing with queued automation.
+  - The T4 re-review item (#11, D-025): after a caller's stop, `playMIDI()` resumes with the channel's latest expression (CC11). An expression-ignoring mutant fails it in all three engines.
+- **Runner exit guard.** A full run printed its final PASS and then stalled at exit for 42 minutes while holding the shared lock; the cause was not isolated. The command now launches the orchestrator and exits with its reported status, killing it if it has not exited 30 s later. Signals are passed on ([tasks/T6.md §17.7](tasks/T6.md#177-matrix-runner-stall-at-exit)).
+- **Measured tolerances.** Note times match the tempo map within 2.2e-16 s (tolerance 1 µs). Float32 parameter values are within 2.26e-8 relative (tolerance 1e-6). The seek histories compare exactly.
+- **Non-vacuous.** Every assertion fails on one of these: pre-T2 `2424fc3`, pre-T3 `1ca037a`, the F4-era `6c0a353`, or a single-line mutant ([tasks/T6.md §17.5](tasks/T6.md#175-vacuity-demonstrations)).
+  - Cases that terminate on their own were shown in all three engines.
+  - Cases that hang or allocate without bound on pre-fix code are shown only in Node children (1 GB heap, 5 s deadline; CONCURRENCY.md rule 10). Earlier browser runs of those cases are the probable source of the oversized WebKit processes.
+
+- **Results** (merged head `f9d9102`, linux-x64):
+  - lint, `npm test` (unit 436, node 115, regressions 3 of 3) and `verify` pass;
+  - `npm run test:browser:matrix` passes 246 cases and 3,438 checks: 82 cases and 1,146 checks in each of Chromium 153, Firefox 155 and WebKit 26.6;
+  - parser 138, transport 104 and seek 36 checks per engine;
+  - the cross-engine comparison passes 12 of 12.
+
 ### Pending
 
+- **Phase B rows waiting on other tasks.** #11 and #12 (T4), #14 (T5), #7 (T8), #26 (T11), #27 (T12), and the short-note decision ([tasks/T6.md §13](tasks/T6.md#13-phase-b-plan)).
 - **Manual listening is pending.** The steps are in [tasks/T6.md §12](tasks/T6.md#12-manual-listening). No automated listening is claimed.
