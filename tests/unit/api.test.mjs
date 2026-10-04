@@ -292,6 +292,10 @@ for (const variant of variants) {
       ["array-like with a fractional length", { 0: 0x90, 1: 60, 2: 100, length: 3.5 }],
       ["SysEx array-like with a NaN length", { 0: 0xf0, 1: 0x7f, 2: 0x7f, 3: 0x04, 4: 0x04, 5: 0x00, 6: 0x42, 7: 0xf7, length: NaN }],
       ["SysEx array-like with no length", { 0: 0xf0, 1: 0x7f, 2: 0x7f, 3: 0x04, 4: 0x04, 5: 0x00, 6: 0x42, 7: 0xf7 }],
+      // system common messages have data bytes too (PR #48: 0xF1 and 0xF3 take one, 0xF2 two)
+      ["MTC quarter frame without its data byte", [0xf1]], ["song position without data", [0xf2]], ["song position with one byte", [0xf2, 0]],
+      ["song select without its data byte", [0xf3]], ["song position with a byte 0x80", [0xf2, 0, 128]],
+      ["MTC quarter frame with a byte 0x80", [0xf1, 0x80]], ["song select with a string byte", [0xf3, "1"]],
     ];
     test("a malformed message does nothing: no state change and no WebAudio call", () => {
       const s = synthFor(variant);
@@ -318,6 +322,24 @@ for (const variant of variants) {
       expect(s.synth.masterTuningC).toBe(0);
       s.synth.send([0xf0, 0x7f, 0x7f, 0x04, 0x04, 0x00, 0x42, 0xf7]); // the same message with the number 0xf7 applies
       expect(s.synth.masterTuningC).toBe(2);
+    });
+
+    test("system common messages: short or bad ones are no-ops that create no context; well-formed ones are accepted and change no state (PR #48)", () => {
+      for (const msg of [[0xf2], [0xf3], [0xf1], [0xf2, 0, 128]]) {
+        const lazy = synthFor(variant, { lazy: true });
+        const before = snapshot(lazy);
+        expect(thrown(() => lazy.synth.send(msg))).toBe(null);
+        expect([snapshot(lazy) === before, lazy.synth.getAudioContext(), lazy.trace.length]).toEqual([true, null, 0]);
+      }
+      const s = synthFor(variant);
+      for (const msg of [[0xf2, 0, 0], [0xf3, 0], [0xf1, 0], [0xf2, 0x7f, 0x7f], [0xf6], [0xf8], [0xfe]]) {
+        const before = snapshot(s);
+        expect(thrown(() => s.synth.send(msg))).toBe(null);
+        expect(snapshot(s)).toBe(before);
+      }
+      const lazy = synthFor(variant, { lazy: true }); // a well-formed message is a first use, like any other (T4)
+      lazy.synth.send([0xf2, 0, 0]);
+      expect(lazy.synth.getAudioContext()).not.toBe(null);
     });
 
     test("no malformed message puts a non-finite value into the WebAudio graph", () => {
