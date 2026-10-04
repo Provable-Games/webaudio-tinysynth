@@ -75,7 +75,7 @@ Preferred approach, as built. `scripts/test-build.js` is the one place that reso
 
 ## 4. Transition and #31
 
-- **Merge order.** #48 (T5) and #50 (docs/notice-seed) both carry a regenerated min.js and map. Pull request workflows run from the merge ref, so once this pull request is on `improve/integration` their next `synchronize` applies the new rule and fails `build-verify`. Merge them first, or have them run the fix command (`git checkout origin/improve/integration -- webaudio-tinysynth.min.js webaudio-tinysynth.min.js.map`) and commit. After this merges, `dist.yml`'s first run (on this merge) finds the files up to date, because this pull request changes no source.
+- **Merge order.** #48 (T5) carries a regenerated min.js and map. Pull request workflows run from the merge ref, so once this pull request is on `improve/integration`, #48's next `synchronize` applies the new rule and fails `build-verify`. Merge #48 first (then this branch merges `improve/integration` and recomputes the node floors, rules 5 and 6, since #48 also adds node tests), or have #48 run the fix command (`git checkout origin/improve/integration -- webaudio-tinysynth.min.js webaudio-tinysynth.min.js.map`) and commit. #50 also carried them while open, but merged at `30f1506` with only NOTICE and README changed. `improve/integration` moved to `30f1506` during this work; `git merge-tree` with it is clean, and no rebase was requested. After this pull request merges, `dist.yml`'s first run finds the files up to date, because it changes no source.
 - **#31 after each merge.** A human merge into `improve/integration` fires `synchronize` on #31: `build-verify` runs the fresh rule on the not-yet-rebuilt head and fails. CI's rebuild commit, made with `GITHUB_TOKEN`, fires no event, so #31's head is then a bot commit with no checks, and `main`'s ruleset requires `test`, `lint`, `build-verify`, `browser-smoke` and both review gates on the head. Before merging #31: close and reopen it (all four pull request workflows list `reopened`), or push a signed commit on top of the rebuild commit (an empty one is enough; `dist.yml` then finds the files up to date). `workflow_dispatch` of `ci.yml` on `improve/integration` would attach `lint`/`test`/`build-verify`/`browser-smoke` to the head but not the review gates. A re-run of an old run checks the old head, not the bot commit.
 - **AGENTS.md** on `main` still says to include the generated files; CONCURRENCY rule 12 overrides it until T9 updates it. Proposed wording in §7.
 - **Review workflows.** `claude-review.yml`, `codex-review.yml`, `review-helpers.yml` and `.github/prompts/**` do not assume pull requests carry the generated files (their prompts mention "generated files" only as in scope for review). No change needed.
@@ -136,7 +136,34 @@ Pull request rule, locally on simulated merge refs (`pr-scenario.log`, `pr-scena
 
 ### Draft README/NOTICE text (CONCURRENCY rule 4)
 
-As committed in `4545631`: the `npm run build`, `size` and `pack:check` rows; two bullets replacing "Never edit … commit both files": the CI rebuild and the pull request rule with its fix command, and the `.build/` / `TINYSYNTH_MIN` behavior; the CI bullet's sentence about the fresh rule on #31 and `main`; and under "Verifying the minified build", which commits to pin. No NOTICE text.
+Committed in `4545631`, so the supervisor can keep or drop that commit. Verbatim, for pasting if it is dropped. In "Development", the table rows for `npm run build`, `npm run size` and `npm run pack:check` become:
+
+```markdown
+| `npm run build` | Minifies `webaudio-tinysynth.js` into `webaudio-tinysynth.min.js` and its source map with the pinned Terser. Every option is in `scripts/build.js`. `npm run build -- DIR` writes them to `DIR` instead of the repository root. CI runs this build after each merge; see below. |
+| `npm run size` | Raw size, gzip size and SHA-256 of the source and of a fresh build of it (minified file and map). |
+| `npm run pack:check` | Checks the files `npm pack` would publish, then packs them with a fresh build of the minified file and map, installs the tarball in a scratch project outside the repository and `require()`s it there. |
+```
+
+The bullet "Never edit `webaudio-tinysynth.min.js` or its map by hand. After changing the source, run `npm run build` and commit both files. CI fails if they differ from a fresh build." becomes these two bullets:
+
+```markdown
+- Pull requests do not change `webaudio-tinysynth.min.js` or its map, and nobody edits them by hand. After each merge into `improve/integration`, CI (`.github/workflows/dist.yml`) rebuilds both with the pinned build, runs the tests against the new bytes and commits them as `github-actions[bot]`, titled `Rebuild webaudio-tinysynth.min.js for <commit>`. The `build-verify` check fails a feature pull request that changes either file; restore them with `git checkout origin/<base branch> -- webaudio-tinysynth.min.js webaudio-tinysynth.min.js.map` and commit. `node scripts/check-dist.js --unchanged-from=origin/<base branch>` runs the same check locally.
+- The test commands, `pack:check` and `size` build the current source into the ignored `.build/` directory first and test that, never the committed `webaudio-tinysynth.min.js`, so they leave tracked files unchanged. To test another copy, set `TINYSYNTH_MIN=path/to/file.min.js`. A test file run on its own reads `.build/`; refresh it with `node scripts/test-build.js`.
+```
+
+The CI bullet becomes:
+
+```markdown
+- CI (`.github/workflows/ci.yml`) runs the `lint`, `build-verify`, `test` and `browser-smoke` jobs on pull requests and on pushes to `main`. On the `improve/integration` → `main` pull request and on `main`, `build-verify` requires the committed files to equal a fresh build (`npm run verify`).
+```
+
+In "Verifying the minified build", after step 2 (indented under it):
+
+```markdown
+   Pin a commit where it passes, such as a `Rebuild webaudio-tinysynth.min.js for …` commit by `github-actions[bot]` on `improve/integration`, or the head of `main` (CI runs this check on every push to `main`). Right after a merge into `improve/integration`, until CI's rebuild commit lands (about ten minutes), the committed minified file there is older than the source and `npm run verify` fails.
+```
+
+No NOTICE text: this changes the CI process, not the library.
 
 ## 9. Deferred: automating `main`
 
@@ -145,7 +172,7 @@ As committed in `4545631`: the `npm run build`, `size` and `pack:check` rows; tw
 ## 10. Open risks
 
 - **#31 checks after each merge** (§4): red `build-verify` after each human merge, then an unchecked bot head. Needs a reopen or a human commit before merging into `main`.
-- **#48 and #50 carry min.js.** They fail the new rule if they update after this merges, until they restore the files.
+- **#48 carries min.js.** It fails the new rule if it updates after this merges, until it restores the files.
 - **Rebuild window.** For about eight to nine minutes after each merge, `improve/integration`'s committed min.js is older than its source and `npm run verify` fails there. If `build` or `browser-smoke` fails, there is no rebuild until the next push or a manual run (`workflow_dispatch`, once `dist.yml` is on `main`), and the failure appears only in the Dist run, not on a pull request.
 - **Runner-image tools.** `commit` relies on `gh`, `jq`, `base64`, `gzip` and GNU `find` from the `ubuntu-24.04-arm` image; the self-test used them.
 - **Artifact integrity** rests on the build job's dependencies (§3).
