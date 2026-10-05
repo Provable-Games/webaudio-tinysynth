@@ -464,7 +464,8 @@ function audioCase(demo) {
  * jstest: a successful load says so; a load superseded by a second click shows
  * nothing. Both: a load cancelled by choosing a file shows nothing and does
  * not replace the file's song. soundedit: Play as the first click plays the
- * sample song.
+ * sample song; Stop while it loads keeps it from playing when it arrives; a
+ * retry after a failure that succeeds clears the failure's message.
  */
 const URL_FAILURES = {
   "HTTP 404": { route: (r) => r.fulfill({ status: 404, contentType: "text/plain", body: "not found" }), code: "HTTP_STATUS 404" },
@@ -549,6 +550,39 @@ function urlCase(demo) {
           t.check("Play as the first click plays the sample song", st.play === 1 && st.maxTick === SONG_TICKS, JSON.stringify(st));
           const m = await p.evaluate(MESSAGE, "message");
           t.check("Play as the first click: no message, no page or console errors", m.text === "" && !rec.pageErrors.length && !rec.consoleErrors.length, JSON.stringify(m) + " " + rec.pageErrors.concat(rec.consoleErrors).join(" | "));
+          await p.click("button:text-is('Stop')");
+        }
+        {
+          // Stop while Play waits for the sample song: nothing plays when it arrives; it is installed, stopped.
+          const rec = await open(srv, t), p = rec.page, seen = [];
+          await p.route("**/ws.mid", late(1500, seen));
+          await start(p);
+          await sleep(200);
+          await p.click("button:text-is('Stop')");
+          await sleep(2500);
+          const st = await status(p);
+          t.check("Stop while the sample song loads: nothing plays when it arrives", st.play === 0 && st.maxTick === SONG_TICKS && seen.length === 1, JSON.stringify({ st, requests: seen.length }));
+          await start(p);
+          const st2 = await status(p);
+          t.check("Stop while the sample song loads: Play afterwards plays it", st2.play === 1 && st2.maxTick === SONG_TICKS, JSON.stringify(st2));
+          t.check("Stop while the sample song loads: no unhandled rejections and no page errors", (await rejections(p)) === 0 && !rec.pageErrors.length, rec.pageErrors.join(" | "));
+          await p.click("button:text-is('Stop')");
+        }
+        {
+          // A failed load, then Play again succeeds: the old error is cleared.
+          const rec = await open(srv, t), p = rec.page;
+          let n = 0;
+          await p.route("**/ws.mid", (route) => (++n === 1 ? route.fulfill({ status: 404, contentType: "text/plain", body: "not found" }) : route.continue()));
+          await start(p);
+          const m1 = await waitText(p, "message", /^Could not load ws\.mid/, 5000);
+          await start(p);
+          const end = Date.now() + 5000;
+          let st;
+          while ((st = await status(p)).play !== 1 && Date.now() < end) await sleep(100);
+          const m2 = await p.evaluate(MESSAGE, "message");
+          const cls = await p.getAttribute("#message", "class");
+          t.check("a retry that succeeds plays and clears the earlier error", /HTTP_STATUS 404/.test(m1.text) && st.play === 1 && st.maxTick === SONG_TICKS && m2.text === "" && !cls,
+            JSON.stringify({ first: m1.text, st, after: m2.text, cls, requests: n }));
           await p.click("button:text-is('Stop')");
         }
       }
