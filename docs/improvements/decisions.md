@@ -456,3 +456,13 @@ The user chose "Fix both".
 - **Fix:** at a note-off before an operator's attack ends, ramp that operator to its own value `v·(T − t)/a` at `T`, then release from there. `cancelAndHoldAtTime` is not used (Firefox 155 lacks it). Completed attacks are unchanged.
 - **Tracking:** issue #59, task T13, which starts after #57 merges.
 - **What the change touches:** it is a deliberate sound change from upstream, so it needs a contracts ledger row (L-15), a narrow differential-test exemption limited to short-note release automation, and README/NOTICE entries.
+
+## D-040 Task PRs update their own docs (2026-10-04)
+
+The user saw several PRs that updated NOTICE only after the code merged (#49, #50, #52, #58), and said: "I would prefer to update NOTICE as part of the PR as well as any other docs".
+
+- Each task PR now updates every doc its change affects: the README sections, a NOTICE bullet, the source header if it lists the change, and the task's row in `contracts.md`.
+- No separate follow-up docs PRs.
+- This replaces CONCURRENCY.md rule 4 (draft text in the task record, added by the supervisor at integration) and the supervisor half of D-016. D-016's requirement that every fork modification has a NOTICE entry still holds.
+- `status.md` and `decisions.md` stay supervisor-owned, because they record merge state and user decisions.
+- Parallel PRs that both append a NOTICE bullet can conflict. The second PR rebases and keeps both bullets, in merge order (D-035 authorizes the push with lease).
