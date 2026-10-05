@@ -85,13 +85,19 @@ var shiftSustain=false; // sustain is held by the Shift key rather than the chec
 var midiSustain={};     // channels whose sustain pedal the MIDI input holds down
 function Init(){
   InitMidi();
-  synth=new WebAudioTinySynth({quality:1});
+  /* lazy: no AudioContext exists until the first click, tap, key press or
+     change on the page, which starts audio (StartAudio). Installing a song
+     creates the AudioContext, so the sample song is loaded by Play (LoadSong). */
+  synth=new WebAudioTinySynth({quality:1,lazy:true});
   synth.setLoop(1);
   synth.setMasterVol(0.3);
-  synth.loadMIDIUrl("ws.mid");
+  ["pointerdown","keydown","click","change"].forEach(function(type){
+    window.addEventListener(type,StartAudio,true);
+  });
   var showStatus=function(){
     var st=synth.getPlayStatus();
     document.getElementById("status").innerHTML=(st.play?"Playing ":"Stopped ")+st.curTick+" / "+st.maxTick;
+    AudioStatus();
   };
   showStatus();   // at once: a line filled in 100 ms later would move the controls below it
   setInterval(showStatus,100);
@@ -111,8 +117,110 @@ function Init(){
         o.innerHTML=(i+1)+" : "+synth.getTimbreName(0,i);
         document.getElementById("prog").appendChild(o);
       }
-      ProgChange(0);
+      // Program 0 is every channel's default: show it without sending a program change,
+      // which would create the AudioContext before a gesture.
+      ViewParam(synth.program[curProg]);
   });
+}
+/* Starts audio from a user gesture: resume() creates the AudioContext inside
+   the event handler and starts it. Called again by later gestures while audio
+   is not running, for example after the browser refused to start it. */
+var audioError=null;
+function StartAudio(){
+  var c=synth.getAudioContext();
+  if(c&&c.state=="running")
+    return;
+  audioError=null;
+  synth.resume().then(AudioStatus,function(e){
+    audioError=e;
+    AudioStatus();
+  });
+  AudioStatus();
+}
+/* Shows whether audio is off, blocked, running, or failed to start. */
+function AudioStatus(){
+  var c=synth.getAudioContext(), s=c?c.state:"", text, error=false;
+  if(s=="running"){
+    text="Audio is on.";
+    audioError=null;
+  }
+  else if(s=="closed")
+    text="Audio is closed. Reload the page to start it again.";
+  else if(audioError){
+    text="Audio could not start ("+ErrorText(audioError)+"). Click, tap or press a key to try again.";
+    error=true;
+  }
+  else if(c)
+    text="Audio is blocked by the browser. Click, tap or press a key to start it.";
+  else
+    text="Audio is off. Click, tap or press a key to start it.";
+  var m=document.getElementById("audio");
+  if(m.textContent!=text||m.className!=(error?"error":"")){
+    m.textContent=text;
+    m.className=error?"error":"";
+  }
+}
+/* An error's code (and HTTP status), or its name, with its message. */
+function ErrorText(e){
+  if(!e)
+    return "unknown error";
+  if(e.code){
+    var t=e.message&&e.message.indexOf(e.code)==0?e.message:e.code+(e.message?": "+e.message:"");
+    return e.status!=undefined?t+" "+e.status:t;
+  }
+  return (e.name||"Error")+(e.message?": "+e.message:"");
+}
+/* Play plays the loaded song. A song still loading (a file being read, or the
+   sample song) is played once it is installed; with none loaded or loading,
+   Play loads the sample song from its URL first. Installing a song creates the AudioContext and resets every
+   channel (program, sustain pedal, sounding notes), so the sample song waits
+   for Play instead of loading with the page or at the first note played. A
+   failure shows its code, until the next attempt. Choosing a file cancels a
+   pending load, and a superseded or cancelled load shows nothing. Stop while
+   the song loads cancels the play that waits for it. */
+var haveSong=false;   // a song (the sample song or a file) is installed
+var songLoad=null;    // the pending sample song load, settled once it has
+var urlLoad=null;     // its AbortController
+var fileRead=null;    // the pending file read, settled once it has
+var songError=null;   // the message the last failed sample song load showed
+var playWanted=0;     // counts Play and Stop presses: a play that waited runs only if no later press came
+function LoadSong(url){
+  if(songError!=null&&document.getElementById("message").textContent==songError)
+    ShowMessage("");  // a new attempt: the previous failure no longer applies
+  songError=null;
+  var ctl=urlLoad=new AbortController();
+  var load=songLoad=synth.loadMIDIUrl(url,{signal:ctl.signal}).then(function(){
+    haveSong=true;
+  },function(e){
+    if(e.code=="LOAD_SUPERSEDED"||e.name=="AbortError")
+      return;
+    songError="Could not load "+url+" ("+ErrorText(e)+"). Choose a MIDI file instead.";
+    ShowMessage(songError,true);
+  }).then(function(){
+    if(urlLoad==ctl)
+      urlLoad=null;
+    if(songLoad==load)
+      songLoad=null;
+  });
+}
+function Play(){
+  var press=++playWanted;
+  if(!haveSong&&!songLoad&&!fileRead)
+    LoadSong("ws.mid");
+  var wait=fileRead||songLoad;  // a file chosen after the sample song's load cancelled it
+  if(!wait){
+    if(haveSong)
+      synth.playMIDI();
+    return;
+  }
+  wait.then(function(){
+    if(haveSong&&press==playWanted)
+      synth.playMIDI();
+  });
+}
+function Stop(){
+  ++playWanted;   // a play waiting for the sample song does not start
+  synth.stopMIDI();
 }
 function NoteOn(key,ch,n,v,disp){
   NoteOff(key);
@@ -304,7 +412,18 @@ function loadMidi(files){
     ShowMessage("No file selected. The current song is unchanged.");
     return;
   }
+  if(urlLoad){
+    urlLoad.abort();
+    urlLoad=null;
+  }
   var reader = new FileReader();
+  var read=fileRead=new Promise(function(done){
+    reader.addEventListener("loadend",done);
+  });
+  read.then(function(){
+    if(fileRead==read)
+      fileRead=null;
+  });
   reader.onload=function(e){
     if(load!=loadCount)
       return;
@@ -315,6 +434,7 @@ function loadMidi(files){
       ShowMessage("Could not load "+file.name+" ("+err.message+"). The current song is unchanged.",true);
       return;
     }
+    haveSong=true;
     ShowMessage("Loaded "+file.name+". Press Play.");
   }
   reader.onerror=function(){
@@ -350,7 +470,7 @@ function ChChange(e){
     ViewParam(DrumTimbre(curNote));
   else{
     // Show the program this channel plays.
-    curProg=synth.pg[curMidi];
+    curProg=synth.pg[curMidi]||0;
     document.getElementById("prog").selectedIndex=curProg;
     ViewParam(synth.program[curProg]);
   }
@@ -386,40 +506,62 @@ function EnableRow(){
     }
   }
 }
+/* The slot the editor shows: {m:0, n:program} or {m:1, n:note} on the drum
+   channel, or null for a key with no drum (setTimbre accepts drums 35-81). */
+function EditTarget(){
+  if(curMidi!=9)
+    return {m:0,n:curProg};
+  return (curNote>=35&&curNote<=81)?{m:1,n:curNote}:null;
+}
+function Installed(t){
+  return t.m?synth.drummap[t.n-35]:synth.program[t.n];
+}
+/* Timbres the editor installed, by "m:n". setQuality() reinstalls the built-in
+   timbres, so SetQuality installs these again. */
+var edits={};
+/* Upstream's starting values for an operator added by the operator count; the
+   form's values replace all but b and c, which the synth ignores. */
+var NEW_OP={g:0,w:"sine",v:0,t:0,f:0,a:0,h:0,d:1,s:0,r:1,b:0,c:0,p:1,q:1,k:0};
+var FIELDS=["g","v","t","f","a","h","d","s","r","p","q","k"];
+/* Builds a new timbre from the form and installs it with setTimbre(), which
+   checks it and keeps a copy; the installed timbre and the synth's built-in
+   tables are never modified. Each operator starts as a copy of the installed
+   one, so the keys keep their order and the Patch text is the same as
+   upstream's for the same values. An invalid value is shown and not applied. */
 function Edit(){
   if(window.synth==undefined)
     return;
-  var prog;
-  if(curMidi==9)
-    prog=DrumTimbre(curNote);
-  else
-    prog=synth.program[curProg];
-  if(!prog)
+  var t=EditTarget();
+  if(!t)
     return;     // no drum sound on this note; the name line says so
   var oscs=document.getElementById("oscs").selectedIndex+1;
   EnableRow();
-  if(prog.p.length>oscs)
-    prog.p.length=oscs;
-  while(prog.p.length<oscs)
-    prog.p.push({g:0,w:"sine",v:0,t:0,f:0,a:0,h:0,d:1,s:0,r:1,b:0,c:0,p:1,q:1,k:0});
+  var cur=Installed(t).p, p=[];
   for(var i=0;i<oscs;++i){
-    prog.p[i].g=GetVal("g"+(i+1));
-    prog.p[i].w=document.getElementById("w"+(i+1)).value;
-    prog.p[i].v=GetVal("v"+(i+1));
-    prog.p[i].t=GetVal("t"+(i+1));
-    prog.p[i].f=GetVal("f"+(i+1));
-    prog.p[i].a=GetVal("a"+(i+1));
-    prog.p[i].h=GetVal("h"+(i+1));
-    prog.p[i].d=GetVal("d"+(i+1));
-    prog.p[i].s=GetVal("s"+(i+1));
-    prog.p[i].r=GetVal("r"+(i+1));
-    prog.p[i].p=GetVal("p"+(i+1));
-    prog.p[i].q=GetVal("q"+(i+1));
-    prog.p[i].k=GetVal("k"+(i+1));
+    var o=Object.assign({},i<cur.length?cur[i]:NEW_OP);
+    o.w=document.getElementById("w"+(i+1)).value;
+    for(var j=0;j<FIELDS.length;++j)
+      o[FIELDS[j]]=document.getElementById(FIELDS[j]+(i+1)).value;  // setTimbre reads numeric strings
+    p.push(o);
   }
-  ViewDef(prog);
+  try{
+    synth.setTimbre(t.m,t.n,p);
+  }
+  catch(e){
+    EditStatus("Not applied ("+ErrorText(e)+"). The timbre is unchanged.",true);
+    return;
+  }
+  edits[t.m+":"+t.n]=p;
+  EditStatus("");
+  ViewDef(Installed(t));
+}
+function EditStatus(text,error){
+  var m=document.getElementById("editstatus");
+  m.textContent=text;
+  m.className=error?"error":"";
 }
 function ViewParam(pg){
+  EditStatus("");
   if(!pg){
     document.getElementById("name").textContent="No drum sound on note "+curNote+" : ";
     return;
@@ -473,14 +615,21 @@ function ProgChange(p){
   }
 }
 function SetQuality(n){
-  synth.setQuality(n);
+  synth.setQuality(n);    // reinstalls the built-in timbres of that quality
+  var failed=null;
+  for(var k in edits){
+    var mn=k.split(":");
+    try{
+      synth.setTimbre(+mn[0],+mn[1],edits[k]);   // the editor's timbres stay installed
+    }
+    catch(e){
+      delete edits[k];
+      failed=failed||e;
+    }
+  }
   ViewParam(curMidi==9?DrumTimbre(curNote):synth.program[curProg]);
-}
-function GetVal(id){
-  var s=+document.getElementById(id).value;
-  if(isNaN(s))
-    s=0;
-  return s;
+  if(failed)
+    EditStatus("An edited timbre could not be installed again ("+ErrorText(failed)+"). It is reset.",true);
 }
 function OpenEditor(){
   var e=document.getElementById("soundeditor");
@@ -560,9 +709,10 @@ The demo on this page is based on webauido-tinysynth, and you can do the followi
 </div>
 <div id="container">
 <p style="font-family:'Audiowide', sans-serif">WebAudio-TinySynth : GM Synth / MIDI Player</p>
+<div id="audio" role="status"></div>
 <table>
 <tr>
-  <td><button onclick="synth.playMIDI()">Play</button> <button onclick="synth.stopMIDI()">Stop</button><br/><span id="status"></span></td>
+  <td><button onclick="Play()">Play</button> <button onclick="Stop()">Stop</button><br/><span id="status"></span></td>
   <td><webaudio-knob colors="#c00;#ccf;#fff" diameter="40" min="0" max="1" step="0.01" id="vol" value="0.5" oninput="Ctrl()"></webaudio-knob></td>
   <td><webaudio-knob colors="#c00;#ccf;#fff" diameter="40" min="0" max="1" step="0.01" id="rev" value="0.2" oninput="Ctrl()"></webaudio-knob></td>
   <td><webaudio-switch id="loop" onchange="Ctrl()" value="1"></webaudio-switch></td>
@@ -658,6 +808,7 @@ Number of Oscillator :<select id="oscs" onchange="Edit()"><option>1</option><opt
 </table>
 <br/>
 Patch : <input id="patch" size="80"/>
+<div id="editstatus" role="status"></div>
 </div>
 <hr/>
 </div>
