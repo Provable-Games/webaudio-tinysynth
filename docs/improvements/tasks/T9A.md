@@ -258,6 +258,8 @@ T9 implements after T7 and accepts after T12 (plan, status). Items with no engin
 | T9-15 | Contribution guidance: give the user the §5 corrections. Either the user applies them to the untracked AGENTS.md, or T9 adds a tracked `CONTRIBUTING.md` or a README "Development" section with the final commands and layout. | #20 | T1 and T7 final layout | the tracked choice only | Commands in the guidance reproduce the CI checks |
 | T9-16 | Documentation for the #26/#27 fields and APIs (required). Editor UI support for registered waves and filters is optional (§7, item 6). | #26, #27 | T11, T12 | `README.md` (± `soundedit.html`) | The consumer setup fixture's calls are documented; examples run |
 
+**Status (T9-D3):** T9-10 and the low findings E13, E14, X7 and J5 are done; see `tasks/T9-D3.md` (E13: the Patch field is marked read-only output rather than given an import path). With T9-D and T9-D2, every #19 row except the documentation rows (T9-12 to T9-16, which belong to #20) is done.
+
 Suggested order: T9-1, T9-2, T9-6, T9-7, T9-9, T9-10 and the T9-4 guards first (no engine dependency); then T9-11 once T6's harness exists; T9-3 after T4; T9-5 and T9-8 after T5; the README layout sections after T7; T9-16, the final README size/hash table, NOTICE and T9-14 last, after T12 and the final pinned build.
 
 Screenshots to record for visible changes: each demo online and offline, before and after; the soundedit editor open; the error and status states (blocked audio, file error, URL error, MIDI unavailable).
