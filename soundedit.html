@@ -170,8 +170,9 @@ function ErrorText(e){
   }
   return (e.name||"Error")+(e.message?": "+e.message:"");
 }
-/* Play plays the loaded song; with none loaded, it loads the sample song from
-   its URL first. Installing a song creates the AudioContext and resets every
+/* Play plays the loaded song. A song still loading (a file being read, or the
+   sample song) is played once it is installed; with none loaded or loading,
+   Play loads the sample song from its URL first. Installing a song creates the AudioContext and resets every
    channel (program, sustain pedal, sounding notes), so the sample song waits
    for Play instead of loading with the page or at the first note played. A
    failure shows its code, until the next attempt. Choosing a file cancels a
@@ -180,6 +181,7 @@ function ErrorText(e){
 var haveSong=false;   // a song (the sample song or a file) is installed
 var songLoad=null;    // the pending sample song load, settled once it has
 var urlLoad=null;     // its AbortController
+var fileRead=null;    // the pending file read, settled once it has
 var songError=null;   // the message the last failed sample song load showed
 var playWanted=0;     // counts Play and Stop presses: a play that waited runs only if no later press came
 function LoadSong(url){
@@ -203,14 +205,15 @@ function LoadSong(url){
 }
 function Play(){
   var press=++playWanted;
-  if(!haveSong&&!songLoad)
+  if(!haveSong&&!songLoad&&!fileRead)
     LoadSong("ws.mid");
-  if(!songLoad){
+  var wait=fileRead||songLoad;  // a file chosen after the sample song's load cancelled it
+  if(!wait){
     if(haveSong)
       synth.playMIDI();
     return;
   }
-  songLoad.then(function(){
+  wait.then(function(){
     if(haveSong&&press==playWanted)
       synth.playMIDI();
   });
@@ -414,6 +417,13 @@ function loadMidi(files){
     urlLoad=null;
   }
   var reader = new FileReader();
+  var read=fileRead=new Promise(function(done){
+    reader.addEventListener("loadend",done);
+  });
+  read.then(function(){
+    if(fileRead==read)
+      fileRead=null;
+  });
   reader.onload=function(e){
     if(load!=loadCount)
       return;

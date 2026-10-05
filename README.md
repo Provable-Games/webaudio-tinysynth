@@ -88,7 +88,7 @@ Serve the repository root (for example `python3 -m http.server`) and open:
  **jstest.html**  (JavaScript API test page)
 
 - No AudioContext exists until your first click, tap or key press on the page, which starts audio with `resume()` (the demos use `lazy: true`). A Web MIDI note played before that creates one that stays blocked until then. Each page says whether audio is off, blocked by the browser, on, or failed to start, with the error.
-- A failed URL load shows the error's `code`, for example `HTTP_STATUS 404`, `NETWORK_ERROR` or `SMF_INVALID_HEADER`. A load replaced by a newer one, or cancelled by choosing a file, shows nothing. In soundedit.html, **Play** loads the sample song `ws.mid` when no song is loaded: installing a song creates the AudioContext and resets every channel, so it is not loaded with the page.
+- A failed URL load shows the error's `code`, for example `HTTP_STATUS 404`, `NETWORK_ERROR` or `SMF_INVALID_HEADER`. A load replaced by a newer one, or cancelled by choosing a file, shows nothing. In soundedit.html, **Play** plays a song that is still loading once it is installed, and loads the sample song `ws.mid` when no song is loaded or loading. Installing a song creates the AudioContext and resets every channel, so the sample song is not loaded with the page.
 - soundedit.html's Timbre Editor installs each edit with `setTimbre()` and shows a value it rejects. A quality change reinstalls the built-in timbres, and the editor then installs its edited timbres again. The Patch text is a JavaScript array literal for `setTimbre()`, not JSON.
 
 Upstream's hosted demos at [g200kg.github.io/webaudio-tinysynth](https://g200kg.github.io/webaudio-tinysynth/soundedit.html) use the original build with the GUI.

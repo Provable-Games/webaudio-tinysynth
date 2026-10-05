@@ -181,6 +181,11 @@ const AUDIO_PROBE = () => {
     }));
   }, 100);
 };
+/* File reads that take ms longer: readAsArrayBuffer starts after a delay. */
+const SLOW_READ = (ms) => {
+  const real = FileReader.prototype.readAsArrayBuffer;
+  FileReader.prototype.readAsArrayBuffer = function (blob) { setTimeout(() => real.call(this, blob), ms); };
+};
 /* A browser that refuses to start audio: contexts stay "suspended" and resume() rejects. */
 const RESUME_REJECT = () => {
   const AC = window.AudioContext || window.webkitAudioContext;
@@ -465,7 +470,8 @@ function audioCase(demo) {
  * nothing. Both: a load cancelled by choosing a file shows nothing and does
  * not replace the file's song. soundedit: Play as the first click plays the
  * sample song; Stop while it loads keeps it from playing when it arrives; a
- * retry after a failure that succeeds clears the failure's message.
+ * retry after a failure that succeeds clears the failure's message; Play while
+ * a chosen file is still being read plays that file.
  */
 const URL_FAILURES = {
   "HTTP 404": { route: (r) => r.fulfill({ status: 404, contentType: "text/plain", body: "not found" }), code: "HTTP_STATUS 404" },
@@ -566,6 +572,21 @@ function urlCase(demo) {
           const st2 = await status(p);
           t.check("Stop while the sample song loads: Play afterwards plays it", st2.play === 1 && st2.maxTick === SONG_TICKS, JSON.stringify(st2));
           t.check("Stop while the sample song loads: no unhandled rejections and no page errors", (await rejections(p)) === 0 && !rec.pageErrors.length, rec.pageErrors.join(" | "));
+          await p.click("button:text-is('Stop')");
+        }
+        {
+          // Play while a chosen file is still being read: Play waits for the file and plays it; the sample song is not loaded.
+          const rec = await openDemo(t, srv, demo, { initScripts: [[AUDIO_PROBE], [MIDI_STUB, "empty"], [SLOW_READ, 1000]] });
+          const p = rec.page, seen = [];
+          await p.route("**/ws.mid", late(0, seen));
+          await setFile(p, "#file", "short.mid", SHORT);
+          await start(p);
+          await sleep(2500);
+          const st = await status(p);
+          const m = await p.evaluate(MESSAGE, "message");
+          t.check("Play while a file is being read plays that file, and the sample song is not loaded", st.play === 1 && st.maxTick === SHORT_TICKS && seen.length === 0 && m.text === "Loaded short.mid. Press Play.",
+            JSON.stringify({ st, requests: seen.length, m: m.text }));
+          t.check("Play while a file is being read: no unhandled rejections and no page errors", (await rejections(p)) === 0 && !rec.pageErrors.length, rec.pageErrors.join(" | "));
           await p.click("button:text-is('Stop')");
         }
         {
