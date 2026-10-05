@@ -241,7 +241,7 @@ Branch `t6/phase-b2` on `improve/integration` `7616104`. Record: [tasks/T6.md §
 - **#14 (`api-url`, T5).** Every part of the row was already asserted except "resolves on install": the song was read only after a later poll. A new check requires ws.mid to be installed when the promise's handlers run. "Disposal aborts" is asserted as T5 §5 defines it: the load settles at once and its response is discarded, but the request is not aborted.
 - **#7 (`seed`, T8).** Every part was asserted. A new check requires the hashes read back for the four seeds to differ pairwise, independently of the expectations table.
 - **#27 (`filters`, T12).** Already asserted against the spec's own RBJ biquad, with the browsers' dB Q for low- and high-pass, declared bands and tolerances (T12 §4) and reverb off. No check added.
-- **Non-vacuous.** 11 small mutants, all terminating, so run in browsers (rule 10). Each new check fails on its mutant in all three engines, and nothing else does: a resolve-then-install load, and a library that ignores the seed. Other mutants re-demonstrate the existing checks on this base: a direct or newer load that does not supersede, a `dispose()` that leaves the load pending, no internal rejection handler, a shifted or reverb-dependent seed stream, `Math.random` reintroduced (thrown or swallowed), and low- and high-pass swapped ([tasks/T6.md §18.6](tasks/T6.md#186-vacuity-demonstrations)).
+- **Non-vacuous.** 11 small mutants, all terminating, so run in browsers (rule 10). Each new check fails on its mutant in all three engines. A resolve-then-install load fails only the new #14 check (2 of 108). A library that ignores the seed fails the new #7 check and the existing table and seed-effect render checks too (40 of 104). Other mutants re-demonstrate the existing checks on this base: a direct or newer load that does not supersede, a `dispose()` that leaves the load pending, no internal rejection handler, a shifted or reverb-dependent seed stream, `Math.random` reintroduced (thrown or swallowed), and low- and high-pass swapped ([tasks/T6.md §18.6](tasks/T6.md#186-vacuity-demonstrations)).
 - **Short notes (row 4, characterized; still pending).** An output operator whose attack `a` is at least the note's duration is silent while held. The note-off's `cancelScheduledValues` removes the whole attack ramp. Measured outcomes:
   - The prediction from the timbre tables matched 1,536 Chromium renders; the classification was identical for upstream `3d75aee` and in Firefox and WebKit.
   - With a 0.07 s note, 11 quality-1 programs are silent throughout, including violin, viola, cello, contrabass and tremolo strings.
@@ -254,6 +254,11 @@ Branch `t6/phase-b2` on `improve/integration` `7616104`. Record: [tasks/T6.md §
   - `npm test` passes: unit 11 files and 894 tests, node 12 files and 150 tests, regressions 3 of 3;
   - `npm run test:browser:matrix` passes 312 cases and 4,806 checks: 104 cases and 1,602 checks in each of Chromium 153, Firefox 155 and WebKit 26.6, with `api-url` 108, `seed` 104 and `filters` 160 checks per engine;
   - the cross-engine comparison passes 12 of 12.
+
+- **PR #57 round 1.** CI's `test` job failed:
+  - **Cause.** Two `tests/unit/waves.test.mjs` tests, on both builds, hit Vitest's 5 s default on the arm64 runner. The time is CPU work, not waiting: each context install generates the seeded buffers, and in the harness's `vm` context every `Math` lookup is slow. One install costs about 1.25 s on CI.
+  - **Fix.** Every multi-install test in that file now has an explicit 60 s timeout, with the cause in a comment ([tasks/T6.md §18.9](tasks/T6.md#189-pr-57-round-1-a-unit-test-timeout-on-ci-and-a-summary-fix)).
+  - **Summary corrected.** The vacuity summary above was corrected after Codex's LOW.
 
 ### Pending
 
