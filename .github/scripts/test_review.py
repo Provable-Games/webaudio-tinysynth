@@ -714,6 +714,8 @@ class RetryTests(ResultRuns):
             "severity word in prose": "lgtm\n\nOne high-risk change remains.",
             "location in prose": "lgtm\n\nSee webaudio-tinysynth.js:120 for a nit.",
             "model reported incomplete": "Review incomplete: ran out of turns",
+            "incomplete declared after a preamble": "I could not finish the review.\n\nReview incomplete: ran out of turns",
+            "indented incomplete declaration": "lgtm\n  review incomplete: no time",
             "empty": "  \n",
         }
         for name, text in final.items():

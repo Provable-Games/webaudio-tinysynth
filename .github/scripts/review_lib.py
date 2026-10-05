@@ -369,6 +369,8 @@ def retryable_output(text):
     if parsed["findings"]:
         return False, "the output has a finding heading"
     for line in text.splitlines():
+        if line.strip().lower().startswith("review incomplete"):
+            return False, "the output declares the review incomplete"
         if FINDING_RE.match(line) or PSEUDO_FINDING_RE.match(line):
             return False, "the output has a line that starts like a finding"
         if PREAMBLE_CONTENT_RE.search(line):
