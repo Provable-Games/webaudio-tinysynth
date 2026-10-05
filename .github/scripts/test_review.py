@@ -481,9 +481,11 @@ class PromptTests(Workspace):
         self.assertEqual(list(self.dir.rglob("INJECTED*")), [])
 
 
-class ResultTests(Workspace):
+class ResultRuns(Workspace):
+    """Runs the result step on fixture outputs (helpers only)."""
+
     def codex_result(self, *, exit_code="0", review="lgtm", header=("fixture-codex-model", "medium"),
-                     env=None, auth_file=None, log_extra=""):
+                     env=None, auth_file=None, log_extra="", extra=()):
         run = self.dir / f"run-{len(list(self.dir.glob('run-*')))}"
         run.mkdir()
         if exit_code is not None:
@@ -500,22 +502,27 @@ class ResultTests(Workspace):
             "--agent-id", "tinysynth", "--out-dir", out, "--config-sha", "a" * 40, "--bootstrap", "false",
             "--exit-code-file", run / "exit-code", "--review-file", run / "review.txt",
             "--log-file", run / "codex.log", "--auth-file", auth_file or (run / "missing"),
-            "--step", "settings=success", env=SETTINGS_ENV | SECRETS_ENV | (env or {}), check=True)
+            "--step", "settings=success", *extra, env=SETTINGS_ENV | SECRETS_ENV | (env or {}), check=True)
+        self.last_out = out
         return json.loads((out / "result.json").read_text()), (out / "review.md").read_text(), completed
 
     def claude_result(self, messages, *, outcome="success", conclusion="success", cwd=None, env=None,
-                      session="sess-1", expected_execution=None):
+                      session="sess-1", expected_execution=None, extra=()):
         execution = self.dir / f"execution-{len(list(self.dir.glob('execution-*')))}.json"
         if messages is not None:
             execution.write_text(json.dumps(messages))
         out = self.dir / f"claude-out-{len(list(self.dir.glob('claude-out-*')))}"
-        self.review("result", "--config-root", ROOT, "--provider", "claude", "--event", self.make_event(),
-                    "--agent-id", "tinysynth", "--out-dir", out, "--config-sha", "a" * 40, "--bootstrap", "false",
-                    "--execution-file", execution, "--action-outcome", outcome, "--conclusion", conclusion,
-                    "--expected-execution-file", expected_execution or execution, "--session-id", session,
-                    "--expected-cwd", cwd or "/work/cwd", env=SETTINGS_ENV | SECRETS_ENV | (env or {}), check=True)
+        self.last_completed = self.review(
+            "result", "--config-root", ROOT, "--provider", "claude", "--event", self.make_event(),
+            "--agent-id", "tinysynth", "--out-dir", out, "--config-sha", "a" * 40, "--bootstrap", "false",
+            "--execution-file", execution, "--action-outcome", outcome, "--conclusion", conclusion,
+            "--expected-execution-file", expected_execution or execution, "--session-id", session,
+            "--expected-cwd", cwd or "/work/cwd", *extra, env=SETTINGS_ENV | SECRETS_ENV | (env or {}), check=True)
+        self.last_out = out
         return json.loads((out / "result.json").read_text())
 
+
+class ResultTests(ResultRuns):
     def test_codex_lgtm_findings_and_identity(self):
         result, text, _ = self.codex_result()
         self.assertEqual((result["status"], result["verdict"]), ("complete", "lgtm"))
@@ -668,6 +675,176 @@ class ResultTests(Workspace):
             path.write_text(json.dumps({"status": status, "errors": ["x"]}))
             self.assertEqual(self.review("require-complete", "--result", path).returncode, code)
         self.assertEqual(self.review("require-complete", "--result", self.dir / "absent.json").returncode, 1)
+
+
+# PR #39's Claude output at b4335c8 (run 37169754193), which failed closed as incomplete.
+PR39_OUTPUT = "I'm going over the changes to the transport and the timing code to finish the review.\n\nlgtm\n"
+CLAUDE_INIT = {"type": "system", "subtype": "init", "model": "fixture-claude-model", "cwd": "/work/cwd",
+               "session_id": "sess-1", "permissionMode": "dontAsk", "tools": ["Glob", "Grep", "Read"]}
+
+
+def claude_messages(text):
+    return [CLAUDE_INIT, {"type": "result", "subtype": "success", "is_error": False, "result": text}]
+
+
+class RetryTests(ResultRuns):
+    """One bounded retry of malformed output without review content (D-014, PR #39)."""
+
+    def test_only_malformed_output_without_review_content_is_retryable(self):
+        retryable = {
+            "PR #39: prose and lgtm": PR39_OUTPUT,
+            "lgtm and a remark": "lgtm\n\nNothing else to add.",
+            "lgtm with punctuation": "lgtm.",
+            "prose only": "The changes look fine to me.",
+            "a stray heading": "## Summary\n\nlgtm",
+        }
+        for name, text in retryable.items():
+            with self.subTest(name):
+                self.assertEqual(lib.parse_review(text)["kind"], "malformed")
+                self.assertTrue(lib.retryable_output(text)[0])
+        final = {
+            "clean": "lgtm",
+            "valid findings": finding("HIGH"),
+            "valid finding and trailing prose": finding("HIGH") + "\nOverall it looks fine.\n",
+            "finding with a missing field": "### [HIGH] a.js:1 — x\n- **Impact:** y\n",
+            "unknown severity": "### [BLOCKER] a.js:1 — x\n- **Evidence/trigger:** e\n- **Impact:** i\n"
+                                "- **Recommended action:** a\n",
+            "pseudo finding": "**HIGH** a.js:2 the timer leaks\n\nlgtm",
+            "pseudo finding in a list": "- [MEDIUM] a.js:2 off by one",
+            "severity word in prose": "lgtm\n\nOne high-risk change remains.",
+            "location in prose": "lgtm\n\nSee webaudio-tinysynth.js:120 for a nit.",
+            "model reported incomplete": "Review incomplete: ran out of turns",
+            "empty": "  \n",
+        }
+        for name, text in final.items():
+            with self.subTest(name):
+                self.assertFalse(lib.retryable_output(text)[0])
+
+    def test_first_attempt_asks_for_a_retry_only_when_eligible(self):
+        cases = {
+            "PR #39 output": ({"review": PR39_OUTPUT}, "incomplete", "true"),
+            "clean": ({}, "complete", "false"),
+            "blocking finding": ({"review": finding("HIGH")}, "complete", "false"),
+            "malformed finding": ({"review": finding("HIGH") + "\nOverall it looks fine.\n"}, "incomplete", "false"),
+            "malformed with a severity": ({"review": "lgtm\n\nOne HIGH issue remains."}, "incomplete", "false"),
+            "failed run with prose": ({"exit_code": "1", "review": PR39_OUTPUT}, "failed", "false"),
+            "blank output": ({"review": "\n"}, "failed", "false"),
+            "credential in malformed output": ({"review": "lgtm\n\ncodex-access-token-0123456789"}, "failed", "false"),
+        }
+        for name, (kwargs, status, retry) in cases.items():
+            with self.subTest(name):
+                result, _, completed = self.codex_result(**kwargs)
+                self.assertEqual(result["status"], status)
+                self.assertEqual(completed.outputs.get("retry"), retry)
+                self.assertNotIn("retried", result)
+        for text, retry in ((PR39_OUTPUT, "true"), ("lgtm", "false"), (finding("HIGH") + "\nprose\n", "false")):
+            with self.subTest(provider="claude", text=text[:20]):
+                self.claude_result(claude_messages(text))
+                self.assertEqual(self.last_completed.outputs.get("retry"), retry)
+
+    def first_attempt(self, text=PR39_OUTPUT):
+        result, _, completed = self.codex_result(review=text)
+        self.assertEqual(completed.outputs.get("retry"), "true")
+        return self.last_out
+
+    def test_the_retry_replaces_the_first_result_and_shows_it(self):
+        first = self.first_attempt()
+        result, text, completed = self.codex_result(review="lgtm", extra=("--previous-out", first))
+        self.assertEqual((result["status"], result["verdict"], text), ("complete", "lgtm", "lgtm"))
+        self.assertNotIn("retry", completed.outputs)  # the retry never asks for another
+        self.assertEqual(result["retried"]["output"], PR39_OUTPUT)
+        self.assertIn("'lgtm' cannot accompany findings or other text", " ".join(result["retried"]["errors"]))
+        comment = lib.render_comment(result, text, "Codex")
+        lines = comment.splitlines()
+        self.assertEqual(lines[0], lib.marker("codex", "tinysynth"))
+        self.assertEqual(lines[2], lib.heading(result, "Codex"))
+        self.assertTrue(lines[4].startswith("> **Retried:** the first attempt's output did not follow"))
+        self.assertIn("\nlgtm\n", comment)
+        self.assertIn("<details><summary>First attempt's output (malformed; not part of the review)</summary>"
+                      "\n\nI'm going over the changes", comment)
+        passed, messages = lib.evaluate_gate(
+            policy="review", upstream=dict.fromkeys(("prepare", "review", "publish"), "success"),
+            expected=[("codex", "tinysynth")], results={("codex", "tinysynth"): result},
+            event_head="b" * 40, event_base="a" * 40, blocking_severities=["HIGH"])
+        self.assertTrue(passed)
+        self.assertIn("codex/tinysynth: retried once after malformed output", " ".join(messages))
+        # A blocking finding from the retry blocks; malformed output again fails without another retry.
+        result, _, _ = self.codex_result(review=finding("HIGH"), extra=("--previous-out", first))
+        self.assertEqual((result["status"], result["blocking"]), ("complete", True))
+        result, text, completed = self.codex_result(review=PR39_OUTPUT, extra=("--previous-out", first))
+        self.assertEqual(result["status"], "incomplete")
+        self.assertNotIn("retry", completed.outputs)
+        comment = lib.render_comment(result, text, "Codex")
+        self.assertIn("**Review not completed:**", comment)
+        self.assertIn("> **Retried:**", comment)
+        passed, _ = lib.evaluate_gate(
+            policy="review", upstream=dict.fromkeys(("prepare", "review", "publish"), "success"),
+            expected=[("codex", "tinysynth")], results={("codex", "tinysynth"): result},
+            event_head="b" * 40, event_base="a" * 40, blocking_severities=["HIGH"])
+        self.assertFalse(passed)
+        # A failed retry run is never complete, whatever it printed.
+        result, _, _ = self.codex_result(exit_code="1", review="lgtm", extra=("--previous-out", first))
+        self.assertEqual(result["status"], "failed")
+
+    def test_claude_retry_keeps_every_execution_check(self):
+        out = self.dir / "claude-first"
+        self.claude_result(claude_messages(PR39_OUTPUT))
+        self.last_out.rename(out)
+        result = self.claude_result(claude_messages("lgtm"), extra=("--previous-out", out))
+        self.assertEqual((result["status"], result["verdict"]), ("complete", "lgtm"))
+        self.assertEqual(result["retried"]["output"], PR39_OUTPUT)
+        for name, kwargs in {"wrong working directory": {"cwd": "/work/src"},
+                             "session differs": {"session": "sess-2"},
+                             "action failed": {"outcome": "failure"}}.items():
+            with self.subTest(name):
+                result = self.claude_result(claude_messages("lgtm"), extra=("--previous-out", out), **kwargs)
+                self.assertEqual(result["status"], "failed")
+        shell = [CLAUDE_INIT | {"tools": ["Read", "Bash"]}, claude_messages("lgtm")[1]]
+        self.assertEqual(self.claude_result(shell, extra=("--previous-out", out))["status"], "failed")
+
+    def test_a_retry_without_a_valid_first_attempt_fails_closed(self):
+        first = self.first_attempt()
+        record = json.loads((first / "result.json").read_text())
+
+        def variant(name, change=None, text=None):
+            folder = self.dir / f"first-{name}"
+            folder.mkdir()
+            (folder / "result.json").write_text(json.dumps(record | (change or {})))
+            (folder / "review.md").write_text(PR39_OUTPUT if text is None else text)
+            return folder
+        cases = {
+            "missing": self.dir / "absent",
+            "another head": variant("head", {"head_sha": "c" * 40}),
+            "another provider": variant("provider", {"provider": "claude"}),
+            "first attempt complete": variant("complete", {"status": "complete"}),
+            "first output not eligible": variant("eligible", text="lgtm\n\nOne HIGH issue remains."),
+        }
+        for name, folder in cases.items():
+            with self.subTest(name):
+                result, _, completed = self.codex_result(review="lgtm", extra=("--previous-out", folder))
+                self.assertEqual(result["status"], "failed")
+                self.assertNotIn("retry", completed.outputs)
+        leaked = variant("leak", text="lgtm\n\ncodex-access-token-0123456789")
+        result, _, completed = self.codex_result(review="lgtm", extra=("--previous-out", leaked))
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("first attempt's output contained credential material", " ".join(result["errors"]))
+        self.assertNotIn("codex-access-token-0123456789", json.dumps(result) + completed.stdout)
+
+    def test_the_retry_screens_output_against_both_codex_homes(self):
+        first = self.first_attempt()
+        homes = []
+        for index, token in enumerate(("first-home-token-abcdefghijklmnop", "retry-home-token-abcdefghijklmnop")):
+            path = self.dir / f"auth-{index}.json"
+            path.write_text(json.dumps({"tokens": {"refresh_token": token}}))
+            homes.append(path)
+        for token in ("first-home-token-abcdefghijklmnop", "retry-home-token-abcdefghijklmnop"):
+            with self.subTest(token=token):
+                result, text, completed = self.codex_result(
+                    review=finding(evidence=f"token {token}"),
+                    extra=("--auth-file", homes[0], "--auth-file", homes[1], "--previous-out", first))
+                self.assertEqual(result["status"], "failed")
+                self.assertIn("credential material", " ".join(result["errors"]))
+                self.assertNotIn(token, text + completed.stdout + json.dumps(result))
 
 
 class GateTests(Workspace):
@@ -1184,8 +1361,10 @@ class TrustedScriptTests(Workspace):
         self.assertEqual(len(set(sum(snippets.values(), []))), 1)
         for workflow in snippets:
             text = (WORKFLOWS / workflow).read_text()
-            self.assertEqual(len(snippets[workflow]), 2)
+            # Before the run, after it, and after the one retry.
+            self.assertEqual(len(snippets[workflow]), 3)
             self.assertIn("if: ${{ !cancelled() && steps.verify.outcome == 'success' }}", text)
+            self.assertIn("if: ${{ !cancelled() && steps.verify_retry.outcome == 'success' }}", text)
         trusted = self.dir / "trusted" / ".github" / "scripts"
         trusted.mkdir(parents=True)
         (trusted / "review.py").write_text("print('trusted')\n")
@@ -1259,6 +1438,61 @@ class TrustedScriptTests(Workspace):
         self.assertIn('(cd "$cli" && npm ci --ignore-scripts --no-audit --no-fund)', step)
         self.assertNotIn("secrets.", step)
         self.assertNotIn("npx", text)
+
+    def step(self, workflow, name):
+        text = (WORKFLOWS / workflow).read_text()
+        self.assertEqual(text.count(f"      - name: {name}\n"), 1, name)
+        return text.split(f"      - name: {name}\n")[1].split("\n      - name:")[0]
+
+    def test_one_bounded_retry_with_the_same_inputs(self):
+        for workflow in ("codex-review.yml", "claude-review.yml"):
+            text = (WORKFLOWS / workflow).read_text()
+            with self.subTest(workflow=workflow):
+                # The first result step is unchanged, so an older base's helper still runs it (its
+                # missing retry output skips the retry); only the retry passes the new flags.
+                first = self.step(workflow, "Record the review result")
+                self.assertNotIn("--previous-out", first)
+                self.assertLessEqual(first.count("--auth-file"), 1)
+                setup = self.step(workflow, "Prepare the retry")
+                self.assertIn("if: ${{ !cancelled() && steps.result.outputs.retry == 'true' }}", setup)
+                self.assertIn('mv "$RUNNER_TEMP/review/out" "$RUNNER_TEMP/review/attempt-1"', setup)
+                self.assertEqual(text.count("steps.result.outputs.retry == 'true'"), 2)  # setup and verify_retry
+                verify = self.step(workflow, "Verify the trusted configuration after the retry")
+                self.assertIn("steps.result.outputs.retry == 'true' && steps.fingerprint.outcome == 'success'", verify)
+                second = self.step(workflow, "Record the retry's review result")
+                self.assertIn("if: ${{ !cancelled() && steps.verify_retry.outcome == 'success' }}", second)
+                self.assertIn('--previous-out "$RUNNER_TEMP/review/attempt-1"', second)
+                self.assertIn("retry-setup=${{ steps.retry_setup.outcome }}", second)
+                upload = self.step(workflow, "Upload the review result")
+                self.assertIn("steps.result.outputs.retry != 'true' || steps.result_retry.outcome == 'success'",
+                              upload)
+                self.assertIn('result="$RUNNER_TEMP/review/out/result.json"', self.step(
+                    workflow, "Require a completed review"))
+        # Claude: the same pinned action, environment and inputs, from the same verified-empty directory.
+        run = self.step("claude-review.yml", "Run the Claude review")
+        retry = self.step("claude-review.yml", "Run the Claude review again (retry)")
+        self.assertIn("if: ${{ !cancelled() && steps.retry_setup.outcome == 'success' }}\n", retry)
+        self.assertEqual(run.split("uses:", 1)[1], retry.split("uses:", 1)[1])
+        self.assertIn('if [ -n "$(ls -A "$WORKDIR")" ]; then', self.step("claude-review.yml", "Prepare the retry"))
+        second = self.step("claude-review.yml", "Record the retry's review result")
+        for output in ("outputs.execution_file", "outputs.session_id", "outcome", "outputs.conclusion"):
+            self.assertIn(f"steps.claude_retry.{output} }}}}", second)
+            self.assertNotIn(f"steps.claude.{output} ", second)
+        # Codex: the same trusted script and prompt in a fresh home holding only the first home's auth.json.
+        text = (WORKFLOWS / "codex-review.yml").read_text()
+        self.assertEqual(text.count("bash trusted/.github/scripts/run-codex-review.sh"), 2)
+        self.assertEqual(text.count('"$GITHUB_WORKSPACE/src" "$RUNNER_TEMP/review/prompt.txt"'), 2)
+        setup = self.step("codex-review.yml", "Prepare the retry")
+        self.assertIn('(umask 077 && mkdir "$home" && cp "$RUNNER_TEMP/codex-home/auth.json" "$home/auth.json")',
+                      setup)
+        retry = self.step("codex-review.yml", "Run the Codex review again (retry)")
+        self.assertIn('export CODEX_HOME="$RUNNER_TEMP/codex-home-retry"', retry)
+        self.assertNotIn("secrets.", retry)
+        second = self.step("codex-review.yml", "Record the retry's review result")
+        self.assertIn('--auth-file "$RUNNER_TEMP/codex-home/auth.json"', second)
+        self.assertIn('--auth-file "$RUNNER_TEMP/codex-home-retry/auth.json"', second)
+        self.assertIn("run=${{ steps.run_retry.outcome }}", second)
+        self.assertIn('"$RUNNER_TEMP/codex-home-retry"', self.step("codex-review.yml", "Remove the Codex credential"))
 
     @unittest.skipUnless(os.environ.get("REVIEW_TEST_BUN"), "set REVIEW_TEST_BUN to the pinned Bun binary")
     def test_bun_does_not_load_checkout_configuration(self):

@@ -305,12 +305,93 @@ jobs:
             --exit-code-file "$run_dir/exit-code" --review-file "$run_dir/review.txt" \
             --log-file "$run_dir/codex.log" --auth-file "$RUNNER_TEMP/codex-home/auth.json" "${steps[@]}"
 
+      # One bounded retry (.github/scripts/README.md, "Retry"). The first result
+      # step asks for it only when the output is malformed and carries no review
+      # content (review_lib.retryable_output); output with a finding, a severity
+      # or a location is never retried. The retry runs the same script with the
+      # same prompt and settings in a fresh CODEX_HOME holding only the first
+      # attempt's auth.json (Codex may have refreshed its tokens), screens the
+      # output against both homes' tokens, verifies the trusted configuration
+      # again, and its result replaces the first.
+      - name: Prepare the retry
+        id: retry_setup
+        if: ${{ !cancelled() && steps.result.outputs.retry == 'true' }}
+        run: |
+          set -euo pipefail
+          mv "$RUNNER_TEMP/review/out" "$RUNNER_TEMP/review/attempt-1"
+          home="$RUNNER_TEMP/codex-home-retry"
+          rm -rf "$home"
+          (umask 077 && mkdir "$home" && cp "$RUNNER_TEMP/codex-home/auth.json" "$home/auth.json")
+
+      - name: Run the Codex review again (retry)
+        id: run_retry
+        if: ${{ !cancelled() && steps.retry_setup.outcome == 'success' }}
+        env:
+          CODEX_REVIEW_MODEL: ${{ vars.CODEX_REVIEW_MODEL }}
+          CODEX_REVIEW_EFFORT: ${{ vars.CODEX_REVIEW_EFFORT }}
+        run: |
+          set -euo pipefail
+          export CODEX_HOME="$RUNNER_TEMP/codex-home-retry"
+          bash trusted/.github/scripts/run-codex-review.sh "$GITHUB_WORKSPACE/trusted" \
+            "$GITHUB_WORKSPACE/src" "$RUNNER_TEMP/review/prompt.txt" "$RUNNER_TEMP/review/run-retry"
+
+      - name: Verify the trusted configuration after the retry
+        id: verify_retry
+        if: ${{ !cancelled() && steps.result.outputs.retry == 'true' && steps.fingerprint.outcome == 'success' }}
+        env:
+          EXPECTED_DIGEST: ${{ steps.fingerprint.outputs.digest }}
+        run: |
+          # begin trusted-fingerprint
+          set -euo pipefail
+          digest="$(cd trusted && find .github -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
+          # end trusted-fingerprint
+          if [ "$digest" != "$EXPECTED_DIGEST" ]; then
+            echo "::error title=AI review integrity::The trusted review configuration changed during the review run."
+            exit 1
+          fi
+
+      - name: Record the retry's review result
+        id: result_retry
+        if: ${{ !cancelled() && steps.verify_retry.outcome == 'success' }}
+        env:
+          CODEX_REVIEW_MODEL: ${{ vars.CODEX_REVIEW_MODEL }}
+          CODEX_REVIEW_EFFORT: ${{ vars.CODEX_REVIEW_EFFORT }}
+          CODEX_AUTH_DOT_JSON: ${{ secrets.CODEX_AUTH_DOT_JSON }}
+          CONFIG_SHA: ${{ needs.prepare.outputs.config_sha }}
+          BOOTSTRAP: ${{ needs.prepare.outputs.bootstrap }}
+          MERGE_BASE: ${{ needs.prepare.outputs.merge_base }}
+          AGENT_ID: ${{ matrix.agent_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
+          OUTCOMES: >-
+            checkout=${{ steps.source.outcome }}
+            settings=${{ steps.settings.outcome }}
+            credential=${{ steps.credential.outcome }}
+            install=${{ steps.install.outcome }}
+            sandbox=${{ steps.sandbox.outcome }}
+            prompt=${{ steps.prompt.outcome }}
+            retry-setup=${{ steps.retry_setup.outcome }}
+            run=${{ steps.run_retry.outcome }}
+        run: |
+          set -euo pipefail
+          steps=()
+          for outcome in $OUTCOMES; do steps+=(--step "$outcome"); done
+          run_dir="$RUNNER_TEMP/review/run-retry"
+          python3 -I -B trusted/.github/scripts/review.py result --config-root trusted --provider codex \
+            --event "$GITHUB_EVENT_PATH" --agent-id "$AGENT_ID" --out-dir "$RUNNER_TEMP/review/out" \
+            --config-sha "$CONFIG_SHA" --bootstrap "$BOOTSTRAP" --merge-base "$MERGE_BASE" --run-url "$RUN_URL" \
+            --exit-code-file "$run_dir/exit-code" --review-file "$run_dir/review.txt" \
+            --log-file "$run_dir/codex.log" --auth-file "$RUNNER_TEMP/codex-home/auth.json" \
+            --auth-file "$RUNNER_TEMP/codex-home-retry/auth.json" --previous-out "$RUNNER_TEMP/review/attempt-1" \
+            "${steps[@]}"
+
       - name: Remove the Codex credential
         if: always()
-        run: rm -rf "$RUNNER_TEMP/codex-home" "$RUNNER_TEMP/codex-sandbox-check"
+        run: rm -rf "$RUNNER_TEMP/codex-home" "$RUNNER_TEMP/codex-home-retry" "$RUNNER_TEMP/codex-sandbox-check"
 
       - name: Upload the review result
-        if: ${{ !cancelled() && steps.result.outcome == 'success' }}
+        if: >-
+          ${{ !cancelled() && steps.result.outcome == 'success'
+          && (steps.result.outputs.retry != 'true' || steps.result_retry.outcome == 'success') }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: codex-review-${{ matrix.agent_id }}
