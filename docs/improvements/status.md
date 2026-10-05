@@ -2,6 +2,17 @@
 
 Supervisor-owned. After a context reset, read this file, then [contracts.md](contracts.md), then the newest entries of [decisions.md](decisions.md).
 
+## After every merge into improve/integration (supervisor checklist, D-040)
+
+Do these in order, as soon as a merge is seen. Fetch first: the user merges on GitHub.
+
+1. **NOTICE.** Add the merged PR's bullet, from its "NOTICE (for the supervisor)" section, checked against the merged code. Insert it after the last `webaudio-tinysynth.js` bullet and push straight to `improve/integration`. Skip only if the PR changes no shipped behaviour (tests, CI, records); say so in the commit log of step 3.
+2. **Issues.** Close every issue the PR completes, with a comment naming the PR and commit (D-038).
+3. **Records.** Update this file's task row and the decisions.
+4. **Consumer.** After the Dist bot has run for the newest commit, send the onchain coordinator a pin where `npm run verify` passes: the bot's rebuild commit, or a later docs commit if there is one. Include the min.js sha256 and its raw and gzip sizes, so the vendored NOTICE is complete at that pin.
+
+NOTICE coverage was audited at `b6fe640` (2026-10-04). Every merged engine change has a bullet: T2, T3, T3.1, T4, T5, T5.2, T8-seed, T11 and T12. T10 re-audits NOTICE against `git log b70ba90..` before G2.
+
 ## Baseline
 
 - Repository: `Provable-Games/webaudio-tinysynth`, default branch `main`.

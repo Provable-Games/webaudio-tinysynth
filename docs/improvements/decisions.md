@@ -466,3 +466,9 @@ The user saw several PRs that updated NOTICE only after the code merged (#49, #5
 - This replaces CONCURRENCY.md rule 4 (draft text in the task record, added by the supervisor at integration) and the supervisor half of D-016. D-016's requirement that every fork modification has a NOTICE entry still holds.
 - `status.md` and `decisions.md` stay supervisor-owned, because they record merge state and user decisions.
 - Parallel PRs that both append a NOTICE bullet can conflict. The second PR rebases and keeps both bullets, in merge order (D-035 authorizes the push with lease).
+
+**D-040 amendment (2026-10-04).** After the supervisor pointed out that parallel PRs would conflict on NOTICE and that reviewers don't enforce it, the user said: "Maybe it's best if you just handle NOTICE updates? I just want to make sure we don't forget to update it".
+
+- **Agents:** task PRs still update the README, the source header and their contracts row. They do not edit NOTICE. Instead, each PR description proposes a NOTICE bullet under "NOTICE (for the supervisor)".
+- **Supervisor:** adds that bullet straight to `improve/integration` right after the merge, as step 1 of the post-merge checklist in `status.md`. No separate docs PRs.
+- **Safety net:** the consumer pin is sent only after the NOTICE commit, and T10 re-audits NOTICE coverage before G2.
