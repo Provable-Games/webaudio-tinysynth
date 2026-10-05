@@ -1299,7 +1299,7 @@ function WebAudioTinySynthCore(target) {
         }
       }
       if(!this.rhythm[ch]) // t2: each operator's attack end (#59)
-        this.notetab.push({t:t,e:99999,ch:ch,n:n,o:o,g:g,q:q,t2:p.map(x=>t+x.a),v:vp,r:r,f:0});
+        this.notetab.push({t:t,s:t,e:99999,ch:ch,n:n,o:o,g:g,q:q,t2:p.map(x=>t+x.a),v:vp,r:r,f:0});
       else // tracked until it ends, so stops, seeks and dispose() reach it (#11, D-019)
         this._src.push({t:t,e:t+p[0].d*this.releaseRatio,ch:ch,o:o,g:g,q:q});
     },
@@ -1369,8 +1369,8 @@ function WebAudioTinySynthCore(target) {
       if(v<64){
         for(let i=this.notetab.length-1;i>=0;--i){
           const nt=this.notetab[i];
-          if(t>=nt.t && nt.ch==ch && nt.f==1)
-            this._releaseNote(nt,t);
+          if(t>=nt.s && nt.ch==ch && nt.f==1)
+            this._releaseNote(nt,Math.max(t,nt.t));
         }
       }
     },
@@ -1443,10 +1443,10 @@ function WebAudioTinySynthCore(target) {
       t=this._tsConv(t);
       for(let i=this.notetab.length-1;i>=0;--i){
         const nt=this.notetab[i];
-        if(t>=nt.t && nt.ch==ch && nt.n==n && nt.f==0){
+        if(t>=nt.s && nt.ch==ch && nt.n==n && nt.f==0){
           nt.f=1;
           if(this.sustain[ch]<64)
-            this._releaseNote(nt,t);
+            this._releaseNote(nt,Math.max(t,nt.t));
         }
       }
     },
@@ -1467,6 +1467,7 @@ function WebAudioTinySynthCore(target) {
       const c=this.actx.currentTime,lazy=()=>(Object.getOwnPropertyDescriptor(this.noiseBuf,"n1")||0).get,z=lazy();
       Array.isArray(p) && p.forEach(o=>o && typeof o.w=="string" && o.w[0]=="n" && this.noiseBuf[o.w]);
       t=this._tsConv(t);
+      const u=t;
       if(z && !lazy() && t>=c)
         t=Math.max(t,this.actx.currentTime);
       if(this.rhythm[ch]){
@@ -1475,6 +1476,11 @@ function WebAudioTinySynthCore(target) {
         return;
       }
       this._note(t,ch,n,v,p);
+      /* The voice keeps the time it was asked for, s, to match its note-off and pedal-up; the
+         envelope runs from the moved onset, and a release inside the stall is made at that onset. */
+      const nt=this.notetab[this.notetab.length-1];
+      if(t>u && nt && nt.t==t && nt.ch==ch && nt.n==n)
+        nt.s=u;
     },
     setTsMode:(tsmode)=>{
       this.tsmode=tsmode;

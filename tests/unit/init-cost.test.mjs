@@ -170,6 +170,61 @@ for (const variant of variants) {
         expect(past.start).toBe(0.5); // already past on entry: as given, as without a stall
       }, SLOW);
 
+      test("a first n1 note whose onset the generation moved still takes its note-off, pedal-up and stops (Codex review of #63, round 3)", () => {
+        // Program 119 (Reverse Cymbal) sustains (s: 1): a release that misses leaves it sounding.
+        // The note is asked for at 1.01 s and the generation takes the clock to 1.041 s, so its
+        // onset moves; the note-off or pedal-up at 1.03 s falls inside the window and must still
+        // release that note, from the moved onset, with no negative or past AudioParam event.
+        const setup = (sustain) => {
+          const l = load(variant);
+          const synth = new l.Synth({ context: l.at(), quality: 1, seed: 1, useReverb: 0 });
+          l.env.clock.ms = 1000;
+          synth.setProgram(0, 119);
+          if (sustain) synth.setSustain(0, 127);
+          l.count.stall = 41;
+          synth.noteOn(0, 60, 100, 1.01);
+          const nt = synth.notetab[0];
+          return { l, synth, nt, from: l.trace.length };
+        };
+        const events = (l, from) => l.trace.slice(from).map((x) => JSON.parse(x)).filter((x) => ["linearRamp", "setValueAtTime", "setTargetAtTime", "expRamp"].includes(x[0]));
+        const sane = (l, from, onset) => {
+          const ev = events(l, from);
+          expect(ev.length).toBeGreaterThan(0);
+          for (const x of ev) {
+            expect(x[3], x.join()).toBeGreaterThanOrEqual(onset - 1e-9);
+            if (x[0] === "linearRamp" || x[0] === "setValueAtTime") expect(x[2], x.join()).toBeGreaterThanOrEqual(0);
+          }
+        };
+        for (const at of [1.03, 1.041, 1.2]) { // inside the window, exactly at the moved onset, after it
+          const { l, synth, nt, from } = setup(false);
+          expect([nt.t, nt.s]).toEqual([expect.closeTo(1.041, 9), 1.01]);
+          synth.noteOff(0, 60, at);
+          expect([nt.f, nt.e < 99999], "note-off at " + at).toEqual([1, true]);
+          sane(l, from, 1.041);
+        }
+        for (const at of [1.03, 1.041, 1.2]) { // the pedal held across the window, up inside it or after it
+          const { l, synth, nt, from } = setup(true);
+          synth.noteOff(0, 60, 1.03);
+          expect([nt.f, nt.e], "held").toEqual([1, 99999]);
+          synth.setSustain(0, 0, at);
+          expect(nt.e < 99999, "pedal-up at " + at).toBe(true);
+          sane(l, from, 1.041);
+        }
+        { // a note-off before the requested time still does not match, as before
+          const { synth, nt } = setup(false);
+          synth.noteOff(0, 60, 1.0);
+          expect([nt.f, nt.e]).toEqual([0, 99999]);
+        }
+        { // all-sound-off and stopMIDI() inside the window reach it and leave nothing
+          const a = setup(false);
+          a.synth.allSoundOff(0);
+          expect(a.synth.notetab.length).toBe(0);
+          const b = setup(true);
+          b.synth.stopMIDI();
+          expect([b.synth.notetab.length, b.synth._src.length]).toEqual([0, 0]);
+        }
+      }, SLOW);
+
       test("a custom n1 timbre in quality 0 plays the seeded data on its first note", () => {
         const l = load(variant);
         const seed = 99;
