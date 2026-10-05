@@ -42,7 +42,7 @@
  *          64 voices allowed) scheduled on a 2 s OfflineAudioContext: the
  *          construction, reading noiseBuf.n1 (the whole generation when it is
  *          lazy), the JS time to schedule the chord and startRendering().
- * Chromium also measures the realtime default path, new WebAudioTinySynth()
+ * Each engine first runs two discarded rounds (its start-up is slower). Chromium also measures the realtime default path, new WebAudioTinySynth()
  * with its internal AudioContext, cold. Results are printed as median
  * [p10, p90] in milliseconds and, with --json, saved with every sample.
  */
@@ -345,6 +345,14 @@ async function browserMode(o) {
         await page0.goto(url);
         E.info = await page0.evaluate(() => globalThis.__bench.info());
         await page0.context().close();
+        /* The first measurements of a browser process run slower (its own start-up); two discarded rounds, in fresh pages, absorb that. */
+        for (let i = 0; i < 2; ++i) {
+          const wc = await browser.newContext();
+          const wp = await wc.newPage();
+          await wp.goto(url);
+          await wp.evaluate((c) => { globalThis.__bench.cold(c); return globalThis.__bench.poly(c); }, CONFIGS[0]);
+          await wc.close();
+        }
         console.log("== " + engine + " " + E.version + " crossOriginIsolated=" + E.info.crossOriginIsolated + " resolution=" + E.info.resolution.toFixed(4) + " ms");
         for (const c of CONFIGS) {
           const R = E.configs[cfgName(c)] = { cold: [], warm: null, graph: null, poly: [], realtime: [] };
@@ -367,7 +375,7 @@ async function browserMode(o) {
           await p.goto(url);
           R.warm = await p.evaluate(([c, n]) => globalThis.__bench.warm(c, n), [c, o.warm]);
           R.graph = await p.evaluate((c) => globalThis.__bench.graph(c), c);
-          for (let i = 0; i < 3; ++i) R.poly.push(await p.evaluate((c) => globalThis.__bench.poly(c), c));
+          for (let i = 0; i < 5; ++i) R.poly.push(await p.evaluate((c) => globalThis.__bench.poly(c), c));
           await bc.close();
           process.stdout.write(".");
         }
