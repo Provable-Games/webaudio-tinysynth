@@ -1464,10 +1464,9 @@ function WebAudioTinySynthCore(target) {
          after t was taken, and the stall would leave the envelope and stop times behind the clock.
          A time that was current or future on entry and is past after the generation moves to the
          clock; later times and times already past on entry are as given. */
-      const c=this.actx.currentTime,lazy=()=>(Object.getOwnPropertyDescriptor(this.noiseBuf,"n1")||0).get,z=lazy();
+      const c=this.actx.currentTime,u=this._tsConv(t),lazy=()=>(Object.getOwnPropertyDescriptor(this.noiseBuf,"n1")||0).get,z=lazy();
       Array.isArray(p) && p.forEach(o=>o && typeof o.w=="string" && o.w[0]=="n" && this.noiseBuf[o.w]);
       t=this._tsConv(t);
-      const u=t;
       if(z && !lazy() && t>=c)
         t=Math.max(t,this.actx.currentTime);
       if(this.rhythm[ch]){
@@ -1476,8 +1475,8 @@ function WebAudioTinySynthCore(target) {
         return;
       }
       this._note(t,ch,n,v,p);
-      /* The voice keeps the time it was asked for, s, to match its note-off and pedal-up; the
-         envelope runs from the moved onset, and a release inside the stall is made at that onset. */
+      /* The voice keeps the time it was asked for, s (the clock on entry for no time), to match its
+         note-off and pedal-up; the envelope runs from the moved onset, and a release inside the stall is made at that onset. */
       const nt=this.notetab[this.notetab.length-1];
       if(t>u && nt && nt.t==t && nt.ch==ch && nt.n==n)
         nt.s=u;

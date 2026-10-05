@@ -175,14 +175,14 @@ for (const variant of variants) {
         // The note is asked for at 1.01 s and the generation takes the clock to 1.041 s, so its
         // onset moves; the note-off or pedal-up at 1.03 s falls inside the window and must still
         // release that note, from the moved onset, with no negative or past AudioParam event.
-        const setup = (sustain) => {
+        const setup = (sustain, ...at) => { // at: the time passed to noteOn (1.01 s if none; undefined is a value)
           const l = load(variant);
           const synth = new l.Synth({ context: l.at(), quality: 1, seed: 1, useReverb: 0 });
           l.env.clock.ms = 1000;
           synth.setProgram(0, 119);
           if (sustain) synth.setSustain(0, 127);
           l.count.stall = 41;
-          synth.noteOn(0, 60, 100, 1.01);
+          synth.noteOn(0, 60, 100, ...(at.length ? at : [1.01]));
           const nt = synth.notetab[0];
           return { l, synth, nt, from: l.trace.length };
         };
@@ -209,6 +209,19 @@ for (const variant of variants) {
           synth.setSustain(0, 0, at);
           expect(nt.e < 99999, "pedal-up at " + at).toBe(true);
           sane(l, from, 1.041);
+        }
+        for (const at of [undefined, null, 0]) { // no time: asked for at the entry clock, 1.0 s
+          for (const sustain of [false, true]) {
+            const { l, synth, nt, from } = setup(sustain, at);
+            expect([nt.t, nt.s], String(at)).toEqual([expect.closeTo(1.041, 9), 1]);
+            synth.noteOff(0, 60, 1.03);
+            if (sustain) {
+              expect([nt.f, nt.e]).toEqual([1, 99999]);
+              synth.setSustain(0, 0, 1.03);
+            }
+            expect([nt.f, nt.e < 99999], "no time, timed release, sustain " + sustain).toEqual([1, true]);
+            sane(l, from, 1.041);
+          }
         }
         { // a note-off before the requested time still does not match, as before
           const { synth, nt } = setup(false);
