@@ -12,10 +12,10 @@
  * Math.random that counts and throws.
  */
 import vm from "node:vm";
-import crypto from "node:crypto";
 import { createRequire } from "node:module";
 import { describe, expect, test } from "vitest";
 import { H, variants } from "./helpers.mjs";
+import { fmix32, reference, sha } from "./seed-reference.mjs";
 
 const require = createRequire(import.meta.url);
 const { SEED_EXPECTED: E } = require("../browser/specs/seed-expected.js");
@@ -24,65 +24,6 @@ const RATES = [44100, 48000];
 /* Each construction generates 0.5 s buffers inside a vm context (slow global lookups): about 0.5 s. */
 const SLOW = 60000;
 const SEEDS = Object.keys(E.hashes[44100]).map(Number);
-
-/* ---------- independent reference for generation version 1 ---------- */
-
-/* mulberry32 in BigInt uint32 arithmetic, after Tommy Ettinger's C reference: a draw is an integer / 2^32. */
-function mulberry32(seed) {
-  const M = 0xffffffffn;
-  let s = BigInt(seed) & M;
-  return () => {
-    s = (s + 0x6d2b79f5n) & M;
-    let z = s;
-    z = ((z ^ (z >> 15n)) * (z | 1n)) & M;
-    z = (z ^ ((z + (((z ^ (z >> 7n)) * (z | 61n)) & M)) & M)) & M;
-    return Number(z ^ (z >> 14n)) / 4294967296;
-  };
-}
-
-/* murmur3's fmix32 in BigInt uint32 arithmetic: the seed mix. */
-function fmix32(x) {
-  const M = 0xffffffffn;
-  let h = BigInt(x) & M;
-  h = ((h ^ (h >> 16n)) * 0x85ebca6bn) & M;
-  h = ((h ^ (h >> 13n)) * 0xc2b2ae35n) & M;
-  return h ^ (h >> 16n);
-}
-
-/* Stream k (convBuf 0, n0 1, n1 2) starts at (fmix32(seed) + k * 2^30) mod 2^32. Each buffer is generated alone from its stream. */
-const stream = (seed, k) => mulberry32((fmix32(seed) + BigInt(k) * 0x40000000n) & 0xffffffffn);
-const reference = {
-  convBuf(seed, sr) {
-    const blen = Math.floor(sr / 2), r = stream(seed, 0), d1 = new Float32Array(blen), d2 = new Float32Array(blen);
-    for (let i = 0; i < blen; ++i) {
-      if (i / blen < r()) {
-        d1[i] = Math.exp(-3 * i / blen) * (r() - 0.5) * 0.5;
-        d2[i] = Math.exp(-3 * i / blen) * (r() - 0.5) * 0.5;
-      }
-    }
-    return [d1, d2];
-  },
-  n0(seed, sr) {
-    const blen = Math.floor(sr / 2), r = stream(seed, 1), d = new Float32Array(blen);
-    for (let i = 0; i < blen; ++i) d[i] = r() * 2 - 1;
-    return [d];
-  },
-  n1(seed, sr) {
-    const blen = Math.floor(sr / 2), r = stream(seed, 2), d = new Float32Array(blen);
-    for (let j = 0; j < 64; ++j) {
-      const r1 = r() * 10 + 1, r2 = r() * 10 + 1;
-      for (let i = 0; i < blen; ++i) d[i] += Math.sin((i / blen) * 2 * Math.PI * 440 * r1) * Math.sin((i / blen) * 2 * Math.PI * 440 * r2) / 8;
-    }
-    return [d];
-  },
-};
-
-/* SHA-256 of Float32 channel data, little-endian, channels in order (the seed-expected.js format). */
-function sha(chs) {
-  const h = crypto.createHash("sha256");
-  for (const c of chs) h.update(Buffer.from(c.buffer, c.byteOffset, c.byteLength));
-  return h.digest("hex");
-}
 
 /* ---------- the library on the mock ---------- */
 
@@ -101,6 +42,8 @@ function load(variant) {
 
 const channels = (buf) => Array.from({ length: buf.numberOfChannels }, (_, c) => buf.getChannelData(c));
 const buffersOf = (synth) => ({ convBuf: channels(synth.convBuf), n0: channels(synth.noiseBuf.n0), n1: channels(synth.noiseBuf.n1) });
+/* n0 and n1 only: with useReverb 0 there is no convBuf (#18). */
+const noiseOf = (synth) => ({ n0: sha(channels(synth.noiseBuf.n0)), n1: sha(channels(synth.noiseBuf.n1)) });
 const hashesOf = (synth) => {
   const b = buffersOf(synth);
   return { convBuf: sha(b.convBuf), n0: sha(b.n0), n1: sha(b.n1) };
@@ -143,20 +86,19 @@ describe("the seeded expectations", () => {
 });
 
 describe("stream independence on the library itself", () => {
-  test("a copy of the source that skips the convBuf loop when useReverb is 0 keeps n0 and n1", () => {
-    // The library always fills convBuf today (skipping it is #18's work); this copy stops the
-    // convBuf loop at its first sample, so its stream draws nothing, and n0 and n1 must not move.
-    const source = variants.find((v) => v.name === "webaudio-tinysynth.js").source;
-    const anchor = "if(i/blen<g()){";
-    expect(source.split(anchor).length - 1).toBe(1);
-    const l = load({ name: "skip-conv.js", source: source.replace(anchor, "if(!this.useReverb)break;" + anchor) });
-    for (const sr of RATES) {
-      const skipped = hashesOf(new l.Synth({ context: l.at(sr), seed: 1, useReverb: 0 }));
-      expect(skipped.convBuf, "the convBuf loop was skipped @" + sr).toBe(sha([new Float32Array(sr / 2), new Float32Array(sr / 2)]));
-      expect({ n0: skipped.n0, n1: skipped.n1 }, "@" + sr).toEqual({ n0: E.hashes[sr][1].n0, n1: E.hashes[sr][1].n1 });
-      expect(hashesOf(new l.Synth({ context: l.at(sr), seed: 1 })), "reverb on @" + sr).toEqual(E.hashes[sr][1]);
+  test("useReverb: 0 skips the convBuf and keeps n0 and n1 (#18): the streams are independent", () => {
+    // Every buffer has its own stream, so the library not drawing convBuf's stream (it makes no
+    // convBuf with reverb off) leaves n0 and n1 as the seeded expectations have them.
+    for (const variant of variants) {
+      const l = load(variant);
+      for (const sr of RATES) {
+        const off = new l.Synth({ context: l.at(sr), seed: 1, useReverb: 0 });
+        expect(off.convBuf, variant.name + " convBuf @" + sr).toBe(null);
+        expect(noiseOf(off), variant.name + " @" + sr).toEqual({ n0: E.hashes[sr][1].n0, n1: E.hashes[sr][1].n1 });
+        expect(hashesOf(new l.Synth({ context: l.at(sr), seed: 1 })), variant.name + " reverb on @" + sr).toEqual(E.hashes[sr][1]);
+      }
+      expect(l.random.calls).toBe(0);
     }
-    expect(l.random.calls).toBe(0);
   }, SLOW);
 });
 
@@ -199,10 +141,10 @@ for (const variant of variants) {
       }
     }, SLOW);
 
-    test("useReverb: 0 (which still fills convBuf), lazy start, setQuality() and context replacement give the same buffers", () => {
+    test("useReverb: 0 (which makes no convBuf), lazy start, setQuality() and context replacement give the same buffers", () => {
       const l = load(variant);
       const want = E.hashes[44100][1];
-      expect(hashesOf(new l.Synth({ context: l.at(44100), seed: 1, useReverb: 0 }))).toEqual(want);
+      expect(noiseOf(new l.Synth({ context: l.at(44100), seed: 1, useReverb: 0 }))).toEqual({ n0: want.n0, n1: want.n1 });
       expect(hashesOf(new l.Synth({ context: l.at(44100), seed: 1, quality: 0 }))).toEqual(want);
       const lazy = new l.Synth({ lazy: true, seed: 1 });
       expect(lazy.getAudioContext()).toBe(null);

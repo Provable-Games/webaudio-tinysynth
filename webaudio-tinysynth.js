@@ -26,7 +26,9 @@ const f32=x=>isFinite(Math.fround(x));
    draws on, so the streams never overlap and no buffer's samples depend on another's. The
    mix keeps seeds that differ by mulberry32's increment or by 2^30 from giving shifted
    copies of each other's buffers. The same seed, version and sample rate give the same
-   Float32 data. Any change to the generated data must increment the version. */
+   Float32 data. The impulse is made only with useReverb, and n1 when it is first read (#18);
+   neither changes any data or another buffer's stream. Any change to the generated data must
+   increment the version. */
 function mulberry32(a){
   return ()=>{
     a=a+0x6d2b79f5|0;
@@ -34,6 +36,29 @@ function mulberry32(a){
     t=t+Math.imul(t^t>>>7,61|t)^t;
     return ((t^t>>>14)>>>0)/4294967296;
   };
+}
+
+/* Defines o.n1 (#18) as buffer b, filled from generator g (stream 2) when it is first read. The
+   metallic noise (64 passes of sine products) is nearly all of an install's time, and only the
+   cymbal and hi-hat timbres play it. Its stream is its own, so the data is the same whenever the
+   read happens: the first note that plays n1, or code reading noiseBuf.n1. After the read, or an
+   assignment, n1 is a plain data property. Defined at module level so that it closes over
+   nothing but o, b and g, never the synth or its context. */
+function lazyN1(o,b,g){
+  const set=v=>Object.defineProperty(o,"n1",{value:v,writable:true,enumerable:true,configurable:true});
+  Object.defineProperty(o,"n1",{enumerable:true,configurable:true,set,get:()=>{
+    const dr=b.getChannelData(0),blen=dr.length;
+    for(let jj=0;jj<64;++jj){
+      const r1=g()*10+1;
+      const r2=g()*10+1;
+      for(let i=0;i<blen;++i){
+        const dd=Math.sin((i/blen)*2*Math.PI*440*r1)*Math.sin((i/blen)*2*Math.PI*440*r2);
+        dr[i]+=dd/8;
+      }
+    }
+    set(b);
+    return b;
+  }});
 }
 
 function WebAudioTinySynthCore(target) {
@@ -591,6 +616,13 @@ function WebAudioTinySynthCore(target) {
       this._own=1;
       return this.actx;
     },
+    prewarm:()=>{
+      /* Generates the metallic noise n1 now instead of at the first note that plays it (#18). It
+         plays nothing and neither creates nor resumes a context: nothing before a context
+         exists or after dispose(), and a later call finds it done. playMIDI() calls it first. */
+      if(!this._dead && this.actx && this.noiseBuf)
+        this.noiseBuf.n1;
+    },
     _live:()=>{
       /* The guard at the top of each method that makes sound or sets channel or song state
          (send, noteOn, setProgram, setBendRange, setBend, setSustain, setModulation,
@@ -878,6 +910,10 @@ function WebAudioTinySynthCore(target) {
         throw CodedError("AUDIO_CONTEXT_OFFLINE");
       if(!s || !s.ev.some(e=>e.m[0]!=0xff51))
         return;
+      /* Before anything reads the clock (#18): a first n1 note built inside the scheduler's
+         callback can take longer than the 0.1 s start and the 0.2 s lead, and would sound after
+         the notes sent with it. The clock is read after the build, so the whole song shifts. */
+      this.prewarm();
       if(this.playIndex && this.playTick>=this.maxTick)
         this.notetab=[], this._src=[], this.playing=0, this.locateMIDI(0), this.notetab=n, this._src=d;
       if(this._rs) // after a caller's stop: the channels' latest values, now (review F1)
@@ -1273,8 +1309,11 @@ function WebAudioTinySynthCore(target) {
           o[i].stop(t+p[0].d*this.releaseRatio);
         }
       }
-      if(!this.rhythm[ch]) // t2: each operator's attack end (#59)
-        this.notetab.push({t:t,e:99999,ch:ch,n:n,o:o,g:g,q:q,t2:p.map(x=>t+x.a),v:vp,r:r,f:0});
+      if(!this.rhythm[ch]){ // t2: each operator's attack end (#59)
+        const nt={t:t,s:t,e:99999,ch:ch,n:n,o:o,g:g,q:q,t2:p.map(x=>t+x.a),v:vp,r:r,f:0};
+        this.notetab.push(nt);
+        return nt; // noteOn() sets s when it moved the onset
+      }
       else // tracked until it ends, so stops, seeks and dispose() reach it (#11, D-019)
         this._src.push({t:t,e:t+p[0].d*this.releaseRatio,ch:ch,o:o,g:g,q:q});
     },
@@ -1344,8 +1383,8 @@ function WebAudioTinySynthCore(target) {
       if(v<64){
         for(let i=this.notetab.length-1;i>=0;--i){
           const nt=this.notetab[i];
-          if(t>=nt.t && nt.ch==ch && nt.f==1)
-            this._releaseNote(nt,t);
+          if(t>=nt.s && nt.ch==ch && nt.f==1)
+            this._releaseNote(nt,Math.max(t,nt.t));
         }
       }
     },
@@ -1418,10 +1457,10 @@ function WebAudioTinySynthCore(target) {
       t=this._tsConv(t);
       for(let i=this.notetab.length-1;i>=0;--i){
         const nt=this.notetab[i];
-        if(t>=nt.t && nt.ch==ch && nt.n==n && nt.f==0){
+        if(t>=nt.s && nt.ch==ch && nt.n==n && nt.f==0){
           nt.f=1;
           if(this.sustain[ch]<64)
-            this._releaseNote(nt,t);
+            this._releaseNote(nt,Math.max(t,nt.t));
         }
       }
     },
@@ -1434,13 +1473,27 @@ function WebAudioTinySynthCore(target) {
         this.noteOff(ch,n,t);
         return;
       }
+      const p=this.rhythm[ch] ? n>=35 && n<=81 && this.drummap[n-35].p : this.program[this.pg[ch]].p;
+      /* A lazy n1 is generated here (#18), before the onset is read from the clock: _note reads it
+         after t was taken, and the stall would leave the envelope and stop times behind the clock.
+         A time that was current or future on entry and is past after the generation moves to the
+         clock; later times and times already past on entry are as given. */
+      const c=this.actx.currentTime,u=this._tsConv(t),lazy=()=>(Object.getOwnPropertyDescriptor(this.noiseBuf,"n1")||0).get,z=lazy();
+      Array.isArray(p) && p.forEach(o=>o && typeof o.w=="string" && o.w[0]=="n" && this.noiseBuf[o.w]);
       t=this._tsConv(t);
+      if(z && !lazy() && t>=c)
+        t=Math.max(t,this.actx.currentTime);
       if(this.rhythm[ch]){
         if(n>=35&&n<=81)
-          this._note(t,ch,n,v,this.drummap[n-35].p);
+          this._note(t,ch,n,v,p);
         return;
       }
-      this._note(t,ch,n,v,this.program[this.pg[ch]].p);
+      /* The voice keeps the time it was asked for, s (the clock on entry for no time), to match its
+         note-off and pedal-up; the envelope runs from the moved onset, and a release inside the stall
+         is made at that onset. Only the voice this call made: a dropped note has none. */
+      const nt=this._note(t,ch,n,v,p);
+      if(t>u && nt)
+        nt.s=u;
     },
     setTsMode:(tsmode)=>{
       this.tsmode=tsmode;
@@ -1653,38 +1706,30 @@ function WebAudioTinySynthCore(target) {
       this.out=this.actx.createGain();
       this.comp=this.actx.createDynamicsCompressor();
       var blen=this.actx.sampleRate*.5|0;
-      this.convBuf=this.actx.createBuffer(2,blen,this.actx.sampleRate);
-      this.noiseBuf={};
-      this.noiseBuf.n0=this.actx.createBuffer(1,blen,this.actx.sampleRate);
-      this.noiseBuf.n1=this.actx.createBuffer(1,blen,this.actx.sampleRate);
-      var d1=this.convBuf.getChannelData(0);
-      var d2=this.convBuf.getChannelData(1);
-      var dn=this.noiseBuf.n0.getChannelData(0);
-      var dr=this.noiseBuf.n1.getChannelData(0);
       let h=this.seed; // fmix32, then stream k (see mulberry32)
       h=Math.imul(h^h>>>16,0x85ebca6b);
       h=Math.imul(h^h>>>13,0xc2b2ae35);
       h^=h>>>16;
       const rnd=k=>mulberry32(h+k*0x40000000);
-      let g=rnd(0);
-      for(let i=0;i<blen;++i){
-        if(i/blen<g()){
-          d1[i]=Math.exp(-3*i/blen)*(g()-.5)*.5;
-          d2[i]=Math.exp(-3*i/blen)*(g()-.5)*.5;
+      /* The reverb impulse only with reverb on (#18); useReverb applies at each install. */
+      this.convBuf=null;
+      if(this.useReverb){
+        this.convBuf=this.actx.createBuffer(2,blen,this.actx.sampleRate);
+        const d1=this.convBuf.getChannelData(0),d2=this.convBuf.getChannelData(1);
+        let g=rnd(0);
+        for(let i=0;i<blen;++i){
+          if(i/blen<g()){
+            d1[i]=Math.exp(-3*i/blen)*(g()-.5)*.5;
+            d2[i]=Math.exp(-3*i/blen)*(g()-.5)*.5;
+          }
         }
       }
-      g=rnd(1);
+      this.noiseBuf={};
+      this.noiseBuf.n0=this.actx.createBuffer(1,blen,this.actx.sampleRate);
+      lazyN1(this.noiseBuf,this.actx.createBuffer(1,blen,this.actx.sampleRate),rnd(2));
+      const dn=this.noiseBuf.n0.getChannelData(0),g=rnd(1);
       for(let i=0;i<blen;++i)
         dn[i]=g()*2-1;
-      g=rnd(2);
-      for(let jj=0;jj<64;++jj){
-        const r1=g()*10+1;
-        const r2=g()*10+1;
-        for(let i=0;i<blen;++i){
-          var dd=Math.sin((i/blen)*2*Math.PI*440*r1)*Math.sin((i/blen)*2*Math.PI*440*r2);
-          dr[i]+=dd/8;
-        }
-      }
       if(this.useReverb){
         this.conv=this.actx.createConvolver();
         this.conv.buffer=this.convBuf;
@@ -1751,15 +1796,12 @@ class WebAudioTinySynth {
       throw new RangeError("seed must be an integer from 0 to 4294967295");
     Object.defineProperties(this,{seed:{value:s>>>0,enumerable:true},bufferVersion:{value:1,enumerable:true}});
     this._lazy=l;
-    this.setQuality(1);
-    if(opt){
-      if(opt.useReverb!=undefined)
-        this.useReverb=opt.useReverb;
-      if(opt.quality!=undefined)
-        this.setQuality(opt.quality);
-      if(opt.voices!=undefined)
-        this.setVoices(opt.voices);
-    }
+    const {useReverb:r,quality:q,voices:v}=opt||{};
+    if(r!=undefined)
+      this.useReverb=r;
+    this.setQuality(q); // once (#18): undefined or null installs the default quality, 1
+    if(v!=undefined)
+      this.setVoices(v);
     this.init(c,d);
   }
 }
