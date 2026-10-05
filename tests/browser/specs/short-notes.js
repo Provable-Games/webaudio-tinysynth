@@ -29,6 +29,9 @@
  *     (quality 0), with 0.5 s notes, sound until T and render as the same note-off scheduled
  *     before the render, within PREROLL of the peak. Firefox has no suspend() on an
  *     OfflineAudioContext (Firefox 155); there the check records that and is not made;
+ *   - zero-length notes (tasks/T13.md §11): program 0, whose output operator has a = 0, with its
+ *     note-off at its note-on time, plays its release in both quality modes (peak at least
+ *     audiblePeak). Upstream dropped it in quality 1, where the last operator has an attack;
  *   - completed attacks: every program with an attack (any operator a > 0), in both quality
  *     modes, released 0.1 s after its longest attack ends, renders as with upstream's release
  *     (3d75aee's _releaseNote below, put on the synth after its install), within the engine's
@@ -157,6 +160,8 @@ function PAGE() {
       const sent = await note({ q, program, on, off, dur: off + 0.3, preroll });
       return { sent: sent.sent, gap: peak(sent, sent.sent + lat + 0.003, off + lat - guard), diff: maxDiff(sent, direct, 0, off + 0.3), peak: peak(direct, 0, off + 0.3) };
     },
+    /* Zero-length notes: program 0 with its note-off at its note-on time; the peak after it. */
+    zero: async ({ q, on }) => peak(await note({ q, program: 0, on, off: on, dur: on + 0.5 }), on, on + 0.5),
     /* Completed attacks: this build's release against upstream's. */
     completed: async ({ q, program, on, off, dur }) => {
       const fixed = await note({ q, program, on, off, dur });
@@ -242,6 +247,10 @@ function cases(shared) {
           t.check(o.f + " Hz operator: released from its own value at the note-off (short/uncut " + ratio.toFixed(5) + ", expected " + expected.toFixed(5) + ")", rel(ratio, expected) <= LEVEL, "relative error " + rel(ratio, expected).toExponential(2));
         });
         t.observe("amplitudes", m);
+        for (const q of shared.matrix.qualities) {
+          const z = await call(p, "zero", { q, on: 0.5 });
+          t.check("q" + q + " program 0 (output operator a = 0), note-off at its note-on time: plays its release (peak " + z.toExponential(3) + " >= " + tol.audiblePeak + ")", z >= tol.audiblePeak);
+        }
         t.check("no page errors", !p.pageErrors.length, p.pageErrors.slice(0, 2).join(" | "));
       },
     });
