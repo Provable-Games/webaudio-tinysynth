@@ -87,6 +87,7 @@ Local checks at f01ca19 all exit 0: `npm ci`, lint, verify, `pack:check`, `npm t
 
 ## Consumer coordination
 
+- 2026-10-05: pin `4bf9829` sent (T13 short notes, a sound change; min.js `8ad79ab8…`, 46,504 B raw, 13,608 Node gzip / 13,488 GNU gzip). Acknowledged. The consumer repo is now `Provable-Games/onchain-midi-player`, and its class becomes `TinySynth`. It will re-pin after its class-rename PR lands, and it is checking its Firefox render fixtures that start at t≈0.
 - 2026-10-04: pin `fc04dbe` sent, the first bot rebuild (min.js `4135920f…`, 46,488 B raw, 13,587 Node gzip / 13,469 GNU gzip). The consumer verified it and is testing whether T5.2's skip-on-overflow lets it remove its five interim operator bounds.
 - 2026-10-04: pin `3d965d1` sent (T8-seed, T5, every NOTICE entry, version 2.0.0; min.js `95d8947a…`, 46,409 B raw, 13,530 Node gzip / 13,415 GNU gzip; verify passes). The release model (D-037) and the D-036 rebuild-commit pinning were explained.
 - 2026-10-04: pin `1ba4ee6` sent (#47 + #49 NOTICE entries for #26/#27; min.js `6aadee6f…`, 43,456 B raw, 12,393 B Node gzip / 12,295 B GNU gzip). #42 (19cb982), #50 (30f1506) and #48 (8f7b600) merged afterwards; send pin and NOTICE status after the T5 docs PR. Warned that min.js will soon be rebuilt by CI after each merge (D-036): pin the rebuild commit or any SHA where `npm run verify` passes.
