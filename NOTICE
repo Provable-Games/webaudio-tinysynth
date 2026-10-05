@@ -71,6 +71,12 @@ Modifications by Provable Games, based on upstream commit
     outside the 32-bit float range is skipped instead of throwing part-way
     through, setTimbre() bounds its time fields to that range, and
     timestamp mode 1 clamps converted times at the current time.
+  - webaudio-tinysynth.js: a note released before an operator's attack
+    has ended now sounds: the operator follows its attack until the
+    note-off and is released from the level it reached, instead of
+    staying silent. Each operator's release starts from its own attack
+    level, not the last operator's, and a zero-length note plays the
+    release of its operators that have no attack.
   - webaudio-tinysynth.min.js and its source map are regenerated from
     the modified source.
   - Demo pages and README updated to use the JavaScript API; tests added.
