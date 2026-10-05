@@ -81,6 +81,10 @@ States: `pending`, `running`, `review`, `accepted`, `blocked`.
 
 Before the tag, send the consumer the min.js hash and a behaviour summary when T8 merges. Explicitly flag any T10 fix that touches sound or the API.
 
+## Fidelity triage (2026-10-05)
+
+The independent quality review (`_evidence/review-quality/`) opened #66–#89, with #89 as the umbrella. The user chose one Opus 5.5 xhigh reviewer for a holistic triage. Brief: `_evidence/assignments/TRIAGE-66-89.md`. Output goes to `_evidence/review-triage/`. Goal: Casey Wescott's scores play accurately and consistently on all modern devices.
+
 ## Gates
 
 | Gate | Requirement | State |
@@ -110,6 +114,7 @@ Local checks at f01ca19 all exit 0: `npm ci`, lint, verify, `pack:check`, `npm t
 
 ## Consumer coordination
 
+- 2026-10-05: pin `31fb18d` sent (T8 #18 merged; min.js `bcb498b9…`, 47,212 B raw, 13,871 Node gzip / 13,750 GNU gzip; bot rebuild 9d429c2). Behaviour sent: no sound change; first `playMIDI()` per installation starts about 46 ms later; `prewarm()` for live notes; `convBuf` null with reverb off. Warned that the #66–#89 triage may bring sound or timing changes before v2.0.0.
 - 2026-10-05: pin `4bf9829` sent (T13 short notes, a sound change; min.js `8ad79ab8…`, 46,504 B raw, 13,608 Node gzip / 13,488 GNU gzip). Acknowledged. The consumer repo is now `Provable-Games/onchain-midi-player`, and its class becomes `TinySynth`. It will re-pin after its class-rename PR lands, and it is checking its Firefox render fixtures that start at t≈0.
 - 2026-10-04: pin `fc04dbe` sent, the first bot rebuild (min.js `4135920f…`, 46,488 B raw, 13,587 Node gzip / 13,469 GNU gzip). The consumer verified it and is testing whether T5.2's skip-on-overflow lets it remove its five interim operator bounds.
 - 2026-10-04: pin `3d965d1` sent (T8-seed, T5, every NOTICE entry, version 2.0.0; min.js `95d8947a…`, 46,409 B raw, 13,530 Node gzip / 13,415 GNU gzip; verify passes). The release model (D-037) and the D-036 rebuild-commit pinning were explained.
