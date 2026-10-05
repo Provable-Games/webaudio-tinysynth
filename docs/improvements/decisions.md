@@ -472,3 +472,11 @@ The user saw several PRs that updated NOTICE only after the code merged (#49, #5
 - **Agents:** task PRs still update the README, the source header and their contracts row. They do not edit NOTICE. Instead, each PR description proposes a NOTICE bullet under "NOTICE (for the supervisor)".
 - **Supervisor:** adds that bullet straight to `improve/integration` right after the merge, as step 1 of the post-merge checklist in `status.md`. No separate docs PRs.
 - **Safety net:** the consumer pin is sent only after the NOTICE commit, and T10 re-audits NOTICE coverage before G2.
+
+## D-041 Defer T7 (#17) (2026-10-05)
+
+The supervisor assessed #17's value as low for this project. It brings no change a listener or composer would notice, yet it changes the onchain min.js bytes, risks behaviour drift across every engine path, and delays v2.0.0. The test suite now provides the safety net that reorganizing would otherwise give. The user agreed: "lets defer for now".
+
+- **#17:** T7 is deferred, including types. #17 stays open with an explanatory comment.
+- **Next tasks:** T8 (#18, initialization cost; it never depended on T7 technically) and T1B (CI extensions: browser-matrix headroom, the AI-review malformed-output retry, and demos in CI) start in parallel.
+- **Amended plan order:** T8 and T1B → the T9 docs pass (#20) → T10 → G2 → #31 → v2.0.0.
