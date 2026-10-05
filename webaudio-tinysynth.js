@@ -1273,8 +1273,8 @@ function WebAudioTinySynthCore(target) {
           o[i].stop(t+p[0].d*this.releaseRatio);
         }
       }
-      if(!this.rhythm[ch])
-        this.notetab.push({t:t,e:99999,ch:ch,n:n,o:o,g:g,q:q,t2:t+pn.a,v:vp,r:r,f:0});
+      if(!this.rhythm[ch]) // t2: each operator's attack end (#59)
+        this.notetab.push({t:t,e:99999,ch:ch,n:n,o:o,g:g,q:q,t2:p.map(x=>t+x.a),v:vp,r:r,f:0});
       else // tracked until it ends, so stops, seeks and dispose() reach it (#11, D-019)
         this._src.push({t:t,e:t+p[0].d*this.releaseRatio,ch:ch,o:o,g:g,q:q});
     },
@@ -1287,12 +1287,22 @@ function WebAudioTinySynthCore(target) {
     _releaseNote:(nt,t)=>{
       if(nt.ch!=9){
         for(let k=nt.g.length-1;k>=0;--k){
-          nt.g[k].gain.cancelScheduledValues(t);
-          if(t==nt.t2)
-            nt.g[k].gain.setValueAtTime(nt.v[k],t);
-          else if(t<nt.t2)
-            nt.g[k].gain.setValueAtTime(nt.v[k]*(t-nt.t)/(nt.t2-nt.t),t);
-          this._setParamTarget(nt.g[k].gain,0,t,nt.r[k]);
+          /* An operator whose attack (ending at e) has not ended at t (#59) ramps on to its
+             own level at t, v*(t-nt.t)/a, and is released from there. With a = 0 (e is the
+             note-on time) that is v. cancelScheduledValues(t) alone would remove the whole ramp
+             and leave it silent until t (upstream, which also took every operator's level from
+             the last operator's attack). The cut is kept in v and t2, so a second release (a
+             pedal-up at t) ramps the same way and a later one leaves the release running. */
+          const g=nt.g[k].gain,e=nt.t2[k];
+          g.cancelScheduledValues(t);
+          if(t<=e){
+            if(e>nt.t)
+              g.linearRampToValueAtTime(nt.v[k]*=(t-nt.t)/(e-nt.t),t);
+            else
+              g.setValueAtTime(nt.v[k],t);
+            nt.t2[k]=t;
+          }
+          this._setParamTarget(g,0,t,nt.r[k]);
         }
       }
       nt.e=t+nt.r[0]*this.releaseRatio;
