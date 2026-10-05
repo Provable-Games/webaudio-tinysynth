@@ -15,6 +15,9 @@ function CodedError(code){
   return e;
 }
 
+/* Whether x can be an AudioParam value or time constant: a WebIDL float, finite as float32. */
+const f32=x=>isFinite(Math.fround(x));
+
 /* Built-in buffers (#7, D-004), generation version 1 (bufferVersion): the reverb impulse
    (convBuf), white noise (n0) and metallic noise (n1) are generated from the seed, never
    from Math.random. The seed is mixed with fmix32 (murmur3's finalizer, a bijection on
@@ -765,9 +768,10 @@ function WebAudioTinySynthCore(target) {
          status) for a status outside 200-299; NETWORK_ERROR; or loadMIDI()'s error. It never
          throws, and an ignored rejection is handled. A newer call or the signal aborts the
          request; dispose() settles the promise and discards the response when it arrives. */
-      const s=o ? o.signal : null,r=new Promise((res,rej)=>{
-        // The signal's reason, or an AbortError when it has none (or a falsy one)
-        const why=()=>s.reason || (window.DOMException ? new window.DOMException("Aborted","AbortError") : Object.assign(Error("Aborted"),{name:"AbortError"}));
+      const r=new Promise((res,rej)=>{
+        // opts.signal is read here, so a throwing getter rejects (T5.2). why: the signal's
+        // reason, or an AbortError when it has none (or a falsy one).
+        const s=o ? o.signal : null,why=()=>s.reason || (window.DOMException ? new window.DOMException("Aborted","AbortError") : Object.assign(Error("Aborted"),{name:"AbortError"}));
         if(!url || s!=null && !(typeof s.aborted=="boolean" && typeof s.addEventListener=="function" && typeof s.removeEventListener=="function"))
           throw new TypeError(url ? "signal" : "url"); // an AbortSignal (by its shape), undefined or null
         if(this._dead)
@@ -1071,8 +1075,10 @@ function WebAudioTinySynthCore(target) {
       /* A normalized copy of operator i. Missing or undefined fields take the defaults below,
          and other keys are copied and ignored. w is a known wave (below). g is 0 (output),
          1-10 (FM into operator g-1) or 11 and up (AM into operator g-11), and that operator
-         comes earlier. a, h, d, r and q (times) are finite and >= 0; t, f, v, s, p and k
-         are finite. The filter fields fl, ff, fq and fk are checked last (#27). */
+         comes earlier. a, h, d, r and q (times) are >= 0 and finite as float32 (T5.2: d, r
+         and q are AudioParam time constants, WebIDL floats, and the bound keeps a note's
+         t+a+h finite); t, f, v, s, p and k are finite (_note checks what they compute). The
+         filter fields fl, ff, fq and fk are checked last (#27). */
       const d={g:0,w:"sine",t:1,f:0,v:0.5,a:0,h:0.01,d:0.01,s:0,r:0.05,p:1,q:1,k:0},e="operator "+i+" ";
       if(typeof o!="object" || !o)
         throw new TypeError(e+"is not an object");
@@ -1080,8 +1086,11 @@ function WebAudioTinySynthCore(target) {
       for(const k in d){
         if(c[k]===undefined)
           c[k]=d[k];
-        if(k!="w")
-          c[k]=this._num(e+k,c[k],k=="g" ? 10+i : 1/0,k=="g","ghadrq".includes(k) ? 0 : -1/0);
+        if(k!="w"){
+          const T="hadrq".includes(k),x=c[k]=this._num(e+k,c[k],k=="g" ? 10+i : 1/0,k=="g",T || k=="g" ? 0 : -1/0);
+          if(T && !f32(x))
+            throw new RangeError(e+k+" out of range: "+x);
+        }
         else{
           /* A built-in, a name registered with setHarmonicWave/setSampleWave (#26), or, as an
              unsupported compatibility path, an n* or w* name a caller wrote into noiseBuf or wave
@@ -1113,7 +1122,7 @@ function WebAudioTinySynthCore(target) {
           if(k=="ff" || v!==undefined){
             if(typeof x!="number")
               throw new TypeError(k+": "+String(v));
-            if(!(k=="fk" ? x==0 || x==1 : x>=2**-126 && isFinite(Math.fround(x))))
+            if(!(k=="fk" ? x==0 || x==1 : x>=2**-126 && f32(x)))
               throw new RangeError(k+": "+x);
             c[k]=x;
           }
@@ -1177,35 +1186,39 @@ function WebAudioTinySynthCore(target) {
       return b;
     },
     _note:(t,ch,n,v,p)=>{
-      let out,sc,pn;
+      let out,pn;
       const o=[],g=[],vp=[],fp=[],r=[],b=[],l=[];
       const f=440*Math.pow(2,(n-69 + this.masterTuningC + this.tuningC[ch] + (this.masterTuningF + this.tuningF[ch]/8192 + this.scaleTuning[ch][n%12]))/12);
       /* Every operator's wave is resolved first (#26): when one is missing from this context (a
          timbre written past setTimbre), the note is dropped before a voice is stolen or a node made.
          A buffer plays at fp/b[i]: the home pitch _mk tagged a registered wave's buffer with (D-027),
          looping its N*k frames (l[i] seconds, before the guard frame); else 440 (n0, n1, buffers a
-         caller wrote, even over a registered name). Only n* and w* names are looked up, and no
-         Object.prototype key starts so. */
+         caller wrote, even over a registered name). An oscillator's b[i] is 1, so fp[i]/b[i] is the
+         frequency or playback rate of every operator, and the FM depth into it. Only n* and w*
+         names are looked up, and no Object.prototype key starts so.
+         Every AudioParam value of the voice is computed here too (T5.2): the operator's pitch, its
+         pitch-envelope target, its level vp[i] (into the channel, FM into operator j's pitch, or AM
+         into its gain; scaled by k) and its sustain level. One that is not finite as float32 (an FM
+         chain or a k that overflows at this note and tuning, or 0 times an overflow) drops the note
+         the same way, so no voice is left half made and no engine rejects a value. */
       for(let i=0;i<p.length;++i){
-        const w=p[i].w,x=w[0]=="n" && this.noiseBuf[w];
+        pn=p[i];
+        const w=pn.w,x=w[0]=="n" && this.noiseBuf[w],j=pn.g>10 ? pn.g-11 : pn.g-1;
         if(w[0]=="n" ? !x : w[0]=="w" && !this.wave[w])
           return;
         l[i]=x && x._l;
-        b[i]=x && x._b || 440;
+        b[i]=x ? x._b || 440 : 1;
+        fp[i]=(pn.g ? fp[j] : f)*pn.t+pn.f;
+        vp[i]=(pn.g>10 ? 1 : pn.g ? fp[j]/b[j] : v*v/16384)*pn.v*Math.pow(2,(n-60)/12*pn.k);
+        if(![fp[i]/b[i],fp[i]/b[i]*pn.p,vp[i],pn.s*vp[i]].every(f32))
+          return;
       }
       this._limitVoices(ch,n);
       const q=[]; // the output operators' filters, by operator (#27)
       for(let i=0;i<p.length;++i){
         pn=p[i];
         const dt=t+pn.a+pn.h;
-        if(pn.g==0)
-          out=this.chvol[ch], sc=v*v/16384, fp[i]=f*pn.t+pn.f;
-        else if(pn.g>10)
-          out=g[pn.g-11].gain, sc=1, fp[i]=fp[pn.g-11]*pn.t+pn.f;
-        else if(o[pn.g-1].frequency)
-          out=o[pn.g-1].frequency, sc=fp[pn.g-1], fp[i]=fp[pn.g-1]*pn.t+pn.f;
-        else
-          out=o[pn.g-1].playbackRate, sc=fp[pn.g-1]/b[pn.g-1], fp[i]=fp[pn.g-1]*pn.t+pn.f;
+        out=pn.g ? pn.g>10 ? g[pn.g-11].gain : o[pn.g-1].frequency || o[pn.g-1].playbackRate : this.chvol[ch];
         switch(pn.w[0]){
         case "n":
           o[i]=this.actx.createBufferSource();
@@ -1239,9 +1252,6 @@ function WebAudioTinySynthCore(target) {
         g[i]=this.actx.createGain();
         r[i]=pn.r;
         o[i].connect(g[i]); g[i].connect(pn.g==0 && pn.fl ? (q[i]=this._filter(pn,f,out)) : out);
-        vp[i]=sc*pn.v;
-        if(pn.k)
-          vp[i]*=Math.pow(2,(n-60)/12*pn.k);
         if(pn.a){
           g[i].gain.value=0;
           g[i].gain.setValueAtTime(0,t);
@@ -1367,16 +1377,12 @@ function WebAudioTinySynthCore(target) {
       this.pg[ch]=v;
     },
     _tsConv:(t)=>{
-      if(t==undefined||t<=0){
-        t=0;
-        if(this.actx)
-          t=this.actx.currentTime;
-      }
-      else{
-        if(this.tsmode)
-          t=t*.001-this.tsdiff;
-      }
-      return t;
+      /* A time t > 0 is in seconds on the context's clock, or with tsmode in milliseconds on
+         performance.now()'s, converted and then clamped at currentTime (T5.2): a time from
+         before the context started, or already past, would otherwise be negative or past.
+         Otherwise now (0 without a context). */
+      const c=this.actx ? this.actx.currentTime : 0;
+      return t==undefined || t<=0 ? c : this.tsmode ? Math.max(t*.001-this.tsdiff,c) : t;
     },
     setBend:(ch,v,t)=>{
       [ch,v,t]=this._cv(ch,v,t,"bend",16383);
@@ -1431,7 +1437,8 @@ function WebAudioTinySynthCore(target) {
     },
     send:(msg,t)=>{    /* send midi message */
       /* A message that is too short for its status (3 bytes for 0x8n, 0x9n, 0xAn, 0xBn, 0xEn and
-         0xF2; 2 for 0xCn, 0xDn, 0xF1 and 0xF3), has no status byte or no integer length,
+         0xF2; 2 for 0xCn, 0xDn, 0xF1 and 0xF3; 1 for the rest, so an empty array-like SysEx too,
+         T5.2), has no status byte or no integer length,
          or has a data byte that is not a number 0-127 (a SysEx may end with the number 0xf7)
          does nothing (#13). A msg that is not an object, a byte that cannot become a number
          (Symbol, BigInt), or a bad time throws a TypeError or RangeError, before anything
@@ -1440,7 +1447,7 @@ function WebAudioTinySynthCore(target) {
       if(typeof msg!="object" || !msg)
         throw new TypeError("msg is not an array");
       const s=msg[0],L=msg.length,ch=s&0xf,cmd=s&~0xf,
-        n=s===0xf0 ? L : cmd>0xef ? (s===0xf2 ? 3 : s===0xf1 || s===0xf3 ? 2 : 1) : (cmd&0xe0)==0xc0 ? 2 : 3; // bytes the status needs
+        n=s===0xf0 ? L||1 : cmd>0xef ? (s===0xf2 ? 3 : s===0xf1 || s===0xf3 ? 2 : 1) : (cmd&0xe0)==0xc0 ? 2 : 3; // bytes the status needs
       if(s>>>0!==s || s>>7!=1 || L>>>0!==L || L<n) // status: an integer number 0x80-0xff
         return;
       for(let i=1,b;i<n;++i)
