@@ -15,7 +15,13 @@
  *   - the hold is the attack: the short note's output equals the same note's without a
  *     note-off, within FOLLOW of the peak, up to 1 ms before output time T (the compressor's
  *     detector reads its input 6 ms ahead of the delayed output, so its gain reacts to the
- *     note-off from output time T on);
+ *     note-off from output time T on). This and the audibility check above are made on a
+ *     pair of renders (short and uncut), so WebKit's occasional non-reproducible render
+ *     glitch (tasks/T6.md, "WebKit's occasional render differences"; tasks/T13.1.md) can
+ *     fail either, the Applause noise program among others: "held min" failed once on PR #60
+ *     (q0, program 126, 0.07 s, 1.47 of the peak) and passed on re-run. An item outside its
+ *     bound is therefore re-rendered (at most twice) and fails unless a re-render is inside
+ *     it; at most MAX_RECONCILE items per case are re-rendered, and each is recorded;
  *   - release level: a two-operator timbre at fixed frequencies (400 Hz with a = 0.02 s, then
  *     1000 Hz with a = 0.5 s, so the last operator's attack is the longer), on at 0.4 s and off
  *     0.1 s later, masterVol 0.05 (below the compressor's threshold). Each operator's amplitude
@@ -55,6 +61,7 @@ const GUARD = 0.001; // the hold window ends this long before the note-off reach
 const DURATIONS = [0.025, 0.07, 0.3].map((D) => Math.round(D * 44100) / 44100);
 const FOLLOW = 2e-4; // short vs uncut note before T, max |diff| / peak; measured max 6.0e-5 (Firefox), 1.7e-5 (WebKit), 1.3e-5 (Chromium)
 const LEVEL = 5e-3; // relative amplitude error of the release-level check; measured max 1.9e-3, every engine
+const MAX_RECONCILE = 3; // items per held case that may be re-rendered, as in specs/render.js
 const PREROLL = 1e-4; // suspend()-sent vs pre-scheduled note-off, max |diff| / peak; measured 0 (Chromium, WebKit)
 const PREROLL_NOTES = [[1, 119], [1, 125], [1, 40], [0, 119], [0, 40]];
 
@@ -194,13 +201,33 @@ function cases(shared) {
       deadline: 900,
       run: async (t) => {
         const p = await openPage(t, build);
-        const silent = [], off = [];
-        let worst = { rel: 0 }, renders = 0;
+        const silent = [], off = [], reconciled = [];
+        let worst = { rel: 0 }, renders = 0, rerendered = 0;
+        // Outside the bound on either check: too quiet while held, or not the uncut note before T.
+        const bad = (x) => !(x.hold >= tol.audiblePeak) || !(x.diff / x.peak <= FOLLOW);
         for (const q of shared.matrix.qualities) {
           for (let n = 0; n < 128; ++n) {
             const r = await call(p, "held", { q, program: n, on: ON, durations: DURATIONS, lat: LAT, guard: GUARD });
             renders += r.length + 1;
-            for (const x of r) {
+            for (let x of r) {
+              /*
+               * A render pair outside its bound is rendered again, alone, at most twice (WebKit's
+               * glitch does not reproduce; a defect of the library does, on every render). It
+               * counts only if a re-render is inside the bound; the first result is kept in
+               * the failure message and in the record.
+               */
+              if (bad(x) && rerendered < MAX_RECONCILE) {
+                const first = x;
+                ++rerendered;
+                let k = 0;
+                while (k < 2 && bad(x)) {
+                  [x] = await call(p, "held", { q, program: n, on: ON, durations: [first.D], lat: LAT, guard: GUARD });
+                  renders += 2;
+                  ++k;
+                }
+                if (!bad(x)) reconciled.push({ q, program: n, D: +first.D.toFixed(4), hold: first.hold, rel: first.diff / first.peak, renders: k * 2 });
+                else x = first;
+              }
               if (!(x.hold >= tol.audiblePeak)) silent.push("q" + q + " " + n + " @" + x.D.toFixed(4) + " s (" + x.hold.toExponential(2) + ")");
               const rel = x.diff / x.peak;
               if (!(rel <= FOLLOW)) off.push("q" + q + " " + n + " @" + x.D.toFixed(4) + " s: " + rel.toExponential(2));
@@ -212,6 +239,7 @@ function cases(shared) {
         t.check("until the note-off the short note renders as the uncut note (max |diff| <= " + FOLLOW + " of the peak)", !off.length,
           off.length ? list(off) : "max " + worst.rel.toExponential(2) + " (" + worst.at + " s)");
         t.observe("renders", renders);
+        t.observe("reconciled held renders (re-rendered; see the header comment)", reconciled);
         t.check("no page errors", !p.pageErrors.length, p.pageErrors.slice(0, 2).join(" | "));
       },
     });
