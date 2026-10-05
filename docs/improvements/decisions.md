@@ -444,3 +444,15 @@ The user said "no one is using main" and asked to close completed issues, "so we
 - From now on, after the user merges a task PR, the supervisor closes every issue it completes, with the same kind of comment.
 - An issue that is only partly done stays open.
 - Still open: #13 (closes with T5.2), #16 (closes with T6 phase B.2 and G1), #17 (T7), #18 (T8 #18), #19 (T9 follow-ups), #20 (T9 docs pass).
+
+## D-039 Fix short-note silence and the release level (2026-10-04)
+
+T6 phase B.2 (T6 §18.5) characterized two upstream defects in `_releaseNote`:
+- a note released before an operator's attack ends is silent (11 quality-1 programs at 0.07 s, including 40–44);
+- the release starts from the last operator's attack level (quality-1 programs 23, 50, 86, 88, 123).
+
+The user chose "Fix both".
+
+- **Fix:** at a note-off before an operator's attack ends, ramp that operator to its own value `v·(T − t)/a` at `T`, then release from there. `cancelAndHoldAtTime` is not used (Firefox 155 lacks it). Completed attacks are unchanged.
+- **Tracking:** issue #59, task T13, which starts after #57 merges.
+- **What the change touches:** it is a deliberate sound change from upstream, so it needs a contracts ledger row (L-15), a narrow differential-test exemption limited to short-note release automation, and README/NOTICE entries.
