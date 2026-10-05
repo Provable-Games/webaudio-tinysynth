@@ -1459,13 +1459,17 @@ function WebAudioTinySynthCore(target) {
         this.noteOff(ch,n,t);
         return;
       }
+      const p=this.rhythm[ch] ? n>=35 && n<=81 && this.drummap[n-35].p : this.program[this.pg[ch]].p;
+      /* A lazy n1 is generated here, before the onset is read from the clock (#18): _note reads it
+         after t was taken, and a stall would leave the envelope and stop times behind the clock. */
+      Array.isArray(p) && p.forEach(o=>o && typeof o.w=="string" && o.w[0]=="n" && this.noiseBuf[o.w]);
       t=this._tsConv(t);
       if(this.rhythm[ch]){
         if(n>=35&&n<=81)
-          this._note(t,ch,n,v,this.drummap[n-35].p);
+          this._note(t,ch,n,v,p);
         return;
       }
-      this._note(t,ch,n,v,this.program[this.pg[ch]].p);
+      this._note(t,ch,n,v,p);
     },
     setTsMode:(tsmode)=>{
       this.tsmode=tsmode;

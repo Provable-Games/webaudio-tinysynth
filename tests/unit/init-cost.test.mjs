@@ -34,11 +34,12 @@ const SIN_N1 = (sr) => 2 * 64 * Math.floor(sr / 2);
 function load(variant) {
   const trace = [];
   const env = H.createEnvironment(trace);
-  const count = { sin: 0, map: 0 };
+  const count = { sin: 0, map: 0, stall: 0 }; // stall: ms the audio clock advances at the next Math.sin call (a generation that takes time)
   env.sandbox.__count = count;
+  env.sandbox.__clock = env.clock;
   vm.runInContext(
     "(function () { const sin = Math.sin, from = Array.from;" +
-    " Math.sin = function (x) { ++__count.sin; return sin(x); };" +
+    " Math.sin = function (x) { ++__count.sin; if (__count.stall) { __clock.ms += __count.stall; __count.stall = 0; } return sin(x); };" +
     " Array.from = function (a, f) { if (typeof f === \"function\") ++__count.map; return from.apply(this, arguments); }; })();",
     env.sandbox);
   vm.runInContext(variant.source, env.sandbox, { filename: variant.name });
@@ -135,6 +136,30 @@ for (const variant of variants) {
           synth.noteOn(9, 42, 100, 0.5);
           expect(l.count.sin, "no refill").toBe(SIN_N1(SR));
         }
+      }, SLOW);
+
+      test("a first live hi-hat is not cut by the generation: its onset and stop come after the stall (Codex review of #63)", () => {
+        // noteOn() took the onset from the clock, then _note read n1: with a 41 ms generation the
+        // 35 ms hi-hat started and stopped in the past. The lazy buffer is now resolved first.
+        const hit = (stall) => {
+          const l = load(variant);
+          const synth = new l.Synth({ context: l.at(), quality: 1, seed: 1, useReverb: 0 });
+          l.env.clock.ms = 1000;
+          if (stall) l.count.stall = stall;
+          else synth.noiseBuf.n1; // the eager case: already generated, the clock does not move
+          const from = l.trace.length;
+          synth.noteOn(9, 42, 100);
+          const lines = l.trace.slice(from).map((x) => JSON.parse(x));
+          const src = lines.find((x) => x[0] === "create" && /^src#/.test(x[1]))[1];
+          const at = (op) => lines.find((x) => x[0] === op && x[1] === src)[2];
+          return { start: at("start"), stop: at("stop"), now: l.env.clock.ms / 1000 };
+        };
+        const eager = hit(0), lazy = hit(41);
+        expect(eager.start).toBe(1);
+        expect(eager.stop - eager.start).toBeGreaterThan(0.02);
+        expect(lazy.now).toBeCloseTo(1.041, 9);
+        expect(lazy.start).toBeGreaterThanOrEqual(lazy.now - 1e-9); // not in the past
+        expect(lazy.stop - lazy.start).toBeCloseTo(eager.stop - eager.start, 9); // the full duration
       }, SLOW);
 
       test("a custom n1 timbre in quality 0 plays the seeded data on its first note", () => {
