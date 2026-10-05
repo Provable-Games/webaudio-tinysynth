@@ -616,6 +616,13 @@ function WebAudioTinySynthCore(target) {
       this._own=1;
       return this.actx;
     },
+    prewarm:()=>{
+      /* Generates the metallic noise n1 now instead of at the first note that plays it (#18). It
+         plays nothing and neither creates nor resumes a context: nothing before a context
+         exists or after dispose(), and a later call finds it done. playMIDI() calls it first. */
+      if(!this._dead && this.actx && this.noiseBuf)
+        this.noiseBuf.n1;
+    },
     _live:()=>{
       /* The guard at the top of each method that makes sound or sets channel or song state
          (send, noteOn, setProgram, setBendRange, setBend, setSustain, setModulation,
@@ -903,6 +910,10 @@ function WebAudioTinySynthCore(target) {
         throw CodedError("AUDIO_CONTEXT_OFFLINE");
       if(!s || !s.ev.some(e=>e.m[0]!=0xff51))
         return;
+      /* Before anything reads the clock (#18): a first n1 note built inside the scheduler's
+         callback can take longer than the 0.1 s start and the 0.2 s lead, and would sound after
+         the notes sent with it. The clock is read after the build, so the whole song shifts. */
+      this.prewarm();
       if(this.playIndex && this.playTick>=this.maxTick)
         this.notetab=[], this._src=[], this.playing=0, this.locateMIDI(0), this.notetab=n, this._src=d;
       if(this._rs) // after a caller's stop: the channels' latest values, now (review F1)

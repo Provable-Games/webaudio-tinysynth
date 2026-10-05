@@ -20,7 +20,7 @@ import vm from "node:vm";
 import v8 from "node:v8";
 import { createRequire } from "node:module";
 import { describe, expect, test } from "vitest";
-import { H, variants } from "./helpers.mjs";
+import { H, variants, sources } from "./helpers.mjs";
 import { reference, sha } from "./seed-reference.mjs";
 
 const require = createRequire(import.meta.url);
@@ -29,6 +29,7 @@ const { SEED_EXPECTED: E } = require("../browser/specs/seed-expected.js");
 const SLOW = 60000;
 const SR = 8000;
 const SIN_N1 = (sr) => 2 * 64 * Math.floor(sr / 2);
+const N1_44 = SIN_N1(44100);
 
 /* A fresh mock environment with `variant` loaded, counting Math.sin and Array.from-with-a-function calls. */
 function load(variant) {
@@ -379,6 +380,152 @@ for (const variant of variants) {
           gc();
         }
         expect(refs.map((r) => r.deref() === undefined)).toEqual([true, true]);
+      }, SLOW);
+    });
+
+    describe("playMIDI() and prewarm() build n1 before the clock is read (#18, the sequenced-playback flam)", () => {
+      const { noteOn, noteOff, tempo } = H.midi;
+      const N1 = SIN_N1(SR);
+      const toBuf = (events) => H.toArrayBuffer(H.makeMidi(480, events));
+      /* A piano, a closed hi-hat (n1) and a snare (n0) on the same first beat. */
+      const SAME_TICK = toBuf([noteOn(0, 0, 60, 100), noteOn(0, 9, 42, 100), noteOn(0, 9, 38, 100), noteOff(240, 0, 60)]);
+      /* The mock clock is set before the synth exists, so its timer is due after it. */
+      const fresh = (opts = {}) => {
+        const l = load(variant);
+        l.env.clock.ms = 1000;
+        const synth = new l.Synth({ context: l.at(), quality: 1, seed: 1, useReverb: 0, ...opts });
+        return { l, synth };
+      };
+      const code = (fn) => { try { fn(); } catch (e) { return e.code; } return null; };
+
+      test("same-tick piano, hi-hat and snare keep one onset and their full envelopes when the build outlasts the lead (mock clock +41 ms inside the build)", () => {
+        const run = (stall) => {
+          const { l, synth } = fresh();
+          synth.loadMIDI(SAME_TICK);
+          synth.setLoop(0);
+          if (stall) l.count.stall = stall;
+          else synth.noiseBuf.n1; // already built: the clock does not move
+          const from = l.trace.length;
+          synth.playMIDI();
+          l.env.skip(70); // the first scheduler callback comes late, as in the field: now 1.07 s
+          l.env.step();
+          const src = sources(l.trace, from);
+          return { starts: src.map((x) => x.start), lengths: src.filter((x) => x.stop != null).map((x) => x.stop - x.start), now: l.env.clock.ms / 1000, startTime: synth.getPlayStatus().startTime };
+        };
+        const ref = run(0), built = run(41);
+        expect(new Set(ref.starts).size).toBe(1);
+        expect(ref.starts[0]).toBeCloseTo(1.1, 9);
+        expect(built.starts.length).toBe(ref.starts.length);
+        expect(new Set(built.starts).size, "one onset: " + built.starts.join()).toBe(1);
+        expect(built.starts[0]).toBeCloseTo(1.141, 9); // 0.1 s after the clock the build left
+        expect(built.startTime).toBeCloseTo(1.141, 9);
+        expect(built.lengths.length).toBeGreaterThan(0);
+        built.lengths.forEach((x, i) => expect(x, "envelope " + i).toBeCloseTo(ref.lengths[i], 9));
+      }, SLOW);
+
+      test("stopMIDI() then playMIDI(), and locateMIDI() then playMIDI(): the clock is read after the build, and nothing is rebuilt later", () => {
+        for (const how of ["stop", "locate"]) {
+          const { l, synth } = fresh();
+          synth.loadMIDI(SAME_TICK);
+          if (how === "stop") synth.stopMIDI(); else synth.locateMIDI(0);
+          expect(l.count.sin, how).toBe(0);
+          l.count.stall = 41;
+          synth.playMIDI();
+          expect(l.count.sin, how).toBe(N1);
+          expect(synth.getPlayStatus().startTime, how).toBeCloseTo(1.141, 9);
+          synth.stopMIDI();
+          synth.playMIDI();
+          expect(l.count.sin, how + ": a second play").toBe(N1);
+        }
+      }, SLOW);
+
+      test("a second play, a loop wrap and a seek while playing do not build again", () => {
+        const { l, synth } = fresh();
+        synth.loadMIDI(SAME_TICK);
+        synth.setLoop(1);
+        synth.playMIDI();
+        expect(l.count.sin).toBe(N1);
+        H.runUntil(l.env, () => false, 3000); // several passes: wraps
+        synth.locateMIDI(240);
+        synth.playMIDI();
+        H.runUntil(l.env, () => false, 1000);
+        synth.noteOn(9, 42, 100);
+        expect([l.count.sin, synth.getPlayStatus().play]).toEqual([N1, 1]);
+      }, SLOW);
+
+      test("stopMIDI(), then setAudioContext() with a new or the same context object, then playMIDI(): n1 is built for the new installation, before the clock", () => {
+        for (const same of [false, true]) {
+          const { l, synth } = fresh();
+          synth.loadMIDI(SAME_TICK);
+          synth.playMIDI();
+          expect(l.count.sin).toBe(N1);
+          synth.stopMIDI();
+          synth.setAudioContext(same ? synth.getAudioContext() : l.at());
+          expect(l.count.sin, "install builds nothing").toBe(N1);
+          expect(Object.getOwnPropertyDescriptor(synth.noiseBuf, "n1").get).toBeTypeOf("function");
+          l.count.stall = 41;
+          synth.playMIDI();
+          expect(l.count.sin, "same context object: " + same).toBe(2 * N1);
+          expect(synth.getPlayStatus().startTime).toBeGreaterThanOrEqual(l.env.clock.ms / 1000 + 0.1 - 1e-9);
+        }
+      }, SLOW);
+
+      test("rejected offline playback, a missing song and a tempo-only song build nothing", () => {
+        const l = load(variant);
+        class Off extends l.env.sandbox.AudioContext { startRendering() {} }
+        const off = new l.Synth({ context: Object.assign(new Off(), { sampleRate: SR }), useReverb: 0 });
+        off.loadMIDI(SAME_TICK);
+        expect(code(() => off.playMIDI())).toBe("AUDIO_CONTEXT_OFFLINE");
+        const none = new l.Synth({ context: l.at(), useReverb: 0 });
+        none.playMIDI();
+        const tempoOnly = new l.Synth({ context: l.at(), useReverb: 0 });
+        tempoOnly.loadMIDI(toBuf([tempo(0, 500000)]));
+        tempoOnly.playMIDI();
+        expect([none.getPlayStatus().play, tempoOnly.getPlayStatus().play]).toEqual([0, 0]);
+        expect(l.count.sin).toBe(0);
+      }, SLOW);
+
+      test("a lazy synth gets its context from playMIDI() itself (no path reaches it with none), and with no song builds nothing", () => {
+        const l = load(variant);
+        const synth = new l.Synth({ lazy: true, useReverb: 0 });
+        expect(synth.getAudioContext()).toBe(null);
+        synth.playMIDI(); // _live() creates the context before anything else, as for every method
+        expect([synth.getAudioContext() !== null, l.count.sin]).toEqual([true, 0]);
+      }, SLOW);
+
+      test("with loopEnd set the leading rest and startTime stay exact: tick 0 sounds 0.1 s after the build completes", () => {
+        const { l, synth } = fresh();
+        synth.loadMIDI(toBuf([noteOn(480, 9, 42, 100), noteOff(960, 9, 42)])); // a one-beat rest, then the hi-hat
+        synth.setLoop(1);
+        synth.setLoopEnd(1920);
+        l.count.stall = 41;
+        const from = l.trace.length;
+        synth.playMIDI();
+        expect(l.count.sin).toBe(N1);
+        const st = synth.getPlayStatus().startTime;
+        expect(st).toBeCloseTo(1.141, 9);
+        H.runUntil(l.env, () => sources(l.trace, from).some((x) => x.start != null), 2000);
+        expect(sources(l.trace, from)[0].start).toBeCloseTo(st + 0.5, 9); // tick 480 at 120 BPM
+      }, SLOW);
+
+      test("prewarm(): nothing before a context exists, after dispose(), once for repeated calls, and after resume() the next live note starts on time", async () => {
+        const l = load(variant);
+        const lazy = new l.Synth({ lazy: true, useReverb: 0, seed: 2 });
+        expect(lazy.prewarm()).toBe(undefined);
+        expect([lazy.getAudioContext(), l.trace, l.count.sin]).toEqual([null, [], 0]);
+        await lazy.resume();
+        l.env.clock.ms = 1000;
+        lazy.prewarm();
+        lazy.prewarm();
+        expect(l.count.sin, "twice in a row").toBe(N1_44);
+        l.count.stall = 41; // would move a note's onset if anything were still to build
+        const from = l.trace.length;
+        lazy.noteOn(9, 42, 100);
+        expect(sources(l.trace, from)[0].start).toBe(1);
+        expect(l.count.sin).toBe(N1_44);
+        await lazy.dispose();
+        expect(lazy.prewarm()).toBe(undefined);
+        expect(l.count.sin).toBe(N1_44);
       }, SLOW);
     });
 
