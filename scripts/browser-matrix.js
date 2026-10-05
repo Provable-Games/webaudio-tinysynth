@@ -14,7 +14,18 @@
  *                                       --min, the min build is a fresh build of the
  *                                       current source (scripts/test-build.js)
  *   --out=DIR                           write results.json, renders (WAV) and logs there
+ *   --shard=K/N                         run only the selected specs that belong to shard K
+ *                                       of N (see shardLayout); with --list, print all N
+ *   --merge=DIR                         run nothing: check the results.json files under DIR
+ *                                       (one per shard and step, from CI) together, and
+ *                                       print the combined table and the measured times
  *   --list                              print the matrix and exit
+ *
+ * Sharding (CI, .github/workflows/browser-matrix.yml): each engine's specs,
+ * assert and observe, are split across N jobs by their measured seconds in
+ * tests/browser/matrix.js. A shard none of whose specs are selected passes
+ * without launching a browser; --merge then fails unless every engine ran
+ * every declared spec exactly once and every case passed.
  *
  * Each engine runs in its own worker process (this script with --engine=NAME)
  * under scripts/run-with-deadline.js, so a hung browser is killed with the
@@ -43,7 +54,7 @@ const ROOT = path.resolve(__dirname, "..");
 const SPEC_DIR = path.join(ROOT, "tests", "browser", "specs");
 
 function parseArgs(argv) {
-  const o = { engines: null, specs: null, observe: false, seed: MATRIX.seed, overrides: {}, out: null, list: false, engine: null, results: null, orchestrator: false };
+  const o = { engines: null, specs: null, observe: false, seed: MATRIX.seed, overrides: {}, out: null, list: false, engine: null, results: null, orchestrator: false, shard: null, merge: null };
   // A list option must name at least one entry: "--engines=," or "--specs=" would
   // otherwise select nothing and pass without running a browser.
   const list = (name, value) => {
@@ -64,6 +75,11 @@ function parseArgs(argv) {
     else if ((m = /^--min=(.+)$/.exec(a))) o.overrides.min = path.resolve(m[1]);
     else if ((m = /^--out=(.+)$/.exec(a))) o.out = path.resolve(m[1]);
     else if (a === "--list") o.list = true;
+    else if ((m = /^--shard=(\d+)\/(\d+)$/.exec(a))) {
+      o.shard = { k: Number(m[1]), n: Number(m[2]) };
+      if (!(o.shard.n >= 1 && o.shard.k >= 1 && o.shard.k <= o.shard.n)) throw new Error("--shard=K/N needs 1 <= K <= N");
+    }
+    else if ((m = /^--merge=(.+)$/.exec(a))) o.merge = path.resolve(m[1]);
     else if ((m = /^--engine=(.+)$/.exec(a))) o.engine = m[1];
     else if ((m = /^--results=(.+)$/.exec(a))) o.results = path.resolve(m[1]);
     else if (a === "--orchestrator") o.orchestrator = true;
@@ -75,8 +91,31 @@ function parseArgs(argv) {
 }
 
 function selectedSpecs(o) {
-  if (o.specs) return o.specs;
-  return Object.keys(MATRIX.specs).filter((s) => MATRIX.specs[s].kind === "assert" || o.observe);
+  const specs = o.specs || Object.keys(MATRIX.specs).filter((s) => MATRIX.specs[s].kind === "assert" || o.observe);
+  if (!o.shard) return specs;
+  const mine = new Set(shardLayout(o.shard.n)[o.shard.k - 1].specs);
+  return specs.filter((s) => mine.has(s));
+}
+
+/*
+ * Splits every declared spec, assert and observe, across n shards by its
+ * measured seconds (tests/browser/matrix.js): longest first, each to the shard
+ * with the least total so far (the lowest-numbered on a tie). The layout
+ * depends only on the declaration, so every job computes the same one.
+ */
+function shardLayout(n) {
+  const names = Object.keys(MATRIX.specs);
+  const missing = names.filter((s) => !(MATRIX.specs[s].seconds > 0));
+  if (missing.length) throw new Error("sharding needs a measured duration for every spec; add seconds to " + missing.join(", ") + " in tests/browser/matrix.js");
+  if (n > names.length) throw new Error("--shard: " + n + " shards for " + names.length + " specs would leave a shard empty");
+  const shards = Array.from({ length: n }, (_, i) => ({ shard: i + 1 + "/" + n, specs: [], seconds: 0 }));
+  const order = names.slice().sort((a, b) => MATRIX.specs[b].seconds - MATRIX.specs[a].seconds || (a < b ? -1 : 1));
+  for (const name of order) {
+    const target = shards.reduce((least, x) => (x.seconds < least.seconds ? x : least));
+    target.specs.push(name);
+    target.seconds += MATRIX.specs[name].seconds;
+  }
+  return shards;
 }
 
 function printMatrix(o) {
@@ -87,6 +126,11 @@ function printMatrix(o) {
   console.log("  sample rates: " + MATRIX.sampleRates.join(", "));
   console.log("  seed:         " + o.seed + " (test pages only; Math.random replaced before the library loads)");
   console.log("  deadlines:    " + MATRIX.caseDeadline + " s per case (default), " + MATRIX.engineDeadline + " s per engine");
+  if (o.shard) {
+    const layout = shardLayout(o.shard.n);
+    for (const x of o.list ? layout : [layout[o.shard.k - 1]])
+      console.log("  shard " + x.shard + (x.shard === o.shard.k + "/" + o.shard.n ? " (this run)" : "") + ": " + x.specs.join(", ") + " (" + x.seconds + " s measured)");
+  }
   const run = new Set(selectedSpecs(o));
   for (const [name, s] of Object.entries(MATRIX.specs))
     console.log("  spec " + name.padEnd(10) + s.kind.padEnd(8) + ("[" + s.dims.join(" x ") + "]").padEnd(34) + (run.has(name) ? "run   " : "not run") + " " + s.about);
@@ -243,8 +287,13 @@ function stepSummary(all, cross, o, status) {
 }
 
 async function orchestrate(o) {
+  if (o.merge) return merge(o);
   printMatrix(o);
   if (o.list) return 0;
+  if (o.shard && !selectedSpecs(o).length) {
+    console.log("PASS: shard " + o.shard.k + "/" + o.shard.n + " has none of the selected specs; no browser was run");
+    return 0;
+  }
   // The min build is a fresh build of the current source unless --min names a file.
   if (!o.overrides.min) await require("./test-build").prepare();
   console.log("\n== Analysis self-test");
@@ -261,6 +310,7 @@ async function orchestrate(o) {
   // normalized here (absolute paths), never the caller's raw arguments.
   const forward = ["--seed=" + o.seed];
   if (o.specs) forward.push("--specs=" + o.specs.join(","));
+  if (o.shard) forward.push("--shard=" + o.shard.k + "/" + o.shard.n);
   if (o.observe) forward.push("--observe");
   if (o.overrides.source) forward.push("--source=" + o.overrides.source);
   if (o.overrides.min) forward.push("--min=" + o.overrides.min);
@@ -275,6 +325,7 @@ async function orchestrate(o) {
     let res;
     try { res = JSON.parse(fs.readFileSync(resultsFile, "utf8")); } catch { res = { engine, version: null, cases: [] }; }
     if (failure) { ++failed; res.failure = failure; console.log("-- worker " + engine + ": FAILED, " + failure); }
+    if (o.shard) res.shard = o.shard.k + "/" + o.shard.n;
     all[engine] = res;
   }
   const cross = crossEngine(all);
@@ -300,6 +351,82 @@ async function orchestrate(o) {
   }
   stepSummary(all, cross, o, "PASS (" + cases + " cases)");
   console.log("PASS: browser matrix: " + engines.join(", ") + "; " + cases + " cases");
+  return 0;
+}
+
+/* ---------------- merge: the shards of a CI run, checked together ---------------- */
+
+function merge(o) {
+  const files = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(p);
+      else if (entry.name === "results.json") files.push(p);
+    }
+  };
+  if (fs.existsSync(o.merge)) walk(o.merge);
+  files.sort();
+  const problems = [];
+  const all = {};
+  const ran = {}; // engine -> spec -> file
+  const shards = [];
+  for (const file of files) {
+    const rel = path.relative(o.merge, file);
+    let data;
+    try { data = JSON.parse(fs.readFileSync(file, "utf8")); } catch (e) { problems.push(rel + ": unreadable (" + e.message + ")"); continue; }
+    for (const [engine, r] of Object.entries(data)) {
+      if (engine === "crossEngine") continue;
+      if (!MATRIX.engines.includes(engine)) { problems.push(rel + ": undeclared engine " + engine); continue; }
+      if (!r || !r.version) problems.push(rel + ": " + engine + " did not launch: " + String((r && (r.launchError || r.failure)) || "no version").split("\n")[0]);
+      if (r && r.failure) problems.push(rel + ": " + engine + " worker " + r.failure);
+      if (r && r.fatal) problems.push(rel + ": " + engine + " stopped early: " + r.fatal);
+      const cases = (r && Array.isArray(r.cases)) ? r.cases : [];
+      const entry = all[engine] || (all[engine] = { engine, version: r && r.version, platform: r && r.platform, cases: [] });
+      if (r && r.version && entry.version !== r.version) problems.push(rel + ": " + engine + " " + r.version + " differs from " + entry.version + " in another shard");
+      const specs = [...new Set(cases.map((c) => c.spec))];
+      for (const spec of specs) {
+        ran[engine] = ran[engine] || {};
+        if (ran[engine][spec]) problems.push(engine + " ran " + spec + " in two shards (" + ran[engine][spec] + ", " + rel + ")");
+        ran[engine][spec] = rel;
+      }
+      entry.cases.push(...cases);
+      shards.push({ engine, shard: (r && r.shard) || "?", file: rel, specs, seconds: cases.reduce((a, c) => a + (c.seconds || 0), 0) });
+    }
+  }
+  const declared = Object.keys(MATRIX.specs);
+  for (const engine of MATRIX.engines) {
+    const missing = declared.filter((s) => !(ran[engine] && ran[engine][s]));
+    if (missing.length) problems.push(engine + ": no results for " + missing.join(", "));
+  }
+  for (const r of Object.values(all)) for (const c of r.cases) if (c.status === "fail") problems.push(r.engine + " / " + c.id + ": failed");
+  const view = { specs: declared, engines: null, overrides: {}, seed: MATRIX.seed };
+  summarize(all, view);
+  console.log("\n== Shards (case time; each job also spends ~1 min on setup and launches)");
+  for (const x of shards) console.log("  " + (x.engine + " " + x.shard).padEnd(16) + Math.round(x.seconds).toString().padStart(5) + " s  " + x.specs.join(", ") + "  (" + x.file + ")");
+  console.log("\n== Measured seconds per spec (sum of case times) vs declared in tests/browser/matrix.js");
+  const timeRows = [];
+  for (const spec of declared) {
+    const per = MATRIX.engines.map((e) => (all[e] ? all[e].cases.filter((c) => c.spec === spec).reduce((a, c) => a + (c.seconds || 0), 0) : 0));
+    timeRows.push("| " + spec + " | " + MATRIX.specs[spec].seconds + " | " + per.map((v) => v.toFixed(0)).join(" | ") + " |");
+    console.log("  " + spec.padEnd(12) + String(MATRIX.specs[spec].seconds).padStart(5) + " declared  " + MATRIX.engines.map((e, i) => e + " " + per[i].toFixed(0)).join(", "));
+  }
+  const status = problems.length ? "FAIL (" + problems.length + " problems)" : "PASS (" + Object.values(all).reduce((a, r) => a + r.cases.length, 0) + " cases, " + files.length + " result files)";
+  stepSummary(all, [], view, status);
+  if (process.env.GITHUB_STEP_SUMMARY) {
+    const lines = ["", "| engine | shard | case seconds | specs |", "| --- | --- | ---: | --- |",
+      ...shards.map((x) => "| " + x.engine + " | " + x.shard + " | " + Math.round(x.seconds) + " | " + x.specs.join(", ") + " |"),
+      "", "| spec | declared s | " + MATRIX.engines.join(" s | ") + " s |", "| --- | ---: |" + MATRIX.engines.map(() => " ---: |").join(""), ...timeRows];
+    if (problems.length) lines.push("", "Problems:", ...problems.slice(0, 50).map((p) => "- " + p));
+    fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join("\n") + "\n");
+  }
+  if (problems.length) {
+    console.log("\nProblems:");
+    for (const p of problems) console.log("  " + p);
+    console.log("FAIL: browser matrix shards: " + problems.length + " problems in " + files.length + " result files");
+    return 1;
+  }
+  console.log("PASS: browser matrix shards: every declared spec ran once per engine (" + MATRIX.engines.join(", ") + ") and every case passed");
   return 0;
 }
 
@@ -362,4 +489,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { parseArgs };
+module.exports = { parseArgs, shardLayout, selectedSpecs };

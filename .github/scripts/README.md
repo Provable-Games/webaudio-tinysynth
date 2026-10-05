@@ -138,7 +138,7 @@ All jobs run on `ubuntu-24.04-arm`. Both CLIs publish linux-arm64 builds.
 | Claude transcript without an init message, from another working directory, session or file, with a non-read-only tool, or with another model | Fails; a final result alone is never accepted |
 | Trusted configuration changed during the run | Fails before any result is recorded |
 | CLI failure, cancellation, timeout, missing or blank output | Fails. Partial output from a failed run is discarded, even `lgtm`. |
-| Output that is not exactly `lgtm`, valid findings, or `Review incomplete: …` | Fails as incomplete; the raw text is shown in the comment |
+| Output that is not exactly `lgtm`, valid findings, or `Review incomplete: …` | Retried once if it carries no review content (see Retry); otherwise, or if the retry's output is also malformed, fails as incomplete and the raw text is shown in the comment |
 | Output containing a credential value in any detected form | Fails; the output is withheld |
 | Result for a different base or head, or a newer head at publish time | Fails; nothing is published for a stale head |
 | Complete review with only MEDIUM or LOW findings | Passes; the findings stay visible |
@@ -179,6 +179,46 @@ or `### [` and write nothing before, between or after the findings.
   findings. Models sometimes add a sentence such as "I've finished
   reading the files", and rejecting an otherwise valid review for it adds
   noise without adding safety.
+
+## Retry
+
+A model sometimes adds a sentence to an otherwise clean answer. On PR #39,
+Claude wrote "I'm going over the changes to the transport and the timing code
+to finish the review." before `lgtm`, and the review failed closed. Each review
+job therefore retries such output once:
+
+- The first result step records the first attempt as usual and sets the step
+  output `retry=true` only if the output is malformed and carries no review
+  content (`review_lib.retryable_output`): no finding heading, no line that
+  starts like a finding, and no severity word (CRITICAL, HIGH, MEDIUM or LOW, in
+  any case) or `path:line` anywhere. Such text could describe an issue that a
+  second attempt might leave out, so it fails closed without a retry, as do a
+  failed run, withheld output, empty output and the model's own
+  `Review incomplete: …`.
+- The retry runs the same provider with the same prompt, arguments, model,
+  effort and environment. Claude runs again through the same pinned action
+  from the same working directory, verified empty again. Codex runs the same
+  trusted script in a fresh `CODEX_HOME` holding only the first attempt's
+  `auth.json`, because Codex may have refreshed its tokens; the result step
+  screens the output against the secret and both homes, and the cleanup step
+  removes both.
+- The trusted configuration is fingerprinted again after the retry, and its
+  result is recorded only if nothing changed. The retry's result replaces the
+  first one, with every check of a normal result: execution, init message,
+  model, credentials and parsing. The first attempt's record must match this
+  head, base, provider and reviewer and must itself be eligible, or the retry
+  fails.
+- It is bounded: the workflow has one retry step, and a result step given the
+  first attempt (`--previous-out`) never asks for another.
+- The comment keeps its heading and is updated in place. A note under the
+  heading says the review was retried and why, and the first attempt's output
+  follows in a collapsed block. The gate reads the retry's `result.json`, and
+  its summary says the review was retried.
+
+The workflow YAML comes from the pull request, but the helpers come from the
+base. The first result step's command line is therefore unchanged: a base
+whose helper predates the retry sets no `retry` output, and the retry steps
+are skipped.
 
 ## Comments
 
