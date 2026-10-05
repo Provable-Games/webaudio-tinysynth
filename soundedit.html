@@ -589,11 +589,20 @@ function ProgChange(p){
 }
 function SetQuality(n){
   synth.setQuality(n);    // reinstalls the built-in timbres of that quality
+  var failed=null;
   for(var k in edits){
     var mn=k.split(":");
-    synth.setTimbre(+mn[0],+mn[1],edits[k]);   // the editor's timbres stay installed
+    try{
+      synth.setTimbre(+mn[0],+mn[1],edits[k]);   // the editor's timbres stay installed
+    }
+    catch(e){
+      delete edits[k];
+      failed=failed||e;
+    }
   }
   ViewParam(curMidi==9?DrumTimbre(curNote):synth.program[curProg]);
+  if(failed)
+    EditStatus("An edited timbre could not be installed again ("+ErrorText(failed)+"). It is reset.",true);
 }
 function OpenEditor(){
   var e=document.getElementById("soundeditor");
