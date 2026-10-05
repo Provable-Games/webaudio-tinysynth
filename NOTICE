@@ -67,6 +67,10 @@ Modifications by Provable Games, based on upstream commit
     malformed raw MIDI messages are ignored, and loadMIDIUrl() returns a
     cancellable promise that rejects on HTTP, network and parse errors
     and ignores stale responses.
+  - webaudio-tinysynth.js: a note whose computed AudioParam values are
+    outside the 32-bit float range is skipped instead of throwing part-way
+    through, setTimbre() bounds its time fields to that range, and
+    timestamp mode 1 clamps converted times at the current time.
   - webaudio-tinysynth.min.js and its source map are regenerated from
     the modified source.
   - Demo pages and README updated to use the JavaScript API; tests added.
