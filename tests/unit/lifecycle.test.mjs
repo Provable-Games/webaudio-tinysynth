@@ -614,7 +614,7 @@ describe.each(variants)("$name: dispose() (#11)", (variant) => {
       allSoundOff: [0], reset: [], loadMIDI: [MIXED], locateMIDI: [480], playMIDI: [], stopMIDI: [], setMasterVol: [0.3],
       setReverbLev: [0.2], setQuality: [0], setTimbre: [0, 1, [{ w: "square", v: 0.3 }]], setLoop: [1], setLoopEnd: [960], setVoices: [32],
       setTsMode: [0], getPlayStatus: [], getAudioContext: [], getTimbreName: [0, 1], setAudioContext: [other], loadMIDIUrl: [],
-      loadMIDIfromSrc: [], ready: [], resume: [], dispose: [],
+      loadMIDIfromSrc: [], ready: [], resume: [], prewarm: [], dispose: [],
       setHarmonicWave: ["wT11", [0, 0], [0, 1]], setSampleWave: ["nT11", [0.5, -0.5]], // #26 (T11): stored, no audio effect
     };
     const methods = Object.keys(s.synth).filter((k) => typeof s.synth[k] === "function" && k[0] !== "_" && k !== "init");

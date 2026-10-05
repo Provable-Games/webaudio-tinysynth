@@ -8,7 +8,7 @@
  * and sample rate:
  *   - buffers: synths built on an injected OfflineAudioContext at the case's
  *     rate, with the default seed and with every seed in seed-expected.js
- *     (plus useReverb: 0), have convBuf, n0 and n1 whose SHA-256 (computed
+ *     (plus useReverb: 0, which has no convBuf, #18), have convBuf, n0 and n1 whose SHA-256 (computed
  *     here from the page's Float32 data) equals the seeded expectations,
  *     which are computed by an independent reference in Node. Equal hashes in
  *     every engine are cross-engine identity of the data. `seed` and
@@ -55,7 +55,7 @@ const BUFFERS = async ({ sr, list }) => {
   for (const o of list) {
     const synth = new WebAudioTinySynth(Object.assign({ context: new OfflineAudioContext(2, 128, sr) }, o));
     out.push({ seed: synth.seed, bufferVersion: synth.bufferVersion, sr: synth.getAudioContext().sampleRate,
-      convBuf: data(synth.convBuf), n0: data(synth.noiseBuf.n0), n1: data(synth.noiseBuf.n1) });
+      convBuf: synth.convBuf ? data(synth.convBuf) : null, n0: data(synth.noiseBuf.n0), n1: data(synth.noiseBuf.n1) });
     await synth.dispose();
   }
   return out;
@@ -85,7 +85,7 @@ const decode = (b64) => {
   new Uint8Array(copy).set(b);
   return new Float32Array(copy);
 };
-const hashes = (r) => ({ convBuf: A.sha256(...r.convBuf.map(decode)), n0: A.sha256(...r.n0.map(decode)), n1: A.sha256(...r.n1.map(decode)) });
+const hashes = (r) => ({ convBuf: r.convBuf && A.sha256(...r.convBuf.map(decode)), n0: A.sha256(...r.n0.map(decode)), n1: A.sha256(...r.n1.map(decode)) });
 
 /* Largest absolute sample difference between two renders' channels (Infinity if their shapes differ). */
 function maxDiff(a, b) {
@@ -131,9 +131,11 @@ function cases(shared) {
                 const h = hashes(r);
                 if (list[i].useReverb === undefined) bySeed.set(seed, h);
                 if (r.seed !== seed || r.bufferVersion !== E.bufferVersion || r.sr !== sr) bad.push(label(list[i]) + ": seed/version/rate " + [r.seed, r.bufferVersion, r.sr].join("/"));
-                for (const k of ["convBuf", "n0", "n1"]) if (h[k] !== want[seed][k]) bad.push(label(list[i]) + " " + k + " " + h[k].slice(0, 16));
+                // With useReverb 0 there is no convBuf (#18): null, and n0 and n1 are the seed's own.
+                const exp = list[i].useReverb === 0 ? Object.assign({}, want[seed], { convBuf: null }) : want[seed];
+                for (const k of ["convBuf", "n0", "n1"]) if (h[k] !== exp[k]) bad.push(label(list[i]) + " " + k + " " + String(h[k]).slice(0, 16));
               });
-              t.check("load " + (load + 1) + ": convBuf, n0 and n1 equal the seeded expectations at " + sr + " Hz (default seed, " + Object.keys(want).length + " seeds, useReverb 0); seed and bufferVersion " + E.bufferVersion + " read back", !bad.length,
+              t.check("load " + (load + 1) + ": convBuf, n0 and n1 equal the seeded expectations at " + sr + " Hz (default seed, " + Object.keys(want).length + " seeds; with useReverb 0 no convBuf and the same n0 and n1); seed and bufferVersion " + E.bufferVersion + " read back", !bad.length,
                 bad.length ? bad.slice(0, 3).join(" | ") : "default " + want[E.defaultSeed].convBuf.slice(0, 12) + "/" + want[E.defaultSeed].n0.slice(0, 12) + "/" + want[E.defaultSeed].n1.slice(0, 12));
 
               // Read back from the engine, independently of the table's values (#7: different seeds differ).

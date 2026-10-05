@@ -1,6 +1,8 @@
 <!doctype html>
 <html>
 <head>
+<meta charset="utf-8">
+<title>WebAudio-TinySynth JavaScript API Test Page</title>
 <script src="webaudio-tinysynth.js"></script>
 <style>
 button[data-note]{
@@ -11,7 +13,7 @@ button[data-note]{
 }
 </style>
 <script>
-
+var synth;
 /* Starts audio from a user gesture: resume() creates the AudioContext inside
    the event handler and starts it. Called again by later gestures while audio
    is not running, for example after the browser refused to start it. */
@@ -219,7 +221,6 @@ function Test(){
     o.connect(ctx.destination);
     o.start(0);
     o.stop(ctx.currentTime+1);
-    console.log(synth)
   },function(){ /* the audio line shows why audio did not start */ });
 }
 window.onload=Init;
@@ -261,5 +262,8 @@ Play by keys (hold with the mouse or touch, or Space/Enter) :<br/>
   <button data-note="69">A</button>
   <button data-note="71">B</button>
   <button data-note="72">C</button>
+<hr/>
+Fork : <a href="https://github.com/Provable-Games/webaudio-tinysynth">https://github.com/Provable-Games/webaudio-tinysynth</a><br/>
+Upstream : <a href="https://github.com/g200kg/webaudio-tinysynth">https://github.com/g200kg/webaudio-tinysynth</a>
 </body>
 </html>
