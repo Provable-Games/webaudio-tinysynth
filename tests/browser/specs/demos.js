@@ -25,6 +25,14 @@
  *     across a blur, and the latched sustain pedal following a channel change;
  *   - Web MIDI: unsupported, denied, no inputs, inputs appearing and
  *     disappearing (statechange), and a fake input's notes (soundedit);
+ *   - file switch (T9-D3): Play pressed while file A is read, then file B chosen: the waiting
+ *     Play is cancelled whichever read finishes first, and B is installed, stopped;
+ *   - page metadata (T9-D3): title, <meta charset>, fork and upstream links, no implicit
+ *     globals (X7), no console logging (J5); soundedit's editor fits its container (E14)
+ *     and its Patch field is read-only (E13);
+ *   - iOS-style activation (T9-D3, mocked): resume() is refused on the pointerdown, the page
+ *     shows the refusal, and the click that follows retries and starts audio;
+ *   - the MIDI sustain pedal and the page's pedal across a channel change (T9-D3);
  *   - the timbre editor (T9-8): every edit installs a new timbre through
  *     setTimbre() (spied), leaving the previously installed array and the
  *     built-in tables unchanged; the Patch text keeps upstream's keys and
@@ -185,6 +193,42 @@ const AUDIO_PROBE = () => {
 const SLOW_READ = (ms) => {
   const real = FileReader.prototype.readAsArrayBuffer;
   FileReader.prototype.readAsArrayBuffer = function (blob) { setTimeout(() => real.call(this, blob), ms); };
+};
+/* File reads that take longer, by file name: ms is { "a.mid": 800, ... } (others are not delayed). */
+const SLOW_READ_BY = (ms) => {
+  const real = FileReader.prototype.readAsArrayBuffer;
+  FileReader.prototype.readAsArrayBuffer = function (blob) { setTimeout(() => real.call(this, blob), ms[blob.name] || 0); };
+};
+/*
+ * An iOS-style browser (T9-D3): resume() is refused with NotAllowedError, whoever calls it (the page, or
+ * the synth's own resume when it creates the context), until a click has arrived: the pointerdown that
+ * comes first does not count. The context reports "suspended" until a resume() succeeds, even where the
+ * real browser would already run it. After the click, resume() works as in the real browser. window.__ios counts the calls.
+ */
+const IOS_STYLE = () => {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  const realResume = AC.prototype.resume;
+  let proto = AC.prototype, desc = null;
+  while (proto && !(desc = Object.getOwnPropertyDescriptor(proto, "state"))) proto = Object.getPrototypeOf(proto);
+  const ios = window.__ios = { resumes: 0, refused: 0, allowed: false, started: false };
+  window.addEventListener("click", () => { ios.allowed = true; }, true); // registered before the page's listeners
+  Object.defineProperty(AC.prototype, "state", { configurable: true, get() { return ios.started ? desc.get.call(this) : "suspended"; } });
+  AC.prototype.resume = function () {
+    ios.resumes++;
+    if (!ios.allowed) {
+      ios.refused++;
+      return Promise.reject(new DOMException("Needs a click, not a pointerdown", "NotAllowedError"));
+    }
+    return realResume.call(this).then(() => { ios.started = true; });
+  };
+};
+/* Names the page added to window with an implicit global (a configurable property), without the library's class. */
+const IMPLICIT_GLOBALS = () => {
+  const f = document.createElement("iframe");
+  document.body.appendChild(f);
+  const base = new Set(Object.getOwnPropertyNames(f.contentWindow));
+  f.remove();
+  return Object.getOwnPropertyNames(window).filter((k) => !base.has(k) && !/^(\d+|__.*|WebAudioTinySynth)$/.test(k) && Object.getOwnPropertyDescriptor(window, k).configurable);
 };
 /* A browser that refuses to start audio: contexts stay "suspended" and resume() rejects. */
 const RESUME_REJECT = () => {
@@ -986,6 +1030,47 @@ function soundeditReleaseCase() {
         const h = await held(p);
         t.check("MIDI input: unchecking Sustain then releases the note", h.voices.length === 0, JSON.stringify(h));
       }
+      {
+        // T9-D3: the page's pedal and the MIDI pedal each keep a channel sustained until both are up.
+        const rec = await open("one"), p = rec.page;
+        await p.waitForFunction(() => document.getElementById("midiport").options.length === 2);
+        const midi = (bytes) => p.evaluate((b) => window.__fakeMidi.send("in-1", b), bytes);
+        const state = async () => { await sleep(200); return p.evaluate(() => ({ held: window.synth.notetab.filter((nt) => nt.e >= 99999).map((nt) => nt.ch + ":" + nt.n), cc: [synth.sustain[0], synth.sustain[1]] })); };
+        // 1. Channel change with the checkbox down and a MIDI pedal down on the old channel.
+        await p.check("#sus");
+        await midi([0xb0, 64, 127]); await midi([0x90, 60, 90]); await midi([0x80, 60, 0]);
+        await p.selectOption("#ch", { index: 1 });
+        let st = await state();
+        t.check("pedal: a channel change leaves the old channel sustained while the MIDI pedal holds it", st.held.includes("0:60") && st.cc[0] >= 64 && st.cc[1] >= 64, JSON.stringify(st));
+        await midi([0xb0, 64, 0]);
+        st = await state();
+        t.check("pedal: the MIDI pedal-up then releases the old channel; the page's pedal stays on the new one", !st.held.includes("0:60") && st.cc[0] < 64 && st.cc[1] >= 64, JSON.stringify(st));
+        // 2. The same without a MIDI pedal: the old channel's pedal does go up.
+        await p.selectOption("#ch", { index: 0 });
+        st = await state();
+        t.check("pedal: a channel change without a MIDI pedal moves the page's pedal", st.cc[0] >= 64 && st.cc[1] < 64, JSON.stringify(st));
+        await p.uncheck("#sus");
+        // 3. Unchecking Sustain while the MIDI pedal holds the channel keeps it sustained.
+        await midi([0xb0, 64, 127]); await midi([0x90, 62, 90]); await midi([0x80, 62, 0]);
+        await p.check("#sus");
+        await p.uncheck("#sus");
+        st = await state();
+        t.check("pedal: unchecking Sustain leaves a channel the MIDI pedal holds sustained", st.held.includes("0:62") && st.cc[0] >= 64, JSON.stringify(st));
+        await midi([0xb0, 64, 0]);
+        st = await state();
+        t.check("pedal: the MIDI pedal-up then releases it", !st.held.includes("0:62") && st.cc[0] < 64, JSON.stringify(st));
+        // 4. A MIDI pedal-up on the channel the page's pedal holds does not release it.
+        await p.selectOption("#ch", { index: 1 });
+        await p.check("#sus");
+        await midi([0xb1, 64, 127]); await midi([0x91, 64, 90]); await midi([0x81, 64, 0]);
+        await midi([0xb1, 64, 0]);
+        st = await state();
+        t.check("pedal: a MIDI pedal-up does not release the channel the page's pedal holds", st.held.includes("1:64") && st.cc[1] >= 64, JSON.stringify(st));
+        await p.uncheck("#sus");
+        st = await state();
+        t.check("pedal: unchecking Sustain then releases it", !st.held.includes("1:64") && st.cc[1] < 64, JSON.stringify(st));
+        t.check("pedal: no page errors", !rec.pageErrors.length, rec.pageErrors.join(" | "));
+      }
       /* eslint-enable no-undef */
     }),
   };
@@ -1198,12 +1283,172 @@ function editorCase() {
   };
 }
 
+/*
+ * T9-D3: page metadata and small fixes. Every demo has a <title>, a <meta charset> and links to both
+ * this fork and upstream (T9-10, J5), declares every global it uses (X7), and soundedit's editor
+ * fits its container (E14), says its Patch text is output only (E13) and has no typos in About.
+ */
+const FORK_URL = "https://github.com/Provable-Games/webaudio-tinysynth";
+const UPSTREAM_URL = "https://github.com/g200kg/webaudio-tinysynth";
+
+function metaCase(demo) {
+  return {
+    id: "demos page metadata " + demo,
+    dims: { demo },
+    deadline: 60,
+    run: (t) => withStaticServer(async (srv) => {
+      const rec = await openDemo(t, srv, demo, { initScripts: [[MIDI_STUB, "empty"]] });
+      const p = rec.page;
+      /* eslint-disable no-undef -- these callbacks run in the page */
+      const meta = await p.evaluate(() => ({
+        title: document.title, charset: document.characterSet, metaCharset: !!document.querySelector("meta[charset]"),
+        quirks: document.compatMode, hrefs: Array.from(document.links).map((a) => a.href),
+        rels: Array.from(document.links).filter((a) => a.target === "_blank").map((a) => a.rel),
+      }));
+      t.check("has a title naming TinySynth", /TinySynth/.test(meta.title) && meta.title.length < 80, JSON.stringify(meta.title));
+      t.check("declares UTF-8 with a <meta charset>", meta.metaCharset && meta.charset === "UTF-8", JSON.stringify({ metaCharset: meta.metaCharset, charset: meta.charset }));
+      t.check("standards mode", meta.quirks === "CSS1Compat", meta.quirks);
+      t.check("links to this fork and keeps the upstream credit", meta.hrefs.includes(FORK_URL) && meta.hrefs.includes(UPSTREAM_URL), meta.hrefs.join(" "));
+      t.check("links that open a new tab say rel=noopener", meta.rels.every((r) => /noopener/.test(r)), JSON.stringify(meta.rels));
+      if (demo === "soundedit") {
+        t.check("the logo still links to g200kg.com", meta.hrefs.includes("http://www.g200kg.com/"), meta.hrefs.join(" "));
+        await p.click("text=About");
+        const about = await p.evaluate(() => document.getElementById("aboutcontents").textContent);
+        t.check("About has no typos (webauido, algolithmically)", !/webauido|algolithmically/.test(about) && /algorithmically/.test(about), about.slice(0, 200));
+        await p.click("text=Timbre Editor");
+        await p.selectOption("#oscs", "4");
+        await p.fill("#v1", "0.66");
+        const lay = await p.evaluate(() => {
+          const r = (e) => e.getBoundingClientRect();
+          const box = r(document.getElementById("soundeditor")), tbl = r(document.querySelector("#soundeditor table")), base = r(document.getElementById("base"));
+          const ks = [1, 2, 3, 4].map((i) => r(document.getElementById("k" + i)).right);
+          return { box: box.right, tbl: tbl.right, base: base.right, k: Math.max(...ks), patchReadOnly: document.getElementById("patch").readOnly, patchLabel: document.getElementById("soundeditor").textContent };
+        });
+        t.check("E14: the editor table and its K column fit inside the editor", lay.tbl <= lay.box + 0.5 && lay.k <= lay.box + 0.5 && lay.k <= lay.base, JSON.stringify(lay));
+        t.check("E13: the Patch field is read-only and says it is output", lay.patchReadOnly && /Patch \(output only/.test(lay.patchLabel), JSON.stringify({ ro: lay.patchReadOnly }));
+        await shot(t, rec, "soundedit-editor-fit");
+      }
+      if (demo === "jstest") {
+        await p.click("text=Load (ws.mid)");
+        await p.click("text=Test audioContext");
+        await sleep(500);
+      }
+      const globals = await p.evaluate(IMPLICIT_GLOBALS);
+      t.check("X7: no implicit globals (every name the page uses is declared)", globals.length === 0, globals.join(","));
+      const logs = rec.console.filter((m) => m.type === "log").map((m) => m.text);
+      t.check("J5: the page logs nothing to the console", logs.length === 0, logs.join(" | "));
+      /* eslint-enable no-undef */
+      t.check("no request leaves 127.0.0.1", rec.remote.length === 0, rec.remote.join(" "));
+      t.check("no page errors", !rec.pageErrors.length, rec.pageErrors.join(" | "));
+    }),
+  };
+}
+
+/*
+ * iOS-style activation (T9-D3): the browser refuses the first resume(), which runs on the pointerdown,
+ * and accepts it on the click that follows. Mocked (IOS_STYLE); real iOS is not available here. After
+ * the pointerdown the page shows the refusal; the click retries and starts audio, with one AudioContext.
+ */
+function iosCase(demo) {
+  return {
+    id: "demos audio start ios " + demo,
+    dims: { demo },
+    deadline: 90,
+    run: (t) => withStaticServer(async (srv) => {
+      const rec = await openPage(t, srv, demo, { initScripts: [[IOS_STYLE], [AUDIO_PROBE]].concat(demo === "soundedit" ? [[MIDI_STUB, "empty"]] : []) });
+      const p = rec.page;
+      await sleep(PRE_GESTURE_MS);
+      const b = await box(p, "h1");
+      await p.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+      const downAt = Date.now();
+      await p.mouse.down();
+      const refused = await waitAudio(rec, (x) => x.at > downAt && /^Audio could not start/.test(x.text), GESTURE_WAIT_MS);
+      t.check("pointerdown: the refused resume() is shown with its error",
+        !!refused && refused.text === "Audio could not start (NotAllowedError: Needs a click, not a pointerdown). Click, tap or press a key to try again." && refused.error && refused.visible && refused.state === "suspended",
+        JSON.stringify(refused || audioStates(rec).slice(-1)[0]));
+      await sleep(600);
+      const still = audioStates(rec).slice(-1)[0];
+      t.check("pointerdown: the refusal stays shown while the button is held", /^Audio could not start/.test(still.text) && still.state === "suspended" && still.contexts === 1, JSON.stringify(still));
+      await shot(t, rec, demo + "-audio-ios-refused");
+      const upAt = Date.now();
+      await p.mouse.up();   // the click
+      const running = await waitAudio(rec, (x) => x.at > upAt && x.state === "running" && x.text === "Audio is on.", GESTURE_WAIT_MS);
+      const now = audioStates(rec).slice(-1)[0];
+      t.check("click: retries, starts audio and the page says so", !!running && !running.error, JSON.stringify(running || now));
+      const ios = await p.evaluate(() => window.__ios); // eslint-disable-line no-undef -- runs in the page
+      t.check("click: one AudioContext, resume() was refused before it and accepted after it", !!running && running.contexts === 1 && now.contexts === 1 && ios.refused >= 1 && ios.resumes > ios.refused && ios.allowed, now.contexts + " contexts " + JSON.stringify(ios));
+      await sleep(300);
+      const last = audioStates(rec).slice(-1)[0];
+      t.check("click: the refusal is gone and stays gone", last.text === "Audio is on." && !last.error, JSON.stringify(last));
+      t.check("no request leaves 127.0.0.1, no unhandled rejections, no page errors", rec.remote.length === 0 && last.rejections === 0 && !rec.pageErrors.length, rec.remote.concat(rec.pageErrors).join(" | ") + " " + last.rejections + " rejections");
+      t.check("no console errors", !rec.consoleErrors.length, rec.consoleErrors.join(" | "));
+    }),
+  };
+}
+
+/*
+ * File switch while Play waits (Codex MEDIUM on PR #60): file A is chosen, Play is pressed while A is
+ * being read, then file B is chosen. The newest choice wins whichever read finishes first: the waiting
+ * Play is cancelled, so neither the previous song (A first) nor B (B first) starts by itself; B is
+ * installed, stopped, and the next Play plays it.
+ */
+function fileSwitchCase() {
+  const song = (ticks) => require("../lib/smf").write({ tracks: [[{ dt: 0, bytes: [0x90, 60, 100] }, { dt: ticks, bytes: [0x80, 60, 0] }]] });
+  const FILES = { prev: song(960), a: song(480), b: song(1440) };
+  const TICKS = { prev: 960, a: 480, b: 1440 };
+  const scenarios = [
+    { label: "A finishes first, with a previous song", prev: true, delays: { "a.mid": 800, "b.mid": 2600 }, between: 1500 },
+    { label: "B finishes first, with a previous song", prev: true, delays: { "a.mid": 2400, "b.mid": 500 }, between: 3300 },
+    { label: "B finishes first, no previous song", prev: false, delays: { "a.mid": 2400, "b.mid": 500 }, between: 3300 },
+  ];
+  return {
+    id: "demos file switch soundedit",
+    dims: { demo: "soundedit" },
+    deadline: 120,
+    run: (t) => withStaticServer(async (srv) => {
+      /* eslint-disable no-undef -- these callbacks run in the page */
+      const status = (p) => p.evaluate(() => window.synth.getPlayStatus());
+      for (const sc of scenarios) {
+        const rec = await openDemo(t, srv, "soundedit", { initScripts: [[AUDIO_PROBE], [MIDI_STUB, "empty"], [SLOW_READ_BY, sc.delays]] });
+        const p = rec.page, seen = [];
+        await p.route("**/ws.mid", (route) => { seen.push(route.request().url()); return route.continue(); });
+        const play = () => p.click("button:text-is('Play')");
+        if (sc.prev) {
+          await setFile(p, "#file", "prev.mid", FILES.prev);
+          await waitText(p, "message", /^Loaded prev\.mid/);
+        }
+        const t0 = Date.now();
+        await setFile(p, "#file", "a.mid", FILES.a);
+        await play();
+        await setFile(p, "#file", "b.mid", FILES.b);
+        await sleep(Math.max(0, sc.between - (Date.now() - t0)));
+        const mid = await status(p);
+        const wantMid = sc.delays["b.mid"] < sc.delays["a.mid"] ? TICKS.b : (sc.prev ? TICKS.prev : 0);
+        t.check(sc.label + ": after the first read finishes, nothing is playing", mid.play === 0 && mid.maxTick === wantMid, JSON.stringify(mid) + " want maxTick " + wantMid);
+        const m = await waitText(p, "message", /^Loaded b\.mid/, 6000);
+        await sleep(400);
+        const st = await status(p);
+        t.check(sc.label + ": the newest file is installed and stopped", st.play === 0 && st.maxTick === TICKS.b && m.text === "Loaded b.mid. Press Play.", JSON.stringify({ st, m: m.text }));
+        await play();
+        const st2 = await status(p);
+        t.check(sc.label + ": Play then plays the newest file, and ws.mid is not requested", st2.play === 1 && st2.maxTick === TICKS.b && seen.length === 0, JSON.stringify({ st2, requests: seen.length }));
+        await p.click("button:text-is('Stop')");
+        t.check(sc.label + ": no unhandled rejections, page or console errors", (await p.evaluate(() => window.__audio.rejections)) === 0 && !rec.pageErrors.length && !rec.consoleErrors.length, rec.pageErrors.concat(rec.consoleErrors).join(" | "));
+      }
+      /* eslint-enable no-undef */
+    }),
+  };
+}
+
 function cases() {
   return [
     ...DEMOS.map(loadCase),
     ...DEMOS.map(audioCase),
     urlCase("jstest"),
     urlCase("soundedit"),
+    fileSwitchCase(),
+    ...DEMOS.map(metaCase),
+    ...DEMOS.map(iosCase),
     ...DEMOS.map(fileCase),
     simpleReleaseCase(),
     jstestReleaseCase(),
