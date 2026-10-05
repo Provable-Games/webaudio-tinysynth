@@ -26,8 +26,9 @@ const f32=x=>isFinite(Math.fround(x));
    draws on, so the streams never overlap and no buffer's samples depend on another's. The
    mix keeps seeds that differ by mulberry32's increment or by 2^30 from giving shifted
    copies of each other's buffers. The same seed, version and sample rate give the same
-   Float32 data. The impulse is made only with useReverb (#18); that changes no data and no other
-   buffer's stream. Any change to the generated data must increment the version. */
+   Float32 data. The impulse is made only with useReverb, and n1 when it is first read (#18);
+   neither changes any data or another buffer's stream. Any change to the generated data must
+   increment the version. */
 function mulberry32(a){
   return ()=>{
     a=a+0x6d2b79f5|0;
@@ -35,6 +36,29 @@ function mulberry32(a){
     t=t+Math.imul(t^t>>>7,61|t)^t;
     return ((t^t>>>14)>>>0)/4294967296;
   };
+}
+
+/* Defines o.n1 (#18) as buffer b, filled from generator g (stream 2) when it is first read. The
+   metallic noise (64 passes of sine products) is nearly all of an install's time, and only the
+   cymbal and hi-hat timbres play it. Its stream is its own, so the data is the same whenever the
+   read happens: the first note that plays n1, or code reading noiseBuf.n1. After the read, or an
+   assignment, n1 is a plain data property. Defined at module level so that it closes over
+   nothing but o, b and g, never the synth or its context. */
+function lazyN1(o,b,g){
+  const set=v=>Object.defineProperty(o,"n1",{value:v,writable:true,enumerable:true,configurable:true});
+  Object.defineProperty(o,"n1",{enumerable:true,configurable:true,set,get:()=>{
+    const dr=b.getChannelData(0),blen=dr.length;
+    for(let jj=0;jj<64;++jj){
+      const r1=g()*10+1;
+      const r2=g()*10+1;
+      for(let i=0;i<blen;++i){
+        const dd=Math.sin((i/blen)*2*Math.PI*440*r1)*Math.sin((i/blen)*2*Math.PI*440*r2);
+        dr[i]+=dd/8;
+      }
+    }
+    set(b);
+    return b;
+  }});
 }
 
 function WebAudioTinySynthCore(target) {
@@ -1674,20 +1698,10 @@ function WebAudioTinySynthCore(target) {
       }
       this.noiseBuf={};
       this.noiseBuf.n0=this.actx.createBuffer(1,blen,this.actx.sampleRate);
-      this.noiseBuf.n1=this.actx.createBuffer(1,blen,this.actx.sampleRate);
-      const dn=this.noiseBuf.n0.getChannelData(0),dr=this.noiseBuf.n1.getChannelData(0);
-      let g=rnd(1);
+      lazyN1(this.noiseBuf,this.actx.createBuffer(1,blen,this.actx.sampleRate),rnd(2));
+      const dn=this.noiseBuf.n0.getChannelData(0),g=rnd(1);
       for(let i=0;i<blen;++i)
         dn[i]=g()*2-1;
-      g=rnd(2);
-      for(let jj=0;jj<64;++jj){
-        const r1=g()*10+1;
-        const r2=g()*10+1;
-        for(let i=0;i<blen;++i){
-          var dd=Math.sin((i/blen)*2*Math.PI*440*r1)*Math.sin((i/blen)*2*Math.PI*440*r2);
-          dr[i]+=dd/8;
-        }
-      }
       if(this.useReverb){
         this.conv=this.actx.createConvolver();
         this.conv.buffer=this.convBuf;

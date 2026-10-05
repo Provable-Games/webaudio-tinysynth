@@ -111,6 +111,176 @@ for (const variant of variants) {
       }, SLOW);
     });
 
+    describe("n1 is generated when it is first read", () => {
+      test("construction, melodic notes and an n0 drum generate nothing; the first n1 note makes the seeded data, once", () => {
+        for (const quality of [0, 1]) {
+          const l = load(variant);
+          const seed = 12345;
+          const synth = new l.Synth({ context: l.at(), quality, seed, useReverb: 0 });
+          expect([l.count.sin, hasGetter(synth)]).toEqual([0, true]);
+          synth.noteOn(0, 60, 100, 0);
+          synth.noteOn(9, quality ? 38 : 35, 100, 0); // an n0 (or, in quality 0, a melodic) hit
+          synth.noteOn(9, 38, 100, 0.1);
+          expect([l.count.sin, hasGetter(synth)], "quality " + quality).toEqual([0, true]);
+          synth.setTimbre(1, 42, [{ w: "n1", t: 0, f: 440, v: 0.3, d: 0.1, r: 0.1 }]);
+          const from = l.trace.length;
+          synth.noteOn(9, 42, 100, 0.2);
+          expect(l.count.sin, "quality " + quality).toBe(SIN_N1(SR));
+          const d = Object.getOwnPropertyDescriptor(synth.noiseBuf, "n1");
+          expect([typeof d.get, d.enumerable, d.writable, d.configurable]).toEqual(["undefined", true, true, true]);
+          const src = ops(l.trace.slice(from), "buffer").find((x) => /^src#/.test(x[1]));
+          expect(src && src[2]).toBe(synth.noiseBuf.n1._id);
+          expect(hashOf(synth.noiseBuf.n1)).toBe(want("n1", seed, SR));
+          synth.noteOn(9, 42, 100, 0.4);
+          synth.noteOn(9, 42, 100, 0.5);
+          expect(l.count.sin, "no refill").toBe(SIN_N1(SR));
+        }
+      }, SLOW);
+
+      test("a custom n1 timbre in quality 0 plays the seeded data on its first note", () => {
+        const l = load(variant);
+        const seed = 99;
+        const synth = new l.Synth({ context: l.at(), quality: 0, seed, useReverb: 0 });
+        synth.setTimbre(0, 0, [{ w: "n1", v: 0.3, a: 0, d: 0.2, s: 0.5, r: 0.1 }]);
+        expect(l.count.sin).toBe(0);
+        const from = l.trace.length;
+        synth.noteOn(0, 60, 100, 0);
+        const lines = l.trace.slice(from).map((x) => JSON.parse(x));
+        const buf = lines.find((x) => x[0] === "buffer" && /^src#/.test(x[1]));
+        expect(buf && buf[2]).toBe(synth.noiseBuf.n1._id);
+        expect(l.count.sin).toBe(SIN_N1(SR));
+        expect(hashOf(synth.noiseBuf.n1)).toBe(want("n1", seed, SR));
+      }, SLOW);
+
+      test("reading noiseBuf.n1 gives the seeded data at 44.1 kHz, the same object each time, and no refill", () => {
+        const l = load(variant);
+        const synth = new l.Synth({ context: l.at(44100), seed: 0xffffffff, useReverb: 0 });
+        const n1 = synth.noiseBuf.n1;
+        expect(hashOf(n1)).toBe(E.hashes[44100][0xffffffff].n1);
+        expect(synth.noiseBuf.n1).toBe(n1);
+        n1.getChannelData(0)[0] = 0.5; // a refill would overwrite it
+        expect(synth.noiseBuf.n1.getChannelData(0)[0]).toBe(0.5);
+      }, SLOW);
+
+      test("the data does not depend on what ran before the read: other buffers, notes, setQuality, an unrelated install", () => {
+        const seed = 0x5eed0001;
+        for (const order of ["n0 first", "n1 first", "after notes and setQuality", "after a replaced install"]) {
+          const l = load(variant);
+          const synth = new l.Synth({ context: l.at(), seed });
+          if (order === "n0 first") synth.noiseBuf.n0;
+          if (order === "after notes and setQuality") {
+            synth.noteOn(0, 60, 100, 0);
+            synth.noteOn(9, 38, 100, 0);
+            synth.setQuality(0);
+            synth.setQuality(1);
+          }
+          if (order === "after a replaced install") {
+            synth.setAudioContext(l.at());
+            synth.setAudioContext(l.at());
+          }
+          expect([hashOf(synth.noiseBuf.n0), hashOf(synth.noiseBuf.n1)], order).toEqual([want("n0", seed, SR), want("n1", seed, SR)]);
+        }
+      }, SLOW);
+
+      test("a buffer assigned before the first read replaces it without generating", () => {
+        const l = load(variant);
+        const synth = new l.Synth({ context: l.at(), useReverb: 0 });
+        const mine = synth.getAudioContext().createBuffer(1, 100, SR);
+        synth.noiseBuf.n1 = mine;
+        expect(synth.noiseBuf.n1).toBe(mine);
+        const d = Object.getOwnPropertyDescriptor(synth.noiseBuf, "n1");
+        expect([typeof d.get, d.enumerable]).toEqual(["undefined", true]);
+        synth.setTimbre(1, 42, [{ w: "n1", t: 0, f: 440, d: 0.1 }]);
+        const from = l.trace.length;
+        synth.noteOn(9, 42, 100, 0);
+        const buf = l.trace.slice(from).map((x) => JSON.parse(x)).find((x) => x[0] === "buffer" && /^src#/.test(x[1]));
+        expect(buf && buf[2]).toBe(mine._id);
+        expect(l.count.sin).toBe(0);
+      }, SLOW);
+
+      test("noiseBuf keeps its keys, n0 then n1; listing the keys generates nothing, listing the entries does", () => {
+        const l = load(variant);
+        const synth = new l.Synth({ context: l.at(), useReverb: 0, seed: 5 });
+        expect(Object.keys(synth.noiseBuf)).toEqual(["n0", "n1"]);
+        expect(l.count.sin).toBe(0);
+        const entries = Object.entries(synth.noiseBuf);
+        expect(entries.map((e) => e[0])).toEqual(["n0", "n1"]);
+        expect(hashOf(entries[1][1])).toBe(want("n1", 5, SR));
+        expect(Object.keys(synth.noiseBuf)).toEqual(["n0", "n1"]);
+      }, SLOW);
+
+      test("a registered wave named like a built-in noise stays rejected, and registered waves do not read n1", () => {
+        const l = load(variant);
+        const synth = new l.Synth({ context: l.at(), useReverb: 0 });
+        synth.setSampleWave("nSaw", [-1, -0.5, 0, 0.5]);
+        synth.setTimbre(0, 0, [{ w: "nSaw" }, { w: "n0" }]);
+        synth.noteOn(0, 60, 100, 0);
+        expect(() => synth.setSampleWave("n1", [0, 1])).toThrow();
+        expect(l.count.sin).toBe(0);
+        expect(hasGetter(synth)).toBe(true);
+      }, SLOW);
+    });
+
+    describe("disposal and replacement", () => {
+      test("dispose() before any n1 read does no generation and leaves nothing", async () => {
+        const l = load(variant);
+        const synth = new l.Synth({ context: l.at(), seed: 3 });
+        const held = synth.noiseBuf; // a caller's own reference keeps working as data
+        await synth.dispose();
+        expect([synth.noiseBuf, synth.convBuf, synth.getAudioContext()]).toEqual([null, null, null]);
+        expect(l.count.sin).toBe(0);
+        expect(hashOf(held.n1)).toBe(want("n1", 3, SR)); // a held reference still reads the seeded data
+        // A dead synth stays dead: no later note reads anything.
+        synth.noteOn(9, 42, 100, 0);
+        expect(synth.noiseBuf).toBe(null);
+      }, SLOW);
+
+      test("a lazy synth that is never started, and one disposed unused, generate nothing", async () => {
+        const l = load(variant);
+        const a = new l.Synth({ lazy: true });
+        await a.dispose();
+        const b = new l.Synth({ lazy: true });
+        b.noteOn(0, 60, 100, 0); // starts: installs
+        await b.dispose();
+        expect(l.count.sin).toBe(0);
+      }, SLOW);
+
+      test("replacing the context before the first read: the new install makes its own, at its own rate", () => {
+        const l = load(variant);
+        const seed = 21;
+        const synth = new l.Synth({ context: l.at(SR), seed });
+        const first = synth.noiseBuf;
+        synth.setAudioContext(l.at(16000));
+        expect(l.count.sin).toBe(0);
+        expect(synth.noiseBuf === first).toBe(false); // not toBe(): a failed Object.is makes vitest deep-compare, reading both n1
+        const n1 = synth.noiseBuf.n1;
+        expect([n1.length, n1.sampleRate]).toEqual([8000, 16000]);
+        expect(hashOf(n1)).toBe(want("n1", seed, 16000));
+        expect(l.count.sin).toBe(SIN_N1(16000));
+      }, SLOW);
+
+      test("a disposed synth's context can be collected: nothing keeps it (no global cache)", async () => {
+        v8.setFlagsFromString("--expose-gc");
+        const gc = vm.runInNewContext("gc");
+        const l = load(variant);
+        const refs = [];
+        const make = async () => {
+          const ctx = l.at();
+          refs.push(new WeakRef(ctx));
+          const synth = new l.Synth({ context: ctx, useReverb: 1 });
+          synth.noteOn(0, 60, 100, 0);
+          await synth.dispose();
+        };
+        await make();
+        await make();
+        for (let i = 0; i < 5 && refs.some((r) => r.deref()); ++i) {
+          await new Promise((r) => setTimeout(r, 10));
+          gc();
+        }
+        expect(refs.map((r) => r.deref() === undefined)).toEqual([true, true]);
+      }, SLOW);
+    });
+
     describe("the constructor installs the built-in timbres once", () => {
       test("the number of timbre installs equals one setQuality() call, with and without a quality option", () => {
         const l = load(variant);
