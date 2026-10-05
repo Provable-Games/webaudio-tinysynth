@@ -12,8 +12,74 @@ button[data-note]{
 </style>
 <script>
 
+/* Starts audio from a user gesture: resume() creates the AudioContext inside
+   the event handler and starts it. Called again by later gestures while audio
+   is not running, for example after the browser refused to start it. */
+var audioError=null;
+function startAudio(){
+  var c=synth.getAudioContext();
+  if(c&&c.state=="running")
+    return;
+  audioError=null;
+  synth.resume().then(audioStatus,function(e){
+    audioError=e;
+    audioStatus();
+  });
+  audioStatus();
+}
+/* Shows whether audio is off, blocked, running, or failed to start. */
+function audioStatus(){
+  var c=synth.getAudioContext(), s=c?c.state:"", text, error=false;
+  if(s=="running"){
+    text="Audio is on.";
+    audioError=null;
+  }
+  else if(s=="closed")
+    text="Audio is closed. Reload the page to start it again.";
+  else if(audioError){
+    text="Audio could not start ("+errorText(audioError)+"). Click, tap or press a key to try again.";
+    error=true;
+  }
+  else if(c)
+    text="Audio is blocked by the browser. Click, tap or press a key to start it.";
+  else
+    text="Audio is off. Click, tap or press a key to start it.";
+  var m=document.getElementById("audio");
+  if(m.textContent!=text||m.className!=(error?"error":"")){
+    m.textContent=text;
+    m.className=error?"error":"";
+  }
+}
+/* An error's code (and HTTP status), or its name, with its message. */
+function errorText(e){
+  if(!e)
+    return "unknown error";
+  if(e.code){
+    var t=e.message&&e.message.indexOf(e.code)==0?e.message:e.code+(e.message?": "+e.message:"");
+    return e.status!=undefined?t+" "+e.status:t;
+  }
+  return (e.name||"Error")+(e.message?": "+e.message:"");
+}
+/* The newest song load wins: a new URL load supersedes a pending one, choosing
+   a file cancels it, and a stale file read is ignored. A superseded or
+   cancelled load shows nothing; the newer load reports instead. */
+var urlLoad=null;   // the AbortController of the pending URL load
 function loadMidiUrl(){
-  synth.loadMIDIUrl('ws.mid');
+  var url="ws.mid";
+  ++loadCount;
+  var ctl=urlLoad=new AbortController();
+  showMessage("Loading "+url+"...");
+  synth.loadMIDIUrl(url,{signal:ctl.signal}).then(function(){
+    if(urlLoad==ctl)
+      urlLoad=null;
+    showMessage("Loaded "+url+". Press Play.");
+  },function(e){
+    if(urlLoad==ctl)
+      urlLoad=null;
+    if(e.code=="LOAD_SUPERSEDED"||e.name=="AbortError")
+      return;
+    showMessage("Could not load "+url+" ("+errorText(e)+"). The current song is unchanged.",true);
+  });
 }
 function showMessage(text,error){
   var m=document.getElementById("message");
@@ -27,6 +93,10 @@ function loadMidi(files){
   if(!file){
     showMessage("No file selected. The current song is unchanged.");
     return;
+  }
+  if(urlLoad){
+    urlLoad.abort();
+    urlLoad=null;
   }
   var reader = new FileReader();
   reader.onload=(e)=>{
@@ -107,7 +177,12 @@ function noteButton(b){
   b.addEventListener("focusout",function(){noteOff(n+"k");});
 }
 function Init(){
-  synth=new WebAudioTinySynth({voices:64});
+  /* lazy: no AudioContext exists until the first click, tap, key press or
+     change on the page, which starts audio (startAudio). */
+  synth=new WebAudioTinySynth({voices:64,lazy:true});
+  ["pointerdown","keydown","click","change"].forEach(function(type){
+    window.addEventListener(type,startAudio,true);
+  });
   for(var i=0;i<128;++i){
     var o=document.createElement("option");
     o.innerHTML=synth.getTimbreName(0,i);
@@ -131,16 +206,21 @@ function Init(){
   var showStatus=function(){
     var st=synth.getPlayStatus();
     document.getElementById("status").innerHTML="Play:"+st.play+"  Pos:"+st.curTick+"/"+st.maxTick;
+    audioStatus();
   };
   showStatus();   // at once: a line filled in 100 ms later would move the buttons below it
   setInterval(showStatus,100);
 }
 function Test(){
-  var o=synth.getAudioContext().createOscillator();
-  o.connect(synth.getAudioContext().destination);
-  o.start(0);
-  o.stop(synth.getAudioContext().currentTime+1);
-  console.log(synth)
+  // The click started audio; the AudioContext exists from then on.
+  synth.resume().then(function(){
+    var ctx=synth.getAudioContext();
+    var o=ctx.createOscillator();
+    o.connect(ctx.destination);
+    o.start(0);
+    o.stop(ctx.currentTime+1);
+    console.log(synth)
+  },function(){ /* the audio line shows why audio did not start */ });
 }
 window.onload=Init;
 
@@ -149,6 +229,7 @@ window.onload=Init;
 <body>
 <h1>webaudio-tinysynth : js version test</h1>
 This is a simple sample of webaudio-tinysynth (JavaScript library version) page.
+<div id="audio" role="status"></div>
 <hr/>
 <button onclick="Test()">Test audioContext</button>
 <hr/>
