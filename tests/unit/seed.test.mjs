@@ -12,10 +12,10 @@
  * Math.random that counts and throws.
  */
 import vm from "node:vm";
-import crypto from "node:crypto";
 import { createRequire } from "node:module";
 import { describe, expect, test } from "vitest";
 import { H, variants } from "./helpers.mjs";
+import { fmix32, reference, sha } from "./seed-reference.mjs";
 
 const require = createRequire(import.meta.url);
 const { SEED_EXPECTED: E } = require("../browser/specs/seed-expected.js");
@@ -24,65 +24,6 @@ const RATES = [44100, 48000];
 /* Each construction generates 0.5 s buffers inside a vm context (slow global lookups): about 0.5 s. */
 const SLOW = 60000;
 const SEEDS = Object.keys(E.hashes[44100]).map(Number);
-
-/* ---------- independent reference for generation version 1 ---------- */
-
-/* mulberry32 in BigInt uint32 arithmetic, after Tommy Ettinger's C reference: a draw is an integer / 2^32. */
-function mulberry32(seed) {
-  const M = 0xffffffffn;
-  let s = BigInt(seed) & M;
-  return () => {
-    s = (s + 0x6d2b79f5n) & M;
-    let z = s;
-    z = ((z ^ (z >> 15n)) * (z | 1n)) & M;
-    z = (z ^ ((z + (((z ^ (z >> 7n)) * (z | 61n)) & M)) & M)) & M;
-    return Number(z ^ (z >> 14n)) / 4294967296;
-  };
-}
-
-/* murmur3's fmix32 in BigInt uint32 arithmetic: the seed mix. */
-function fmix32(x) {
-  const M = 0xffffffffn;
-  let h = BigInt(x) & M;
-  h = ((h ^ (h >> 16n)) * 0x85ebca6bn) & M;
-  h = ((h ^ (h >> 13n)) * 0xc2b2ae35n) & M;
-  return h ^ (h >> 16n);
-}
-
-/* Stream k (convBuf 0, n0 1, n1 2) starts at (fmix32(seed) + k * 2^30) mod 2^32. Each buffer is generated alone from its stream. */
-const stream = (seed, k) => mulberry32((fmix32(seed) + BigInt(k) * 0x40000000n) & 0xffffffffn);
-const reference = {
-  convBuf(seed, sr) {
-    const blen = Math.floor(sr / 2), r = stream(seed, 0), d1 = new Float32Array(blen), d2 = new Float32Array(blen);
-    for (let i = 0; i < blen; ++i) {
-      if (i / blen < r()) {
-        d1[i] = Math.exp(-3 * i / blen) * (r() - 0.5) * 0.5;
-        d2[i] = Math.exp(-3 * i / blen) * (r() - 0.5) * 0.5;
-      }
-    }
-    return [d1, d2];
-  },
-  n0(seed, sr) {
-    const blen = Math.floor(sr / 2), r = stream(seed, 1), d = new Float32Array(blen);
-    for (let i = 0; i < blen; ++i) d[i] = r() * 2 - 1;
-    return [d];
-  },
-  n1(seed, sr) {
-    const blen = Math.floor(sr / 2), r = stream(seed, 2), d = new Float32Array(blen);
-    for (let j = 0; j < 64; ++j) {
-      const r1 = r() * 10 + 1, r2 = r() * 10 + 1;
-      for (let i = 0; i < blen; ++i) d[i] += Math.sin((i / blen) * 2 * Math.PI * 440 * r1) * Math.sin((i / blen) * 2 * Math.PI * 440 * r2) / 8;
-    }
-    return [d];
-  },
-};
-
-/* SHA-256 of Float32 channel data, little-endian, channels in order (the seed-expected.js format). */
-function sha(chs) {
-  const h = crypto.createHash("sha256");
-  for (const c of chs) h.update(Buffer.from(c.buffer, c.byteOffset, c.byteLength));
-  return h.digest("hex");
-}
 
 /* ---------- the library on the mock ---------- */
 

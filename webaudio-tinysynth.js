@@ -1751,15 +1751,12 @@ class WebAudioTinySynth {
       throw new RangeError("seed must be an integer from 0 to 4294967295");
     Object.defineProperties(this,{seed:{value:s>>>0,enumerable:true},bufferVersion:{value:1,enumerable:true}});
     this._lazy=l;
-    this.setQuality(1);
-    if(opt){
-      if(opt.useReverb!=undefined)
-        this.useReverb=opt.useReverb;
-      if(opt.quality!=undefined)
-        this.setQuality(opt.quality);
-      if(opt.voices!=undefined)
-        this.setVoices(opt.voices);
-    }
+    const {useReverb:r,quality:q,voices:v}=opt||{};
+    if(r!=undefined)
+      this.useReverb=r;
+    this.setQuality(q); // once (#18): undefined or null installs the default quality, 1
+    if(v!=undefined)
+      this.setVoices(v);
     this.init(c,d);
   }
 }
