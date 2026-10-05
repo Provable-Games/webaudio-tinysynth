@@ -435,3 +435,12 @@ The user decided not to automate `main` ("lets just stick with manual releases a
 - **The `improve/integration` rebuild bot (D-036) stays,** as the supervisor recommended: it needs no credentials, and the consumer pins integration SHAs after every merge. The user can still drop it.
 - **Version:** `package.json` moves from upstream's 1.1.4 to 2.0.0 (PR #53). The input validation (#13) and the `loadMIDIUrl` promise (#14) are breaking changes. v2.0.0 is cut after #31 brings integration to `main`. The npm package name still matches upstream's; publishing to npm remains a separate decision (T9A P2).
 - This supersedes D-036's "automating `main` is a later decision". PR #51 (T1-dist) implements the `release/*` rule and the README release steps.
+
+## D-038 Close issues when their work merges into improve/integration (2026-10-04)
+
+The user said "no one is using main" and asked to close completed issues, "so we have an accurate view of what's remaining". GitHub auto-closes issues only from merges into the default branch, so `Closes #N` in task PRs into `improve/integration` has no effect.
+
+- On 2026-10-04 the supervisor closed 18 issues as completed, each with a comment naming its PR and commit: #4–#12, #14, #15, #21–#27.
+- From now on, after the user merges a task PR, the supervisor closes every issue it completes, with the same kind of comment.
+- An issue that is only partly done stays open.
+- Still open: #13 (closes with T5.2), #16 (closes with T6 phase B.2 and G1), #17 (T7), #18 (T8 #18), #19 (T9 follow-ups), #20 (T9 docs pass).
