@@ -1460,10 +1460,15 @@ function WebAudioTinySynthCore(target) {
         return;
       }
       const p=this.rhythm[ch] ? n>=35 && n<=81 && this.drummap[n-35].p : this.program[this.pg[ch]].p;
-      /* A lazy n1 is generated here, before the onset is read from the clock (#18): _note reads it
-         after t was taken, and a stall would leave the envelope and stop times behind the clock. */
+      /* A lazy n1 is generated here (#18), before the onset is read from the clock: _note reads it
+         after t was taken, and the stall would leave the envelope and stop times behind the clock.
+         A time that was current or future on entry and is past after the generation moves to the
+         clock; later times and times already past on entry are as given. */
+      const c=this.actx.currentTime,lazy=()=>(Object.getOwnPropertyDescriptor(this.noiseBuf,"n1")||0).get,z=lazy();
       Array.isArray(p) && p.forEach(o=>o && typeof o.w=="string" && o.w[0]=="n" && this.noiseBuf[o.w]);
       t=this._tsConv(t);
+      if(z && !lazy() && t>=c)
+        t=Math.max(t,this.actx.currentTime);
       if(this.rhythm[ch]){
         if(n>=35&&n<=81)
           this._note(t,ch,n,v,p);

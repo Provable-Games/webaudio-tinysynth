@@ -138,28 +138,36 @@ for (const variant of variants) {
         }
       }, SLOW);
 
-      test("a first live hi-hat is not cut by the generation: its onset and stop come after the stall (Codex review of #63)", () => {
+      test("a first live hi-hat is not cut by the generation: its onset and stop come after the stall, whatever time it was given (Codex review of #63)", () => {
         // noteOn() took the onset from the clock, then _note read n1: with a 41 ms generation the
-        // 35 ms hi-hat started and stopped in the past. The lazy buffer is now resolved first.
-        const hit = (stall) => {
+        // 35 ms hi-hat started and stopped in the past. The lazy buffer is now resolved first, and a
+        // time that was current or short-future on entry and is past afterwards moves to the clock.
+        const hit = (stall, t) => {
           const l = load(variant);
           const synth = new l.Synth({ context: l.at(), quality: 1, seed: 1, useReverb: 0 });
           l.env.clock.ms = 1000;
           if (stall) l.count.stall = stall;
           else synth.noiseBuf.n1; // the eager case: already generated, the clock does not move
           const from = l.trace.length;
-          synth.noteOn(9, 42, 100);
+          synth.noteOn(9, 42, 100, t);
           const lines = l.trace.slice(from).map((x) => JSON.parse(x));
           const src = lines.find((x) => x[0] === "create" && /^src#/.test(x[1]))[1];
           const at = (op) => lines.find((x) => x[0] === op && x[1] === src)[2];
           return { start: at("start"), stop: at("stop"), now: l.env.clock.ms / 1000 };
         };
-        const eager = hit(0), lazy = hit(41);
+        const eager = hit(0, undefined);
         expect(eager.start).toBe(1);
-        expect(eager.stop - eager.start).toBeGreaterThan(0.02);
-        expect(lazy.now).toBeCloseTo(1.041, 9);
-        expect(lazy.start).toBeGreaterThanOrEqual(lazy.now - 1e-9); // not in the past
-        expect(lazy.stop - lazy.start).toBeCloseTo(eager.stop - eager.start, 9); // the full duration
+        const length = eager.stop - eager.start;
+        expect(length).toBeGreaterThan(0.02);
+        for (const t of [undefined, 1, 1.02, 1.0409]) { // now, now (explicit) and leads shorter than the stall
+          const lazy = hit(41, t);
+          expect(lazy.now, String(t)).toBeCloseTo(1.041, 9);
+          expect(lazy.start, "start " + t).toBeGreaterThanOrEqual(lazy.now - 1e-9); // not in the past
+          expect(lazy.stop - lazy.start, "length " + t).toBeCloseTo(length, 9); // the full duration
+        }
+        const later = hit(41, 1.5), past = hit(41, 0.5);
+        expect([later.start, later.stop - later.start]).toEqual([1.5, length]); // still in the future: as given
+        expect(past.start).toBe(0.5); // already past on entry: as given, as without a stall
       }, SLOW);
 
       test("a custom n1 timbre in quality 0 plays the seeded data on its first note", () => {
