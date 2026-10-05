@@ -5,8 +5,16 @@
  *
  * Asserted per engine:
  *   - loads: no request leaves 127.0.0.1, the vendored webaudio-controls.js
- *     (pinned sha256) defines its elements, no page or console errors, and
- *     the controls show the engine's settings (J4, E12);
+ *     (pinned sha256) defines its elements, no page or console errors, the
+ *     controls show the engine's settings (J4, E12), and no AudioContext and
+ *     no autoplay warning exist before a gesture (T9-3);
+ *   - audio start (T9-3): before any input the page says audio is off and how
+ *     to start it, with no AudioContext; a real click or key press creates one
+ *     context and starts it; a refused resume() and a closed context are shown;
+ *   - URL loading (T9-5): jstest's Load (ws.mid) and soundedit's sample song
+ *     show a 404, a network error and a malformed file with the error's code;
+ *     a superseded or cancelled load shows nothing and changes nothing; Play
+ *     as soundedit's first click plays the sample song;
  *   - file selection: an empty selection and a cancelled dialog do not throw
  *     and say so; a non-MIDI or truncated file shows the loader's error and
  *     keeps the current song; a valid file loads;
@@ -17,9 +25,14 @@
  *     across a blur, and the latched sustain pedal following a channel change;
  *   - Web MIDI: unsupported, denied, no inputs, inputs appearing and
  *     disappearing (statechange), and a fake input's notes (soundedit);
- *   - the timbre editor: operator count (E5), the drum shown after a quality
- *     change (E7), keys without a drum (E8), program change on the selected
- *     channel (E9), and edits in both quality modes.
+ *   - the timbre editor (T9-8): every edit installs a new timbre through
+ *     setTimbre() (spied), leaving the previously installed array and the
+ *     built-in tables unchanged; the Patch text keeps upstream's keys and
+ *     order; setTimbre's TypeError and RangeError are shown and nothing
+ *     changes; edits are installed again after a quality change; operator
+ *     count (E5), the drum shown and edited after a quality change (E7), keys
+ *     without a drum (E8), program change on the selected channel (E9), and
+ *     edits in both quality modes.
  *
  * Stuck-note oracle: a voice is held when its release time is still the
  * engine's "no end" marker, synth.notetab[i].e >= 99999 (a note that has not
@@ -30,7 +43,12 @@
  *
  * Not checkable headlessly (synthetic events stand in for them): a real
  * file-dialog cancel, real window focus loss (alt-tab), a pointer cancelled by
- * the system, and hardware MIDI. Audible output is not checked here.
+ * the system, hardware MIDI, and a browser that refuses resume() after a real
+ * gesture (stubbed). Audible output is not checked here.
+ *
+ * page.evaluate can count as a user gesture (T9A section 2.3), so the audio
+ * start cases read the state before the first input from the page's console
+ * reports only, as specs/start.js does.
  *
  * Run: npm run test:browser:demos [-- --engines=chromium,firefox,webkit] [--out=DIR]
  * Each engine runs in its own worker process under scripts/run-with-deadline.js;
@@ -140,7 +158,56 @@ const MIDI_STUB = (mode) => {
   if (mode === "one") inputs.set("in-1", new FakeInput("in-1", "Fake keyboard 1"));
   Object.defineProperty(navigator, "requestMIDIAccess", { configurable: true, value: () => Promise.resolve(access) });
 };
+/*
+ * Audio start probe (installed before the page's scripts): counts AudioContext
+ * constructions and unhandled rejections, and reports the page's audio line
+ * and the synth's context every 100 ms as console.log("AUDIOSTATE {...}").
+ */
+const AUDIO_PROBE = () => {
+  const a = window.__audio = { contexts: 0, rejections: 0 };
+  const Real = window.AudioContext || window.webkitAudioContext;
+  if (Real) window.AudioContext = class extends Real { constructor(...args) { super(...args); a.contexts++; } };
+  window.addEventListener("unhandledrejection", () => { a.rejections++; });
+  const t0 = performance.now();
+  setInterval(() => {
+    const ctx = window.synth && window.synth.getAudioContext ? window.synth.getAudioContext() : null;
+    const e = document.getElementById("audio");
+    const r = e ? e.getBoundingClientRect() : null;
+    console.log("AUDIOSTATE " + JSON.stringify({
+      ms: Math.round(performance.now() - t0), contexts: a.contexts, state: ctx ? ctx.state : null,
+      text: e ? e.textContent : null, error: e ? e.className === "error" : null, role: e ? e.getAttribute("role") : null,
+      visible: !!r && r.width > 0 && r.height > 0, active: navigator.userActivation ? navigator.userActivation.hasBeenActive : null,
+      rejections: a.rejections,
+    }));
+  }, 100);
+};
+/* File reads that take ms longer: readAsArrayBuffer starts after a delay. */
+const SLOW_READ = (ms) => {
+  const real = FileReader.prototype.readAsArrayBuffer;
+  FileReader.prototype.readAsArrayBuffer = function (blob) { setTimeout(() => real.call(this, blob), ms); };
+};
+/* A browser that refuses to start audio: contexts stay "suspended" and resume() rejects. */
+const RESUME_REJECT = () => {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  Object.defineProperty(AC.prototype, "state", { configurable: true, get: () => "suspended" });
+  AC.prototype.resume = () => Promise.reject(new DOMException("Blocked by the test", "NotAllowedError"));
+};
 /* eslint-enable no-undef */
+
+const audioStates = (rec) => rec.console.filter((m) => m.text.startsWith("AUDIOSTATE ")).map((m) => Object.assign(JSON.parse(m.text.slice(11)), { at: m.at }));
+
+async function waitAudio(rec, pred, ms) {
+  const end = Date.now() + ms;
+  for (;;) {
+    const s = audioStates(rec).find(pred);
+    if (s || Date.now() > end) return s || null;
+    await sleep(50);
+  }
+}
+
+/* A short valid song (one note, 960 ticks) to tell a file load from ws.mid. */
+const SHORT = require("../lib/smf").write({ tracks: [[{ dt: 0, bytes: [0x90, 60, 100] }, { dt: 960, bytes: [0x80, 60, 0] }]] });
+const SHORT_TICKS = 960;
 
 /* ---------------- Node-side helpers ---------------- */
 
@@ -157,8 +224,10 @@ async function withStaticServer(fn) {
 /*
  * Opens a demo in a fresh context. Requests to any host other than the static
  * server are aborted and recorded in `remote`. initScripts: [fn, arg] pairs.
+ * openPage only loads it (nothing is evaluated in the page); openDemo also
+ * waits until the demo is ready.
  */
-async function openDemo(t, srv, demo, { initScripts = [], contextOptions = {} } = {}) {
+async function openPage(t, srv, demo, { initScripts = [], contextOptions = {} } = {}) {
   const rec = await t.newPage({ contextOptions: Object.assign({ viewport: { width: 1100, height: 900 } }, contextOptions) });
   rec.remote = [];
   await rec.context.route("**/*", (route) => {
@@ -169,6 +238,12 @@ async function openDemo(t, srv, demo, { initScripts = [], contextOptions = {} } 
   });
   for (const [fn, arg] of initScripts) await rec.page.addInitScript(fn, arg);
   await rec.page.goto(srv.origin + "/" + demo + ".html", { waitUntil: "load" });
+  return rec;
+}
+
+async function openDemo(t, srv, demo, opts = {}) {
+  const rec = await openPage(t, srv, demo, opts);
+  const { initScripts = [] } = opts;
   await rec.page.waitForFunction(READY, null, { timeout: 15000 });
   // With a Web MIDI stand-in the MIDI status settles at once; wait for it, so no line changes under a click.
   if (initScripts.some(([fn]) => fn === MIDI_STUB))
@@ -250,12 +325,19 @@ function loadCase(demo) {
         const hash = crypto.createHash("sha256").update(fs.readFileSync(path.join(ROOT, CONTROLS))).digest("hex");
         t.check("vendored " + CONTROLS + " has the pinned sha256", hash === CONTROLS_SHA256, hash);
       }
-      const rec = await openDemo(t, srv, demo);
+      const rec = await openDemo(t, srv, demo, { initScripts: [[AUDIO_PROBE]] });
       await sleep(1000);
       const state = await rec.page.evaluate((names) => ({
         defined: names.filter((n) => !!customElements.get(n)), // eslint-disable-line no-undef -- runs in the page
         title: document.title, // eslint-disable-line no-undef -- runs in the page
+        contexts: window.__audio.contexts, // eslint-disable-line no-undef -- runs in the page
       }), ELEMENTS[demo]);
+      const autoplay = rec.console.filter((m) => m.type === "warning" && /AudioContext|autoplay/i.test(m.text)).map((m) => m.text);
+      t.check("no AudioContext is created before a gesture (T9-3)", state.contexts === 0, state.contexts + " contexts");
+      t.check("no autoplay warning at load (T9-3)", autoplay.length === 0, autoplay.join(" | "));
+      const audioLine = await rec.page.evaluate(MESSAGE, "audio").catch((e) => ({ text: "no audio line: " + String(e.message).split("\n")[0] }));
+      t.check("the audio line says audio is off and how to start it (T9-3)", /^Audio is off\. Click, tap or press a key to start it\.$/.test(audioLine.text) && audioLine.visible && audioLine.role === "status",
+        JSON.stringify(audioLine));
       t.check("no request leaves 127.0.0.1", rec.remote.length === 0, rec.remote.join(" "));
       const local = srv.requests.filter((r) => r.status !== 200).map((r) => r.path + " " + r.status);
       t.check("every local request succeeds", local.length === 0, local.join(" "));
@@ -304,6 +386,244 @@ function loadCase(demo) {
         const now = await lp.page.evaluate(LAYOUT_NOW, sel);
         t.check("the controls do not move after load (" + sel + ")", !!at && Math.abs(at.x - now.x) < 0.5 && Math.abs(at.y - now.y) < 0.5,
           "after the load handlers " + JSON.stringify(at && { x: at.x, y: at.y }) + ", 600 ms later " + JSON.stringify({ x: now.x, y: now.y }));
+      }
+    }),
+  };
+}
+
+/*
+ * T9-3: audio starts from the first gesture, in a fresh page per variant:
+ *   click     a real click (jstest: on "Test audioContext", which uses the context)
+ *   key       a real key press (Enter) with nothing focused
+ *   rejected  the browser refuses: resume() rejects with NotAllowedError (stubbed)
+ *   closed    the context is closed after audio started; the next click is refused
+ * Nothing is evaluated in the page before the gesture.
+ */
+const PRE_GESTURE_MS = 1200;
+const GESTURE_WAIT_MS = 10000;
+const CLICK_TARGET = { simple: "h1", jstest: "text=Test audioContext", soundedit: "h1" };
+
+function audioCase(demo) {
+  return {
+    id: "demos audio start " + demo,
+    dims: { demo },
+    deadline: 120,
+    run: (t) => withStaticServer(async (srv) => {
+      for (const variant of ["click", "key", "rejected", "closed"]) {
+        const label = variant + ": ";
+        const scripts = (variant === "rejected" ? [[RESUME_REJECT]] : []).concat([[AUDIO_PROBE]], demo === "soundedit" ? [[MIDI_STUB, "empty"]] : []);
+        const rec = await openPage(t, srv, demo, { initScripts: scripts });
+        const p = rec.page;
+        await sleep(PRE_GESTURE_MS);
+        const pre = audioStates(rec);
+        const last = pre[pre.length - 1] || {};
+        t.check(label + "the page reported its audio state before any input", pre.length >= 5, pre.length + " reports");
+        t.check(label + "no user activation before the gesture", pre.every((x) => x.active !== true), [...new Set(pre.map((x) => x.active))].join(","));
+        t.check(label + "no AudioContext before a gesture", pre.every((x) => x.contexts === 0 && x.state === null), [...new Set(pre.map((x) => x.contexts + "@" + x.state))].join(","));
+        t.check(label + "the page says audio is off and how to start it", /^Audio is off\. Click, tap or press a key to start it\.$/.test(last.text) && last.visible && last.role === "status" && !last.error, JSON.stringify(last));
+        const warned = rec.console.filter((m) => m.type === "warning" && /AudioContext|autoplay/i.test(m.text)).map((m) => m.text);
+        t.check(label + "no autoplay warning before a gesture", warned.length === 0, warned.join(" | "));
+        if (variant === "click" || variant === "rejected") await shot(t, rec, demo + "-audio-off");
+        const gestureAt = Date.now();
+        if (variant === "key") await p.keyboard.press("Enter");
+        else await p.click(CLICK_TARGET[demo]);
+        if (variant === "rejected") {
+          const shown = await waitAudio(rec, (x) => x.at > gestureAt && /^Audio could not start/.test(x.text), GESTURE_WAIT_MS);
+          t.check(label + "the refused resume() is shown with its error", !!shown && shown.text === "Audio could not start (NotAllowedError: Blocked by the test). Click, tap or press a key to try again." && shown.error && shown.visible,
+            JSON.stringify(shown || audioStates(rec).slice(-1)[0]));
+          t.check(label + "one AudioContext, created by the gesture", !!shown && shown.contexts === 1, shown ? shown.contexts + " contexts" : "");
+          await shot(t, rec, demo + "-audio-refused");
+        } else {
+          const running = await waitAudio(rec, (x) => x.at > gestureAt && x.state === "running" && x.text === "Audio is on.", GESTURE_WAIT_MS);
+          const now = audioStates(rec).slice(-1)[0];
+          t.check(label + "the gesture starts audio and the page says so", !!running && !running.error, JSON.stringify(running || now));
+          t.observe(label + "ms from the input to running", running ? running.at - gestureAt : null);
+          t.check(label + "exactly one AudioContext", !!running && running.contexts === 1 && now.contexts === 1, now.contexts + " contexts");
+          if (variant === "closed") {
+            await p.evaluate(() => window.synth.getAudioContext().close()); // eslint-disable-line no-undef -- runs in the page
+            const closed = await waitAudio(rec, (x) => x.state === "closed" && /^Audio is closed/.test(x.text), 3000);
+            const at = Date.now();
+            await p.click("h1");
+            await sleep(500);
+            const after = audioStates(rec).filter((x) => x.at > at).slice(-1)[0];
+            t.check(label + "a closed context is shown, and stays shown after a click (resume() rejects)",
+              !!closed && closed.text === "Audio is closed. Reload the page to start it again." && !!after && after.text === closed.text && after.contexts === 1,
+              JSON.stringify({ closed, after }));
+          }
+          if (variant === "click") await shot(t, rec, demo + "-audio-on");
+        }
+        const final = audioStates(rec).slice(-1)[0];
+        t.check(label + "no request leaves 127.0.0.1", rec.remote.length === 0, rec.remote.join(" "));
+        t.check(label + "no unhandled rejections", final.rejections === 0, final.rejections + " rejections");
+        t.check(label + "no page errors", !rec.pageErrors.length, rec.pageErrors.join(" | "));
+        t.check(label + "no console errors", !rec.consoleErrors.length, rec.consoleErrors.join(" | "));
+      }
+    }),
+  };
+}
+
+/*
+ * T9-5: URL loads. jstest's Load (ws.mid) and soundedit's sample song (loaded
+ * by Play when no song is loaded) with ws.mid answered by a 404, a refused
+ * connection or a non-MIDI body show the error's code; nothing is installed.
+ * jstest: a successful load says so; a load superseded by a second click shows
+ * nothing. Both: a load cancelled by choosing a file shows nothing and does
+ * not replace the file's song. soundedit: Play as the first click plays the
+ * sample song; Stop while it loads keeps it from playing when it arrives; a
+ * retry after a failure that succeeds clears the failure's message; Play while
+ * a chosen file is still being read plays that file.
+ */
+const URL_FAILURES = {
+  "HTTP 404": { route: (r) => r.fulfill({ status: 404, contentType: "text/plain", body: "not found" }), code: "HTTP_STATUS 404" },
+  "connection refused": { route: (r) => r.abort("connectionrefused"), code: "NETWORK_ERROR" },
+  "not a MIDI file": { route: (r) => r.fulfill({ status: 200, contentType: "audio/midi", body: "this is not a MIDI file\n" }), code: "SMF_INVALID_HEADER: no MThd header (byte 0)" },
+};
+
+function urlCase(demo) {
+  const jstest = demo === "jstest";
+  const start = (p) => p.click(jstest ? "text=Load (ws.mid)" : "button:text-is('Play')");
+  const tail = jstest ? "The current song is unchanged." : "Choose a MIDI file instead.";
+  /* eslint-disable no-undef -- these callbacks run in the page */
+  const status = (p) => p.evaluate(() => window.synth.getPlayStatus());
+  const rejections = (p) => p.evaluate(() => window.__audio.rejections);
+  /* eslint-enable no-undef */
+  const open = (srv, t) => openDemo(t, srv, demo, { initScripts: [[AUDIO_PROBE]].concat(jstest ? [] : [[MIDI_STUB, "empty"]]) });
+  /* Answers ws.mid after ms with the song, unless the request was aborted first. */
+  const late = (ms, seen) => async (route) => {
+    seen.push(Date.now());
+    await sleep(ms);
+    try { await route.fulfill({ status: 200, contentType: "audio/midi", body: SONG }); } catch { /* the page aborted it */ }
+  };
+  return {
+    id: "demos url loading " + demo,
+    dims: { demo },
+    deadline: 120,
+    run: (t) => withStaticServer(async (srv) => {
+      for (const [kind, f] of Object.entries(URL_FAILURES)) {
+        const rec = await open(srv, t), p = rec.page;
+        await p.route("**/ws.mid", f.route);
+        await start(p);
+        const m = await waitText(p, "message", /^Could not load ws\.mid/, 5000);
+        const want = "Could not load ws.mid (" + f.code + "). " + tail;
+        t.check(kind + ": the error is shown with its code", m.text === want && m.visible && m.role === "status", JSON.stringify(m) + " want " + want);
+        const st = await status(p);
+        t.check(kind + ": no song is installed", st.maxTick === 0 && st.play === 0, JSON.stringify(st));
+        t.check(kind + ": no unhandled rejections and no page errors", (await rejections(p)) === 0 && !rec.pageErrors.length, rec.pageErrors.join(" | "));
+        t.observe(kind + ": console errors (the browser's own resource errors)", rec.consoleErrors);
+        if (kind === "HTTP 404") await shot(t, rec, demo + "-url-error");
+      }
+      if (jstest) {
+        {
+          const rec = await open(srv, t), p = rec.page;
+          await start(p);
+          const m = await waitText(p, "message", /^Loaded ws\.mid/, 5000);
+          const st = await status(p);
+          t.check("success: the song is installed and the page says so", m.text === "Loaded ws.mid. Press Play." && !/error/.test(await p.getAttribute("#message", "class") || "") && st.maxTick === SONG_TICKS,
+            JSON.stringify({ m, st }));
+          t.check("success: no page or console errors", !rec.pageErrors.length && !rec.consoleErrors.length, rec.pageErrors.concat(rec.consoleErrors).join(" | "));
+        }
+        {
+          // Superseded: the first load is answered late with a 404, after a second click has started a new load.
+          const rec = await open(srv, t), p = rec.page, seen = [];
+          await p.route("**/ws.mid", async (route) => {
+            seen.push(Date.now());
+            if (seen.length === 1) {
+              await sleep(1500);
+              try { await route.fulfill({ status: 404, contentType: "text/plain", body: "late" }); } catch { /* the page aborted it */ }
+              return;
+            }
+            await route.continue();
+          });
+          await start(p);
+          await sleep(200);
+          await start(p);
+          const m = await waitText(p, "message", /^Loaded ws\.mid/, 5000);
+          await sleep(2000);
+          const m2 = await p.evaluate(MESSAGE, "message");
+          const st = await status(p);
+          t.check("superseded: only the newer load reports, and the song is installed", m.text === "Loaded ws.mid. Press Play." && m2.text === m.text && st.maxTick === SONG_TICKS && seen.length === 2,
+            JSON.stringify({ m: m.text, later: m2.text, st, requests: seen.length }));
+          t.check("superseded: no unhandled rejections and no page errors", (await rejections(p)) === 0 && !rec.pageErrors.length, rec.pageErrors.join(" | "));
+        }
+      } else {
+        {
+          // Play as the first click: it starts audio, loads the sample song and plays it.
+          const rec = await open(srv, t), p = rec.page;
+          await start(p);
+          const end = Date.now() + 5000;
+          let st;
+          while (!((st = await status(p)).play === 1 && st.maxTick === SONG_TICKS) && Date.now() < end) await sleep(100);
+          t.check("Play as the first click plays the sample song", st.play === 1 && st.maxTick === SONG_TICKS, JSON.stringify(st));
+          const m = await p.evaluate(MESSAGE, "message");
+          t.check("Play as the first click: no message, no page or console errors", m.text === "" && !rec.pageErrors.length && !rec.consoleErrors.length, JSON.stringify(m) + " " + rec.pageErrors.concat(rec.consoleErrors).join(" | "));
+          await p.click("button:text-is('Stop')");
+        }
+        {
+          // Stop while Play waits for the sample song: nothing plays when it arrives; it is installed, stopped.
+          const rec = await open(srv, t), p = rec.page, seen = [];
+          await p.route("**/ws.mid", late(1500, seen));
+          await start(p);
+          await sleep(200);
+          await p.click("button:text-is('Stop')");
+          await sleep(2500);
+          const st = await status(p);
+          t.check("Stop while the sample song loads: nothing plays when it arrives", st.play === 0 && st.maxTick === SONG_TICKS && seen.length === 1, JSON.stringify({ st, requests: seen.length }));
+          await start(p);
+          const st2 = await status(p);
+          t.check("Stop while the sample song loads: Play afterwards plays it", st2.play === 1 && st2.maxTick === SONG_TICKS, JSON.stringify(st2));
+          t.check("Stop while the sample song loads: no unhandled rejections and no page errors", (await rejections(p)) === 0 && !rec.pageErrors.length, rec.pageErrors.join(" | "));
+          await p.click("button:text-is('Stop')");
+        }
+        {
+          // Play while a chosen file is still being read: Play waits for the file and plays it; the sample song is not loaded.
+          const rec = await openDemo(t, srv, demo, { initScripts: [[AUDIO_PROBE], [MIDI_STUB, "empty"], [SLOW_READ, 1000]] });
+          const p = rec.page, seen = [];
+          await p.route("**/ws.mid", late(0, seen));
+          await setFile(p, "#file", "short.mid", SHORT);
+          await start(p);
+          await sleep(2500);
+          const st = await status(p);
+          const m = await p.evaluate(MESSAGE, "message");
+          t.check("Play while a file is being read plays that file, and the sample song is not loaded", st.play === 1 && st.maxTick === SHORT_TICKS && seen.length === 0 && m.text === "Loaded short.mid. Press Play.",
+            JSON.stringify({ st, requests: seen.length, m: m.text }));
+          t.check("Play while a file is being read: no unhandled rejections and no page errors", (await rejections(p)) === 0 && !rec.pageErrors.length, rec.pageErrors.join(" | "));
+          await p.click("button:text-is('Stop')");
+        }
+        {
+          // A failed load, then Play again succeeds: the old error is cleared.
+          const rec = await open(srv, t), p = rec.page;
+          let n = 0;
+          await p.route("**/ws.mid", (route) => (++n === 1 ? route.fulfill({ status: 404, contentType: "text/plain", body: "not found" }) : route.continue()));
+          await start(p);
+          const m1 = await waitText(p, "message", /^Could not load ws\.mid/, 5000);
+          await start(p);
+          const end = Date.now() + 5000;
+          let st;
+          while ((st = await status(p)).play !== 1 && Date.now() < end) await sleep(100);
+          const m2 = await p.evaluate(MESSAGE, "message");
+          const cls = await p.getAttribute("#message", "class");
+          t.check("a retry that succeeds plays and clears the earlier error", /HTTP_STATUS 404/.test(m1.text) && st.play === 1 && st.maxTick === SONG_TICKS && m2.text === "" && !cls,
+            JSON.stringify({ first: m1.text, st, after: m2.text, cls, requests: n }));
+          await p.click("button:text-is('Stop')");
+        }
+      }
+      {
+        // Cancelled: a file is chosen while the URL load is pending; the late response must not replace it.
+        const rec = await open(srv, t), p = rec.page, seen = [];
+        await p.route("**/ws.mid", late(1500, seen));
+        await start(p);
+        if (jstest) {
+          const loading = await waitText(p, "message", /^Loading/, 2000);
+          t.check("a pending load says so", loading.text === "Loading ws.mid...", JSON.stringify(loading));
+        }
+        await setFile(p, "#file", "short.mid", SHORT);
+        const m = await waitText(p, "message", /^Loaded short\.mid/, 3000);
+        await sleep(2500);
+        const m2 = await p.evaluate(MESSAGE, "message");
+        const st = await status(p);
+        t.check("cancelled by choosing a file: the file's song stays and only the file reports", m.text === "Loaded short.mid. Press Play." && m2.text === m.text && st.maxTick === SHORT_TICKS && seen.length === 1,
+          JSON.stringify({ m: m.text, later: m2.text, st, requests: seen.length }));
+        t.check("cancelled: no unhandled rejections and no page errors", (await rejections(p)) === 0 && !rec.pageErrors.length, rec.pageErrors.join(" | "));
       }
     }),
   };
@@ -745,16 +1065,66 @@ function editorCase() {
       const rec = await openDemo(t, srv, "soundedit", { initScripts: [[MIDI_STUB, "empty"]] });
       const p = rec.page;
       await p.click("text=Timbre Editor");
-      // E5: choosing 4 operators on a 2-operator program gives 4.
-      const before = await p.evaluate(() => synth.program[0].p.length);
+      // T9-8: record setTimbre() calls and the built-in tables.
+      await p.evaluate(() => {
+        const real = synth.setTimbre;
+        window.__timbreCalls = [];
+        synth.setTimbre = function (m, n, tb) { window.__timbreCalls.push(m + ":" + n); return real(m, n, tb); };
+        window.__builtins = JSON.stringify([synth.program0, synth.program1, synth.drummap0, synth.drummap1]);
+      });
+      const calls = () => p.evaluate(() => window.__timbreCalls.splice(0));
+      // Keeps the installed array of slot m:n, then reports whether an edit replaced it and left it as it was.
+      const keep = (m, n) => p.evaluate(([m, n]) => { const s = m ? synth.drummap[n - 35] : synth.program[n]; window.__kept = { p: s.p, json: JSON.stringify(s.p) }; }, [m, n]);
+      const kept = (m, n) => p.evaluate(([m, n]) => {
+        const s = m ? synth.drummap[n - 35] : synth.program[n];
+        return { replaced: s.p !== window.__kept.p, unchanged: JSON.stringify(window.__kept.p) === window.__kept.json, before: window.__kept.json, now: JSON.stringify(s.p) };
+      }, [m, n]);
+      const builtinsUnchanged = () => p.evaluate(() => JSON.stringify([synth.program0, synth.program1, synth.drummap0, synth.drummap1]) === window.__builtins);
+      // An unedited program shows the built-in timbre of the current quality.
+      const builtinShown = (n) => p.evaluate((n) => {
+        const b = (synth.quality ? synth.program1 : synth.program0)[n], s = synth.program[n].p;
+        return s.length === b.length && b.every((o, i) => Object.keys(o).every((k) => s[i][k] === o[k]));
+      }, n);
+      const edited = (n) => p.evaluate((n) => ({ ops: synth.program[n].p.length, v: synth.program[n].p[0].v, shownOps: document.getElementById("oscs").selectedIndex + 1, shownV: document.getElementById("v1").value, quality: synth.quality }), n);
+
+      // E5: choosing 4 operators on a 2-operator program installs a new 4-operator timbre through setTimbre.
+      await keep(0, 0);
+      await calls();
       await p.selectOption("#oscs", "4");
-      const after = await p.evaluate(() => ({ n: synth.program[0].p.length, patch: document.getElementById("patch").value }));
-      t.check("E5: 2 -> 4 operators gives 4 operators", before === 2 && after.n === 4 && (after.patch.match(/\{/g) || []).length === 4, before + " -> " + JSON.stringify(after));
+      const e5 = await p.evaluate(() => ({ p: JSON.parse(JSON.stringify(synth.program[0].p)), patch: document.getElementById("patch").value }));
+      const k5 = await kept(0, 0);
+      const c5 = await calls();
+      const before = JSON.parse(k5.before);
+      t.check("E5: 2 -> 4 operators gives 4 operators", before.length === 2 && e5.p.length === 4 && (e5.patch.match(/\{/g) || []).length === 4, before.length + " -> " + e5.p.length + " " + e5.patch);
+      t.check("T9-8: the edit goes through setTimbre()", c5.length === 1 && c5[0] === "0:0", JSON.stringify(c5));
+      t.check("T9-8: the edit installs a new array and leaves the previously installed one unchanged", k5.replaced && k5.unchanged, JSON.stringify(k5));
+      t.check("T9-8: unchanged operators keep their keys, order and values (the Patch text stays upstream's)", JSON.stringify(e5.p.slice(0, 2)) === k5.before, JSON.stringify(e5.p.slice(0, 2)) + " vs " + k5.before);
+      t.check("T9-8: an added operator has upstream's keys in upstream's order", Object.keys(e5.p[2]).join(",") === "g,w,v,t,f,a,h,d,s,r,b,c,p,q,k", Object.keys(e5.p[2]).join(","));
       await p.selectOption("#oscs", "2");
       // Edits in quality 1 reach the program the keyboard plays, and its notes release.
+      await calls();
       await p.fill("#v1", "0.25");
       const q1 = await p.evaluate(() => ({ v: synth.program[0].p[0].v, patch: document.getElementById("patch").value, quality: synth.quality }));
       t.check("quality 1: editing V1 changes the program and the patch text", q1.v === 0.25 && /v:0\.25/.test(q1.patch) && q1.quality === 1, JSON.stringify(q1));
+      t.check("quality 1: the V1 edit goes through setTimbre()", JSON.stringify(await calls()) === "[\"0:0\"]", "");
+      // setTimbre's RangeError and TypeError are shown, and nothing changes.
+      const g2 = await p.inputValue("#g2");
+      const json = () => p.evaluate(() => JSON.stringify(synth.program[0].p));
+      const valid = await json();
+      await p.fill("#g2", "5");
+      let st = await p.evaluate(MESSAGE, "editstatus").catch((e) => ({ text: "no edit status line: " + String(e.message).split("\n")[0] }));
+      const cls = await p.getAttribute("#editstatus", "class").catch(() => null);
+      t.check("T9-8: a RangeError from setTimbre is shown", st.text === "Not applied (RangeError: operator 1 g: 5 is not an earlier operator). The timbre is unchanged." && st.visible && st.role === "status" && cls === "error", JSON.stringify(st));
+      t.check("T9-8: after the RangeError the installed timbre is unchanged", (await json()) === valid, "");
+      await shot(t, rec, "soundedit-editor-error");
+      await p.fill("#g2", g2);
+      await p.fill("#v1", "");
+      st = await p.evaluate(MESSAGE, "editstatus").catch((e) => ({ text: "no edit status line: " + String(e.message).split("\n")[0] }));
+      t.check("T9-8: a TypeError from setTimbre is shown", st.text === "Not applied (TypeError: operator 0 v is not a number). The timbre is unchanged.", JSON.stringify(st));
+      t.check("T9-8: after the TypeError the installed timbre is unchanged", (await json()) === valid, "");
+      await p.fill("#v1", "0.25");
+      st = await p.evaluate(MESSAGE, "editstatus").catch((e) => ({ text: "no edit status line: " + String(e.message).split("\n")[0] }));
+      t.check("T9-8: a valid edit clears the message", st.text === "" && (await json()) === valid, JSON.stringify(st));
       const shotBox = await box(p, "#shot");
       const playShot = (label) => scenario(t, rec, label, {
         press: async () => { await p.mouse.move(shotBox.x + shotBox.width / 2, shotBox.y + shotBox.height / 2); await p.mouse.down(); }, sounding: "0:60",
@@ -762,14 +1132,20 @@ function editorCase() {
       });
       await playShot("quality 1: the edited program plays and releases");
       await shot(t, rec, "soundedit-editor-quality1");
+      // A quality change reinstalls the built-in timbres; the editor installs its edits again.
       await p.selectOption("#quality", { index: 0 });
-      const q0 = await p.evaluate(() => ({ quality: synth.quality, ops: synth.program[0].p.length, shown: document.getElementById("oscs").selectedIndex + 1, name: document.getElementById("name").textContent }));
-      t.check("quality 0: the editor shows the quality-0 program", q0.quality === 0 && q0.ops === q0.shown && /Acoustic Grand Piano/.test(q0.name), JSON.stringify(q0));
-      await p.fill("#v1", "0.4");
+      let q = await edited(0);
+      t.check("T9-8: after quality 1 -> 0 the edited program is installed again and shown", q.quality === 0 && q.ops === 2 && q.v === 0.25 && q.shownOps === 2 && q.shownV === "0.25" && /Acoustic Grand Piano/.test(await name(p)), JSON.stringify(q));
+      t.check("quality 0: an unedited program has the quality-0 built-in timbre", await builtinShown(1), "");
+      // 0.45, unlike 0.4, is not the quality-1 piano's own value.
+      await p.fill("#v1", "0.45");
       const q0v = await p.evaluate(() => synth.program[0].p[0].v);
-      t.check("quality 0: editing V1 changes the program", q0v === 0.4, String(q0v));
+      t.check("quality 0: editing V1 changes the program", q0v === 0.45, String(q0v));
       await playShot("quality 0: the edited program plays and releases");
       await p.selectOption("#quality", { index: 1 });
+      q = await edited(0);
+      t.check("T9-8: after quality 0 -> 1 the edited program is installed again and shown", q.quality === 1 && q.v === 0.45 && q.shownV === "0.45", JSON.stringify(q));
+      t.check("quality 1: an unedited program has the quality-1 built-in timbre", await builtinShown(1), "");
       // E9: program change on the selected channel; the Prog select follows the channel.
       await p.selectOption("#ch", { index: 1 });
       await p.selectOption("#prog", { index: 40 });
@@ -780,26 +1156,39 @@ function editorCase() {
       await p.selectOption("#ch", { index: 1 });
       const again = await p.evaluate(() => ({ prog: document.getElementById("prog").selectedIndex, name: document.getElementById("name").textContent }));
       t.check("E9: the Prog select and editor show the selected channel's program", back.prog === 0 && /Acoustic Grand Piano/.test(back.name) && again.prog === 40 && /Violin/.test(again.name), JSON.stringify([back, again]));
-      // E7: the drum shown after a quality change is the drum on the key.
+      // Drums: an edit on note 40 goes through setTimbre(1, 40, ...); E7: the drum shown after a quality change is the drum on the key.
       await p.selectOption("#ch", { index: 9 });
       await p.evaluate(KB_CHANGE, [1, 40]);
       await p.evaluate(KB_CHANGE, [0, 40]);
       const d1 = await name(p);
+      await keep(1, 40);
+      await calls();
+      await p.fill("#v1", "0.66"); // neither quality's built-in snare level
+      const kd = await kept(1, 40);
+      const cd = await calls();
+      const dv = () => p.evaluate(() => synth.drummap[40 - 35].p[0].v);
+      t.check("T9-8: a drum edit goes through setTimbre(1, 40) and leaves the installed array unchanged", JSON.stringify(cd) === "[\"1:40\"]" && kd.replaced && kd.unchanged && (await dv()) === 0.66, JSON.stringify({ cd, kd }));
       await p.selectOption("#quality", { index: 0 });
       const d0 = await name(p);
+      const dv0 = await dv();
       await p.selectOption("#quality", { index: 1 });
       const d1b = await name(p);
+      const dv1 = await dv();
       t.check("E7: note 40 shows Electric Snare before and after quality changes", [d1, d0, d1b].every((x) => /Electric Snare/.test(x)), JSON.stringify([d1, d0, d1b]));
-      // E8: a key without a drum says so and editing does not throw.
+      t.check("T9-8: the drum edit is installed again after each quality change", dv0 === 0.66 && dv1 === 0.66 && (await p.inputValue("#v1")) === "0.66", JSON.stringify([dv0, dv1]));
+      // E8: a key without a drum says so, and editing does not call setTimbre or throw.
       const errorsBefore = rec.pageErrors.length;
       await p.evaluate(KB_CHANGE, [1, 90]);
       await p.evaluate(KB_CHANGE, [0, 90]);
       const none = await name(p);
+      await calls();
       await p.fill("#v1", "0.3");
       await p.selectOption("#oscs", "3");
+      const c8 = await calls();
       t.check("E8: note 90 on the drum channel says there is no drum sound", /No drum sound on note 90/.test(none), none);
-      t.check("E8: editing with that key selected does not throw", rec.pageErrors.length === errorsBefore, rec.pageErrors.join(" | "));
+      t.check("E8: editing with that key selected does not throw or install anything", rec.pageErrors.length === errorsBefore && c8.length === 0, rec.pageErrors.join(" | ") + " " + JSON.stringify(c8));
       await shot(t, rec, "soundedit-editor-no-drum");
+      t.check("T9-8: the built-in tables are unchanged after every edit", await builtinsUnchanged(), "");
       const h = await held(p);
       t.check("no voice held at the end", h.voices.length === 0 && h.page.length === 0, JSON.stringify(h));
       t.check("no page errors", !rec.pageErrors.length, rec.pageErrors.join(" | "));
@@ -812,6 +1201,9 @@ function editorCase() {
 function cases() {
   return [
     ...DEMOS.map(loadCase),
+    ...DEMOS.map(audioCase),
+    urlCase("jstest"),
+    urlCase("soundedit"),
     ...DEMOS.map(fileCase),
     simpleReleaseCase(),
     jstestReleaseCase(),

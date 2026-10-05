@@ -88,6 +88,10 @@ Serve the repository root (for example `python3 -m http.server`) and open:
  **simple.html**  (minimal page: timbre select, on-screen keyboard, MIDI file playback)  
  **jstest.html**  (JavaScript API test page)
 
+- No AudioContext exists until your first click, tap or key press on the page, which starts audio with `resume()` (the demos use `lazy: true`). A Web MIDI note played before that creates one that stays blocked until then. Each page says whether audio is off, blocked by the browser, on, or failed to start, with the error.
+- A failed URL load shows the error's `code`, for example `HTTP_STATUS 404`, `NETWORK_ERROR` or `SMF_INVALID_HEADER`. A load replaced by a newer one, or cancelled by choosing a file, shows nothing. In soundedit.html, **Play** plays a song that is still loading once it is installed, and loads the sample song `ws.mid` when no song is loaded or loading. Installing a song creates the AudioContext and resets every channel, so the sample song is not loaded with the page.
+- soundedit.html's Timbre Editor installs each edit with `setTimbre()` and shows a value it rejects. A quality change reinstalls the built-in timbres, and the editor then installs its edited timbres again. The Patch text is a JavaScript array literal for `setTimbre()`, not JSON.
+
 Upstream's hosted demos at [g200kg.github.io/webaudio-tinysynth](https://g200kg.github.io/webaudio-tinysynth/soundedit.html) use the original build with the GUI.
 
 ## Usage
@@ -405,6 +409,7 @@ Use Node 24.21.0 (`.nvmrc`), which comes with npm 11.19.0, and install the locke
 - The test commands fail closed. `test:unit` and `test:node` fail when no test file matches, when a file passes no test, when a `node:test` file exits before its tests finish, or when fewer files ran or fewer tests passed than the floors committed in `package.json` (`--min-files`, `--min-tests`). When you add tests, raise the floors to the new counts printed at the end of the run. `test:regression` and `test:browser` require each script to exit 0 and print a final `PASS:` line.
 - The test commands use POSIX process groups to stop hung tests, so they run on Linux and macOS.
 - CI (`.github/workflows/ci.yml`) runs the `lint`, `build-verify`, `test` and `browser-smoke` jobs on pull requests and on pushes to `main`. On pushes to `main` they build and test the current source but do not compare the committed minified file with it: between releases it may be older than the source.
+- The browser matrix (`.github/workflows/browser-matrix.yml`) runs on pull requests. Each engine's specs are split across three `browser (ENGINE, K/3)` jobs, balanced by the measured seconds in `tests/browser/matrix.js` (`--shard=K/N`; `--list --shard=K/N` prints the layout). A `demos (ENGINE)` job runs `npm run test:browser:demos`. The `browser matrix` job aggregates them: it fails unless every job passed and every engine ran every declared spec once with every case passing (`node scripts/browser-matrix.js --merge=DIR` checks downloaded results). A new spec needs a `seconds` entry. To change the shard count, change the shard list, `SHARD` and the job name together.
 
 ## Verifying the minified build
 

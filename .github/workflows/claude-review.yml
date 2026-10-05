@@ -275,8 +275,106 @@ jobs:
             --expected-execution-file "$RUNNER_TEMP/claude-execution-output.json" --session-id "$SESSION_ID" \
             --expected-cwd "$WORKDIR" "${steps[@]}"
 
+      # One bounded retry (.github/scripts/README.md, "Retry"). The first result
+      # step asks for it only when the output is malformed and carries no review
+      # content (review_lib.retryable_output); output with a finding, a severity
+      # or a location is never retried. The retry runs the same action with the
+      # same prompt, arguments and environment, from the same verified-empty
+      # directory; the trusted configuration is verified again before its result
+      # is recorded, and that result replaces the first.
+      - name: Prepare the retry
+        id: retry_setup
+        if: ${{ !cancelled() && steps.result.outputs.retry == 'true' }}
+        env:
+          WORKDIR: ${{ steps.workdir.outputs.dir }}
+        run: |
+          set -euo pipefail
+          if [ -n "$(ls -A "$WORKDIR")" ]; then
+            echo "::error title=AI review integrity::$WORKDIR is not empty."
+            exit 1
+          fi
+          mv "$RUNNER_TEMP/review/out" "$RUNNER_TEMP/review/attempt-1"
+
+      - name: Run the Claude review again (retry)
+        id: claude_retry
+        if: ${{ !cancelled() && steps.retry_setup.outcome == 'success' }}
+        uses: anthropics/claude-code-action/base-action@ed670b4cf9de2a5a570d130d2f6197b9e543cd64 # v1.0.240
+        env:
+          CLAUDE_WORKING_DIR: ${{ steps.workdir.outputs.dir }}
+          ANTHROPIC_MODEL: ${{ steps.settings.outputs.model }}
+          CLAUDE_CODE_EFFORT_LEVEL: ""
+          CLAUDE_CONFIG_DIR: ${{ steps.workdir.outputs.config_dir }}
+          CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1"
+          CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: "0"
+          HTTPS_PROXY: ""
+          HTTP_PROXY: ""
+          ALL_PROXY: ""
+          NO_PROXY: ""
+          NODE_OPTIONS: ""
+          NODE_EXTRA_CA_CERTS: ""
+          BUN_OPTIONS: ""
+          BUN_CONFIG_REGISTRY: ""
+          BUN_CONFIG_TOKEN: ""
+        with:
+          prompt_file: ${{ steps.prompt.outputs.prompt_file }}
+          claude_args: ${{ steps.args.outputs.claude_args }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+      - name: Verify the trusted configuration after the retry
+        id: verify_retry
+        if: ${{ !cancelled() && steps.result.outputs.retry == 'true' && steps.fingerprint.outcome == 'success' }}
+        env:
+          EXPECTED_DIGEST: ${{ steps.fingerprint.outputs.digest }}
+        run: |
+          # begin trusted-fingerprint
+          set -euo pipefail
+          digest="$(cd trusted && find .github -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
+          # end trusted-fingerprint
+          if [ "$digest" != "$EXPECTED_DIGEST" ]; then
+            echo "::error title=AI review integrity::The trusted review configuration changed during the review run."
+            exit 1
+          fi
+
+      - name: Record the retry's review result
+        id: result_retry
+        if: ${{ !cancelled() && steps.verify_retry.outcome == 'success' }}
+        env:
+          CLAUDE_REVIEW_MODEL: ${{ vars.CLAUDE_REVIEW_MODEL }}
+          CLAUDE_REVIEW_EFFORT: ${{ vars.CLAUDE_REVIEW_EFFORT }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          CONFIG_SHA: ${{ needs.prepare.outputs.config_sha }}
+          BOOTSTRAP: ${{ needs.prepare.outputs.bootstrap }}
+          MERGE_BASE: ${{ needs.prepare.outputs.merge_base }}
+          AGENT_ID: ${{ matrix.agent_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
+          EXECUTION_FILE: ${{ steps.claude_retry.outputs.execution_file }}
+          SESSION_ID: ${{ steps.claude_retry.outputs.session_id }}
+          ACTION_OUTCOME: ${{ steps.claude_retry.outcome }}
+          CONCLUSION: ${{ steps.claude_retry.outputs.conclusion }}
+          WORKDIR: ${{ steps.workdir.outputs.dir }}
+          OUTCOMES: >-
+            checkout=${{ steps.source.outcome }}
+            settings=${{ steps.settings.outcome }}
+            credential=${{ steps.credential.outcome }}
+            prompt=${{ steps.prompt.outcome }}
+            workdir=${{ steps.workdir.outcome }}
+            arguments=${{ steps.args.outcome }}
+            retry-setup=${{ steps.retry_setup.outcome }}
+        run: |
+          set -euo pipefail
+          steps=()
+          for outcome in $OUTCOMES; do steps+=(--step "$outcome"); done
+          python3 -I -B trusted/.github/scripts/review.py result --config-root trusted --provider claude \
+            --event "$GITHUB_EVENT_PATH" --agent-id "$AGENT_ID" --out-dir "$RUNNER_TEMP/review/out" \
+            --config-sha "$CONFIG_SHA" --bootstrap "$BOOTSTRAP" --merge-base "$MERGE_BASE" --run-url "$RUN_URL" \
+            --execution-file "$EXECUTION_FILE" --action-outcome "$ACTION_OUTCOME" --conclusion "$CONCLUSION" \
+            --expected-execution-file "$RUNNER_TEMP/claude-execution-output.json" --session-id "$SESSION_ID" \
+            --expected-cwd "$WORKDIR" --previous-out "$RUNNER_TEMP/review/attempt-1" "${steps[@]}"
+
       - name: Upload the review result
-        if: ${{ !cancelled() && steps.result.outcome == 'success' }}
+        if: >-
+          ${{ !cancelled() && steps.result.outcome == 'success'
+          && (steps.result.outputs.retry != 'true' || steps.result_retry.outcome == 'success') }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: claude-review-${{ matrix.agent_id }}

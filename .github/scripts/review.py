@@ -407,13 +407,16 @@ def cmd_result(args):
                           "configure a full model ID rather than an alias")
 
     sources = [os.environ.get(secret_name, "")]
-    if args.auth_file and Path(args.auth_file).is_file():
-        sources.append(Path(args.auth_file).read_text(encoding="utf-8", errors="replace"))
+    for auth_file in args.auth_file:
+        if auth_file and Path(auth_file).is_file():
+            sources.append(Path(auth_file).read_text(encoding="utf-8", errors="replace"))
     values = lib.credential_values(sources)
     withheld = lib.contains_credential(text, values)
     if withheld:
         errors.append("the review output contained credential material and was withheld")
         text = ""
+    retried = first_attempt(args.previous_out, facts, args.provider, agent["agent_id"], values, errors) \
+        if args.previous_out else None
 
     identity = {
         "provider": args.provider, "agent_id": agent["agent_id"], "agent_name": agent["agent_name"],
@@ -425,6 +428,8 @@ def cmd_result(args):
     }
     result = lib.build_result(identity=identity, execution_ok=not errors, execution_errors=errors, text=text,
                               blocking_severities=config["blocking_severities"])
+    if retried is not None:
+        result["retried"] = retried
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
     (out / "result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
@@ -447,8 +452,47 @@ def cmd_result(args):
     status = f"{args.provider}/{agent['agent_id']}: {result['status']}"
     if result["status"] != "complete":
         status += ": " + "; ".join(result["errors"])
+    if retried is not None:
+        status += " (second attempt, after malformed output)"
     print(status)
-    summary([f"Result {status}"])
+    lines = [f"Result {status}"]
+    # One bounded retry: only the first attempt may ask for it, and only for
+    # malformed output without review content (lib.retryable_output). The
+    # workflow runs at most one retry step, gated on this output.
+    if retried is None:
+        retry, reason = False, f"the review is {result['status']}"
+        if result["status"] == "incomplete":
+            retry, reason = lib.retryable_output(text)
+        write_outputs({"retry": "true" if retry else "false"})
+        if result["status"] != "complete":
+            lines.append(("Retrying once: " if retry else "No retry: ") + reason)
+            print(lines[-1])
+    summary(lines)
+
+
+def first_attempt(directory, facts, provider, agent_id, values, errors):
+    """The first attempt's record for a retry, validated; any problem fails the retry closed."""
+    folder = Path(directory)
+    try:
+        previous = json.loads((folder / "result.json").read_text(encoding="utf-8"))
+        text = (folder / "review.md").read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        errors.append("the first attempt's result is missing or unreadable, so the retry is not accepted")
+        return {"errors": [], "output": ""}
+    if not isinstance(previous, dict):
+        previous = {}
+    expected = {"provider": provider, "agent_id": agent_id, "base_sha": facts["base_sha"],
+                "head_sha": facts["head_sha"], "status": "incomplete"}
+    mismatched = sorted(key for key, value in expected.items() if previous.get(key) != value)
+    if mismatched:
+        errors.append(f"the first attempt's result does not match this retry ({', '.join(mismatched)})")
+    if lib.contains_credential(text, values):
+        errors.append("the first attempt's output contained credential material and was withheld")
+        text = ""
+    elif not lib.retryable_output(text)[0]:
+        errors.append("the first attempt's output was not eligible for a retry")
+    previous_errors = previous.get("errors") if isinstance(previous.get("errors"), list) else []
+    return {"errors": [str(e) for e in previous_errors], "output": text}
 
 
 def cmd_require_complete(args):
@@ -618,7 +662,8 @@ def main(argv=None):
     p.add_argument("--exit-code-file", default="")
     p.add_argument("--review-file", default="")
     p.add_argument("--log-file", default="")
-    p.add_argument("--auth-file", default="")
+    p.add_argument("--auth-file", action="append", default=[], help="a Codex auth.json to screen output for")
+    p.add_argument("--previous-out", default="", help="the first attempt's output directory (retry only)")
     p.add_argument("--execution-file", default="")
     p.add_argument("--action-outcome", default="")
     p.add_argument("--conclusion", default="")

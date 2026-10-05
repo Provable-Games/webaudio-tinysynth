@@ -15,7 +15,14 @@ var synth, kb;
    sent, and losing focus releases them all, so no note is left stuck. */
 var held={};
 async function Init(){
-  synth=new WebAudioTinySynth();
+  /* lazy: no AudioContext exists until the first click, tap, key press or
+     change on the page, which starts audio (StartAudio). */
+  synth=new WebAudioTinySynth({lazy:true});
+  ["pointerdown","keydown","click","change"].forEach(function(type){
+    window.addEventListener(type,StartAudio,true);
+  });
+  AudioStatus();
+  setInterval(AudioStatus,250);
   kb=document.getElementById("keyboard");
   kb.addEventListener("change",KeyIn);
   kb.addEventListener("focusout",ReleaseAll);
@@ -36,6 +43,54 @@ async function Init(){
     o.innerHTML=(i+1)+" : "+synth.getTimbreName(0,i);
     document.getElementById("prog").appendChild(o);
   }
+}
+/* Starts audio from a user gesture: resume() creates the AudioContext inside
+   the event handler and starts it. Called again by later gestures while audio
+   is not running, for example after the browser refused to start it. */
+var audioError=null;
+function StartAudio(){
+  var c=synth.getAudioContext();
+  if(c&&c.state=="running")
+    return;
+  audioError=null;
+  synth.resume().then(AudioStatus,function(e){
+    audioError=e;
+    AudioStatus();
+  });
+  AudioStatus();
+}
+/* Shows whether audio is off, blocked, running, or failed to start. */
+function AudioStatus(){
+  var c=synth.getAudioContext(), s=c?c.state:"", text, error=false;
+  if(s=="running"){
+    text="Audio is on.";
+    audioError=null;
+  }
+  else if(s=="closed")
+    text="Audio is closed. Reload the page to start it again.";
+  else if(audioError){
+    text="Audio could not start ("+ErrorText(audioError)+"). Click, tap or press a key to try again.";
+    error=true;
+  }
+  else if(c)
+    text="Audio is blocked by the browser. Click, tap or press a key to start it.";
+  else
+    text="Audio is off. Click, tap or press a key to start it.";
+  var m=document.getElementById("audio");
+  if(m.textContent!=text||m.className!=(error?"error":"")){
+    m.textContent=text;
+    m.className=error?"error":"";
+  }
+}
+/* An error's code (and HTTP status), or its name, with its message. */
+function ErrorText(e){
+  if(!e)
+    return "unknown error";
+  if(e.code){
+    var t=e.message&&e.message.indexOf(e.code)==0?e.message:e.code+(e.message?": "+e.message:"");
+    return e.status!=undefined?t+" "+e.status:t;
+  }
+  return (e.name||"Error")+(e.message?": "+e.message:"");
 }
 function Prog(pg){
   synth.send([0xc0,pg]);
@@ -110,6 +165,7 @@ window.onload=function(){
 </head>
 <body>
 <h1>TinySynth Simple Test Page</h1>
+<div id="audio" role="status"></div>
 <ul>
   <li>Select timbre with dropdown</li>
   <li>Playable with mouse or qwerty-keyboard.</li>

@@ -352,6 +352,32 @@ def parse_review(text):
             "preamble": discarded}
 
 
+def retryable_output(text):
+    """Whether a completed run's output is malformed in a way one retry may fix. Returns (bool, reason).
+
+    Only output that fails the parser and carries no review content qualifies, such
+    as a sentence of prose next to `lgtm` (PR #39). Output with a finding heading,
+    a line that starts like a finding, or a severity word or `path:line` anywhere
+    could describe an issue that a second attempt might omit, so it fails closed
+    without a retry. So does the model's own `Review incomplete:` line.
+    """
+    parsed = parse_review(text)
+    if parsed["kind"] != "malformed":
+        return False, f"the output is {parsed['kind']}, not malformed"
+    if not (text or "").strip():
+        return False, "the output is empty"
+    if parsed["findings"]:
+        return False, "the output has a finding heading"
+    for line in text.splitlines():
+        if line.strip().lower().startswith("review incomplete"):
+            return False, "the output declares the review incomplete"
+        if FINDING_RE.match(line) or PSEUDO_FINDING_RE.match(line):
+            return False, "the output has a line that starts like a finding"
+        if PREAMBLE_CONTENT_RE.search(line):
+            return False, "the output names a severity or a location"
+    return True, "malformed output without review content: " + "; ".join(parsed["errors"])
+
+
 def build_result(*, identity, execution_ok, execution_errors, text, blocking_severities):
     """Combine execution status and review text into one result record.
 
@@ -497,6 +523,12 @@ def render_comment(result, review_text, display_name):
         lines.append("> **BOOTSTRAP:** the base revision has no review configuration, so this review "
                      "used the configuration from the pull request head.")
         lines.append("")
+    retried = result.get("retried") if isinstance(result.get("retried"), dict) else None
+    if retried:
+        reasons = "; ".join(str(e) for e in retried.get("errors") or []) or "no reason recorded"
+        lines.append(f"> **Retried:** the first attempt's output did not follow the output contract ({reasons}), "
+                     "so the review ran once more with the same inputs. Only the second attempt counts.")
+        lines.append("")
     body = review_text or ""
     if result["status"] == "complete" and result["verdict"] == "lgtm":
         lines.append("lgtm")
@@ -512,6 +544,9 @@ def render_comment(result, review_text, display_name):
         lines.append("This is not an approval. The review gate fails until a complete review exists for this head.")
         if body.strip():
             lines += ["", "<details><summary>Unvalidated review output</summary>", "", body.strip(), "", "</details>"]
+    if retried and str(retried.get("output") or "").strip():
+        lines += ["", "<details><summary>First attempt's output (malformed; not part of the review)</summary>", "",
+                  str(retried["output"]).strip(), "", "</details>"]
     comment = "\n".join(lines) + "\n"
     if len(comment) > MAX_COMMENT_CHARS:
         notice = "\n\n**Output truncated to fit a GitHub comment.** The gate used the full parsed result.\n"
@@ -583,6 +618,8 @@ def evaluate_gate(*, policy, upstream, expected, results, event_head, event_base
             messages.append(f"{label}: warning: {warning}")
         if result.get("bootstrap"):
             messages.append(f"{label}: BOOTSTRAP review used the pull request head's review configuration.")
+        if result.get("retried"):
+            messages.append(f"{label}: retried once after malformed output; the second attempt is the review.")
         if not blocking:
             messages.append(f"{label}: review completed ({result.get('verdict')}).")
     return passed, messages
