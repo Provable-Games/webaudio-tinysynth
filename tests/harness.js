@@ -68,6 +68,44 @@ const FORK_PATCHES = [
     from: "var val = Math.floor(60000000 / Get3(s, i + 3));",
     to: "var val = 60000000 / Get3(s, i + 3);",
   },
+  /*
+   * #59 (D-039, ledger L-15): a note released before an operator's attack
+   * ends. The two patches below are the fork's change, so they alter only
+   * the release automation of such notes: an operator still in its attack
+   * at the note-off ramps on to its own value there and is released from it,
+   * instead of being silent until the note-off and set from the last
+   * operator's attack. Notes released after every attack has ended make
+   * upstream's calls exactly; tests/unit/short-notes.test.mjs checks that
+   * against raw upstream for every built-in program in both quality modes.
+   */
+  {
+    name: "short notes: each operator's attack end (#59)",
+    from: "g:g,t2:t+pn.a,v:vp",
+    to: "g:g,t2:p.map(x=>t+x.a),v:vp",
+  },
+  {
+    name: "short notes: release an operator still in its attack from its own ramp value (#59)",
+    from: [
+      "          nt.g[k].gain.cancelScheduledValues(t);",
+      "          if(t==nt.t2)",
+      "            nt.g[k].gain.setValueAtTime(nt.v[k],t);",
+      "          else if(t<nt.t2)",
+      "            nt.g[k].gain.setValueAtTime(nt.v[k]*(t-nt.t)/(nt.t2-nt.t),t);",
+      "          this._setParamTarget(nt.g[k].gain,0,t,nt.r[k]);",
+    ].join("\n"),
+    to: [
+      "          const g=nt.g[k].gain,e=nt.t2[k];",
+      "          g.cancelScheduledValues(t);",
+      "          if(t<=e){",
+      "            if(e>nt.t)",
+      "              g.linearRampToValueAtTime(nt.v[k]*=(t-nt.t)/(e-nt.t),t);",
+      "            else",
+      "              g.setValueAtTime(nt.v[k],t);",
+      "            nt.t2[k]=t;",
+      "          }",
+      "          this._setParamTarget(g,0,t,nt.r[k]);",
+    ].join("\n"),
+  },
 ];
 
 function applyPatches(src, patches) {

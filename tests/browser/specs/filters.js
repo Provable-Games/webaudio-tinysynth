@@ -262,15 +262,21 @@ function floorSpec(sr, seed, withFloor) {
 /* ---- the consumer fixture ---- */
 const FIXTURE = JSON.parse(fs.readFileSync(path.join(pages.ROOT, "tests", "fixtures", "consumer", "filters-setup.json"), "utf8"));
 const FIX_SLOT = 2.0; // the lead's release tail is below -90 dB when the next slot starts
+/*
+ * The fixture starts 1 s into the render, after the release tail of the install's velocity-1
+ * warm-up note (quality 1, Firefox: peak 8.2e-6 at 0, below 1e-10 at 1 s; tasks/T13.md §5). That
+ * note is not filtered, so in the high-passed hi-hat's lowest bands it would count as fixture output.
+ */
+const FIX_START = 1;
 function fixtureSpec(sr, seed, filtered) {
   const steps = [];
   FIXTURE.tinysynth.forEach(([m, n, ops], k) => {
-    const t = k * FIX_SLOT + ON;
+    const t = FIX_START + k * FIX_SLOT + ON;
     steps.push({ call: "setTimbre", args: [m, n, filtered ? ops : ops.map(strip)] });
     if (m) steps.push({ call: "noteOn", args: [9, n, 100, t] });
     else steps.push({ call: "setProgram", args: [0, n] }, { call: "noteOn", args: [0, 60, 100, t] }, { call: "noteOff", args: [0, 60, t + 0.9] });
   });
-  return { seed, sr, duration: FIXTURE.tinysynth.length * FIX_SLOT + 0.2, options: { quality: 1, useReverb: 0 }, masterVol: LEVEL, steps, pcm: "L" };
+  return { seed, sr, duration: FIX_START + FIXTURE.tinysynth.length * FIX_SLOT + 0.2, options: { quality: 1, useReverb: 0 }, masterVol: LEVEL, steps, pcm: "L" };
 }
 /* x[i0..i1) through the RBJ biquad k, in double precision, from rest. */
 function biquad({ b, a }, x, i0, i1) {
@@ -295,7 +301,7 @@ function fixtureBands(x, y, sr) {
   FIXTURE.tinysynth.forEach(([m, n, ops], k) => {
     const note = m ? n : 60, N = m ? 4096 : 16384; // the hi-hat lasts 0.14 s
     const filters = ops.filter((o) => o.fl);
-    const s0 = Math.round((k * FIX_SLOT) * sr), i0 = Math.round((k * FIX_SLOT + ON + 0.01) * sr);
+    const s0 = Math.round((FIX_START + k * FIX_SLOT) * sr), i0 = Math.round((FIX_START + k * FIX_SLOT + ON + 0.01) * sr);
     const z = biquad(expected(filters[0], note, sr), x, s0, i0 + N); // every filtered operator of a fixture timbre has the same setting
     const X = power(x, i0, N), Y = power(y, i0, N), Z = power(z, i0 - s0, N);
     for (const fc of BANDS) {
