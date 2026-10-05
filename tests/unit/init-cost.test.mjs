@@ -55,6 +55,62 @@ const hasGetter = (synth) => typeof Object.getOwnPropertyDescriptor(synth.noiseB
 
 for (const variant of variants) {
   describe(variant.name, () => {
+    describe("useReverb 0 makes no reverb impulse", () => {
+      test("no convBuf, no 2-channel buffer, no convolver; the noise buffers keep their data", () => {
+        const l = load(variant);
+        const seed = 0x5eed0001;
+        const off = new l.Synth({ context: l.at(), seed, useReverb: 0 });
+        expect(off.convBuf).toBe(null);
+        expect(buffers(l.trace, 2)).toEqual([]);
+        expect(ops(l.trace, "create").filter((x) => /^conv#/.test(x[1]))).toEqual([]);
+        expect([off.conv, off.rev]).toEqual([undefined, undefined]);
+        expect(hashOf(off.noiseBuf.n0)).toBe(want("n0", seed, SR));
+        expect(hashOf(off.noiseBuf.n1)).toBe(want("n1", seed, SR));
+
+        const on = new l.Synth({ context: l.at(), seed });
+        expect(buffers(l.trace, 2).length).toBe(1);
+        expect(ops(l.trace, "create").filter((x) => /^conv#/.test(x[1])).length).toBe(1);
+        expect(hashOf(on.convBuf)).toBe(want("convBuf", seed, SR));
+        expect(hashOf(on.noiseBuf.n0)).toBe(hashOf(off.noiseBuf.n0));
+        expect(hashOf(on.noiseBuf.n1)).toBe(hashOf(off.noiseBuf.n1));
+      }, SLOW);
+
+      test("useReverb is read at each install: toggling it and installing again adds or drops the impulse, and the noise stays seed-identical", () => {
+        const l = load(variant);
+        const seed = 7;
+        const synth = new l.Synth({ context: l.at(), seed, useReverb: 0 });
+        expect(synth.convBuf).toBe(null);
+        synth.useReverb = 1;
+        synth.setAudioContext(l.at());
+        expect(hashOf(synth.convBuf)).toBe(want("convBuf", seed, SR));
+        expect([hashOf(synth.noiseBuf.n0), hashOf(synth.noiseBuf.n1)]).toEqual([want("n0", seed, SR), want("n1", seed, SR)]);
+        synth.useReverb = 0;
+        synth.setAudioContext(l.at());
+        expect(synth.convBuf).toBe(null); // the old impulse is not kept
+        expect(synth.conv).toBe(null);
+        expect([hashOf(synth.noiseBuf.n0), hashOf(synth.noiseBuf.n1)]).toEqual([want("n0", seed, SR), want("n1", seed, SR)]);
+      }, SLOW);
+
+      test("the 44.1 kHz default-seed n0 and n1 equal the seeded expectations with reverb off, and the impulse with it on", () => {
+        const l = load(variant);
+        const off = new l.Synth({ context: l.at(44100), useReverb: 0 });
+        const on = new l.Synth({ context: l.at(44100) });
+        const h = E.hashes[44100][E.defaultSeed];
+        expect([off.convBuf, hashOf(off.noiseBuf.n0), hashOf(off.noiseBuf.n1)]).toEqual([null, h.n0, h.n1]);
+        expect([hashOf(on.convBuf), hashOf(on.noiseBuf.n0), hashOf(on.noiseBuf.n1)]).toEqual([h.convBuf, h.n0, h.n1]);
+      }, SLOW);
+
+      test("the reverb is still wired with the option on, and not with it off", () => {
+        const l = load(variant);
+        const wired = (opts) => {
+          const y = new l.Synth({ context: l.at(), ...opts });
+          return [!!y.conv, !!y.rev, y.conv ? y.conv.buffer === y.convBuf : null];
+        };
+        expect(wired({})).toEqual([true, true, true]);
+        expect(wired({ useReverb: 0 })).toEqual([false, false, null]);
+      }, SLOW);
+    });
+
     describe("the constructor installs the built-in timbres once", () => {
       test("the number of timbre installs equals one setQuality() call, with and without a quality option", () => {
         const l = load(variant);

@@ -26,7 +26,8 @@ const f32=x=>isFinite(Math.fround(x));
    draws on, so the streams never overlap and no buffer's samples depend on another's. The
    mix keeps seeds that differ by mulberry32's increment or by 2^30 from giving shifted
    copies of each other's buffers. The same seed, version and sample rate give the same
-   Float32 data. Any change to the generated data must increment the version. */
+   Float32 data. The impulse is made only with useReverb (#18); that changes no data and no other
+   buffer's stream. Any change to the generated data must increment the version. */
 function mulberry32(a){
   return ()=>{
     a=a+0x6d2b79f5|0;
@@ -1653,27 +1654,29 @@ function WebAudioTinySynthCore(target) {
       this.out=this.actx.createGain();
       this.comp=this.actx.createDynamicsCompressor();
       var blen=this.actx.sampleRate*.5|0;
-      this.convBuf=this.actx.createBuffer(2,blen,this.actx.sampleRate);
-      this.noiseBuf={};
-      this.noiseBuf.n0=this.actx.createBuffer(1,blen,this.actx.sampleRate);
-      this.noiseBuf.n1=this.actx.createBuffer(1,blen,this.actx.sampleRate);
-      var d1=this.convBuf.getChannelData(0);
-      var d2=this.convBuf.getChannelData(1);
-      var dn=this.noiseBuf.n0.getChannelData(0);
-      var dr=this.noiseBuf.n1.getChannelData(0);
       let h=this.seed; // fmix32, then stream k (see mulberry32)
       h=Math.imul(h^h>>>16,0x85ebca6b);
       h=Math.imul(h^h>>>13,0xc2b2ae35);
       h^=h>>>16;
       const rnd=k=>mulberry32(h+k*0x40000000);
-      let g=rnd(0);
-      for(let i=0;i<blen;++i){
-        if(i/blen<g()){
-          d1[i]=Math.exp(-3*i/blen)*(g()-.5)*.5;
-          d2[i]=Math.exp(-3*i/blen)*(g()-.5)*.5;
+      /* The reverb impulse only with reverb on (#18); useReverb applies at each install. */
+      this.convBuf=null;
+      if(this.useReverb){
+        this.convBuf=this.actx.createBuffer(2,blen,this.actx.sampleRate);
+        const d1=this.convBuf.getChannelData(0),d2=this.convBuf.getChannelData(1);
+        let g=rnd(0);
+        for(let i=0;i<blen;++i){
+          if(i/blen<g()){
+            d1[i]=Math.exp(-3*i/blen)*(g()-.5)*.5;
+            d2[i]=Math.exp(-3*i/blen)*(g()-.5)*.5;
+          }
         }
       }
-      g=rnd(1);
+      this.noiseBuf={};
+      this.noiseBuf.n0=this.actx.createBuffer(1,blen,this.actx.sampleRate);
+      this.noiseBuf.n1=this.actx.createBuffer(1,blen,this.actx.sampleRate);
+      const dn=this.noiseBuf.n0.getChannelData(0),dr=this.noiseBuf.n1.getChannelData(0);
+      let g=rnd(1);
       for(let i=0;i<blen;++i)
         dn[i]=g()*2-1;
       g=rnd(2);

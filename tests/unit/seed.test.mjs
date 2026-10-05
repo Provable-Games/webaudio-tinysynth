@@ -42,6 +42,8 @@ function load(variant) {
 
 const channels = (buf) => Array.from({ length: buf.numberOfChannels }, (_, c) => buf.getChannelData(c));
 const buffersOf = (synth) => ({ convBuf: channels(synth.convBuf), n0: channels(synth.noiseBuf.n0), n1: channels(synth.noiseBuf.n1) });
+/* n0 and n1 only: with useReverb 0 there is no convBuf (#18). */
+const noiseOf = (synth) => ({ n0: sha(channels(synth.noiseBuf.n0)), n1: sha(channels(synth.noiseBuf.n1)) });
 const hashesOf = (synth) => {
   const b = buffersOf(synth);
   return { convBuf: sha(b.convBuf), n0: sha(b.n0), n1: sha(b.n1) };
@@ -84,20 +86,19 @@ describe("the seeded expectations", () => {
 });
 
 describe("stream independence on the library itself", () => {
-  test("a copy of the source that skips the convBuf loop when useReverb is 0 keeps n0 and n1", () => {
-    // The library always fills convBuf today (skipping it is #18's work); this copy stops the
-    // convBuf loop at its first sample, so its stream draws nothing, and n0 and n1 must not move.
-    const source = variants.find((v) => v.name === "webaudio-tinysynth.js").source;
-    const anchor = "if(i/blen<g()){";
-    expect(source.split(anchor).length - 1).toBe(1);
-    const l = load({ name: "skip-conv.js", source: source.replace(anchor, "if(!this.useReverb)break;" + anchor) });
-    for (const sr of RATES) {
-      const skipped = hashesOf(new l.Synth({ context: l.at(sr), seed: 1, useReverb: 0 }));
-      expect(skipped.convBuf, "the convBuf loop was skipped @" + sr).toBe(sha([new Float32Array(sr / 2), new Float32Array(sr / 2)]));
-      expect({ n0: skipped.n0, n1: skipped.n1 }, "@" + sr).toEqual({ n0: E.hashes[sr][1].n0, n1: E.hashes[sr][1].n1 });
-      expect(hashesOf(new l.Synth({ context: l.at(sr), seed: 1 })), "reverb on @" + sr).toEqual(E.hashes[sr][1]);
+  test("useReverb: 0 skips the convBuf and keeps n0 and n1 (#18): the streams are independent", () => {
+    // Every buffer has its own stream, so the library not drawing convBuf's stream (it makes no
+    // convBuf with reverb off) leaves n0 and n1 as the seeded expectations have them.
+    for (const variant of variants) {
+      const l = load(variant);
+      for (const sr of RATES) {
+        const off = new l.Synth({ context: l.at(sr), seed: 1, useReverb: 0 });
+        expect(off.convBuf, variant.name + " convBuf @" + sr).toBe(null);
+        expect(noiseOf(off), variant.name + " @" + sr).toEqual({ n0: E.hashes[sr][1].n0, n1: E.hashes[sr][1].n1 });
+        expect(hashesOf(new l.Synth({ context: l.at(sr), seed: 1 })), variant.name + " reverb on @" + sr).toEqual(E.hashes[sr][1]);
+      }
+      expect(l.random.calls).toBe(0);
     }
-    expect(l.random.calls).toBe(0);
   }, SLOW);
 });
 
@@ -140,10 +141,10 @@ for (const variant of variants) {
       }
     }, SLOW);
 
-    test("useReverb: 0 (which still fills convBuf), lazy start, setQuality() and context replacement give the same buffers", () => {
+    test("useReverb: 0 (which makes no convBuf), lazy start, setQuality() and context replacement give the same buffers", () => {
       const l = load(variant);
       const want = E.hashes[44100][1];
-      expect(hashesOf(new l.Synth({ context: l.at(44100), seed: 1, useReverb: 0 }))).toEqual(want);
+      expect(noiseOf(new l.Synth({ context: l.at(44100), seed: 1, useReverb: 0 }))).toEqual({ n0: want.n0, n1: want.n1 });
       expect(hashesOf(new l.Synth({ context: l.at(44100), seed: 1, quality: 0 }))).toEqual(want);
       const lazy = new l.Synth({ lazy: true, seed: 1 });
       expect(lazy.getAudioContext()).toBe(null);
