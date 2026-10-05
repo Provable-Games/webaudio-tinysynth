@@ -1,10 +1,25 @@
 name: Browser matrix
 
 # The declared browser and rendered-audio matrix (tests/browser/matrix.js,
-# scripts/browser-matrix.js): one job per engine, each running both builds,
-# both quality modes and both sample rates. A browser that cannot be
-# installed or launched fails its job; nothing is skipped. Each job writes its
-# result table to the job summary.
+# scripts/browser-matrix.js) and the demo pages (tests/browser/specs/demos.js).
+#
+#   browser (ENGINE, K/3)  one job per engine and shard. Every declared spec,
+#                          assert and observe, belongs to one of the shards,
+#                          balanced by its measured seconds in
+#                          tests/browser/matrix.js (--shard=K/N). Each shard
+#                          runs both builds, both quality modes and both sample
+#                          rates, writes its result table to the job summary
+#                          and uploads its results.json.
+#   demos (ENGINE)         npm run test:browser:demos for one engine.
+#   browser matrix         the aggregate to require: it fails unless every
+#                          shard and demos job passed and, from the uploaded
+#                          results, every engine ran every declared spec exactly
+#                          once with every case passing. Its summary lists the
+#                          measured times per shard and per spec.
+#
+# A browser that cannot be installed or launched fails its job; nothing is
+# skipped. To change the shard count, change the shard list, SHARD and the job
+# name together; the aggregate fails if a shard is missing.
 
 on:
   pull_request:
@@ -25,28 +40,28 @@ defaults:
 
 jobs:
   browser:
-    name: browser (${{ matrix.engine }})
+    name: browser (${{ matrix.engine }}, ${{ matrix.shard }}/3)
     # Playwright 1.63.0 publishes linux-arm64 builds of all three engines
     # (Chromium 153, Firefox 155, WebKit 26.6; see docs/improvements/tasks/T6.md).
     # An x64 exception for one engine needs recorded evidence; never drop an engine.
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
+        engine: [chromium, firefox, webkit]
+        shard: [1, 2, 3]
         include:
           - engine: chromium
-            runner: ubuntu-24.04-arm
             install: --only-shell chromium
           - engine: firefox
-            runner: ubuntu-24.04-arm
             install: firefox
           - engine: webkit
-            runner: ubuntu-24.04-arm
             install: webkit
     env:
       ENGINE: ${{ matrix.engine }}
       INSTALL: ${{ matrix.install }}
+      SHARD: ${{ matrix.shard }}/3
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -57,6 +72,8 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
       - run: npm ci
+      - name: Shard layout
+        run: node scripts/browser-matrix.js --list --shard="$SHARD"
       # The committed min.js can be older than the source in a pull request
       # (dist.yml regenerates it after merging); the matrix tests a fresh build.
       - name: Fresh build of the current source into .build/
@@ -75,8 +92,98 @@ jobs:
           pactl load-module module-null-sink sink_name=t6null
           pactl set-default-sink t6null
           pactl info
-      - name: Browser matrix (assert specs)
-        run: npm run "test:browser:${ENGINE}" -- --out="$RUNNER_TEMP/browser-matrix"
-      - name: Observe-only specs (hangs under deadlines, run-to-run variation)
+      # A shard with no spec of a step's selection passes that step without
+      # launching a browser; the aggregate checks that every spec ran.
+      - name: Browser matrix (this shard's assert specs)
+        run: npm run "test:browser:${ENGINE}" -- --shard="$SHARD" --out="$RUNNER_TEMP/browser-matrix"
+      - name: Observe-only specs in this shard (hangs under deadlines, run-to-run variation)
         if: ${{ !cancelled() }}
-        run: npm run test:browser:observe -- --engines="$ENGINE" --out="$RUNNER_TEMP/browser-observe"
+        run: npm run test:browser:observe -- --engines="$ENGINE" --shard="$SHARD" --out="$RUNNER_TEMP/browser-observe"
+      - name: Upload this shard's results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: browser-results-${{ matrix.engine }}-${{ matrix.shard }}
+          path: |
+            ${{ runner.temp }}/browser-matrix/results.json
+            ${{ runner.temp }}/browser-observe/results.json
+          if-no-files-found: warn
+          retention-days: 7
+
+  demos:
+    name: demos (${{ matrix.engine }})
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - engine: chromium
+            install: --only-shell chromium
+          - engine: firefox
+            install: firefox
+          - engine: webkit
+            install: webkit
+    env:
+      ENGINE: ${{ matrix.engine }}
+      INSTALL: ${{ matrix.install }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - name: Install the pinned Playwright's browser and system libraries
+        run: |
+          read -r -a args <<< "$INSTALL"
+          npx playwright-core install --with-deps "${args[@]}"
+      - name: Audio output for Firefox (PulseAudio null sink)
+        if: matrix.engine == 'firefox'
+        run: |
+          sudo apt-get install -y --no-install-recommends pulseaudio pulseaudio-utils
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=t6null
+          pactl set-default-sink t6null
+          pactl info
+      # The demo pages load webaudio-tinysynth.js (the source). Deadlines: one
+      # per case, and 900 s per engine worker (tests/browser/specs/demos.js).
+      - name: Demo pages
+        run: npm run test:browser:demos -- --engines="$ENGINE" --out="$RUNNER_TEMP/demos"
+
+  aggregate:
+    name: browser matrix
+    needs: [browser, demos]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+      # A shard that uploaded nothing is reported by the next step.
+      - name: Download the shards' results
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: browser-results-*
+          path: ${{ runner.temp }}/results
+      - name: Every engine ran every declared spec once, and every case passed
+        run: node scripts/browser-matrix.js --merge="$RUNNER_TEMP/results"
+      - name: Every shard and demos job passed
+        if: ${{ !cancelled() }}
+        env:
+          BROWSER_RESULT: ${{ needs.browser.result }}
+          DEMOS_RESULT: ${{ needs.demos.result }}
+        run: |
+          echo "browser shards: $BROWSER_RESULT; demos: $DEMOS_RESULT"
+          if [ "$BROWSER_RESULT" != success ] || [ "$DEMOS_RESULT" != success ]; then
+            echo "::error title=Browser matrix::browser shards $BROWSER_RESULT, demos $DEMOS_RESULT"
+            exit 1
+          fi
