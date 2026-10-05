@@ -59,6 +59,26 @@ States: `pending`, `running`, `review`, `accepted`, `blocked`.
 | T1B | later CI extensions | `t1/ci-ext` | 2f82ec7 | accepted | squash bb7132f (PR #62, merged by the user) | The browser matrix is sharded 3 per engine by declared spec seconds, plus a `browser matrix` aggregate; the slowest assert step dropped from 796 s to 382 s. A malformed AI review with no content is retried once, with the trust boundary kept (supervisor reviewed the credential path). Demos run in CI as `demos (ENGINE)`. #31: re-trigger by a human (close/reopen or a signed commit). Optionally, require `browser matrix` on `main`. Sonnet agent. |
 | T10 | all (independent verification) | `t10/verify` | after T8 T9 T1B T11 T12 | pending | | Gate G2 |
 
+## v2.0.0 release checklist (D-037; consumer requests 2026-10-05)
+
+1. **G2 accepted.** Then the user takes #31 out of draft. A human commit or a close/reopen gets its checks to run (T1B §4). The user merges #31 into `main`.
+2. **Release PR.** Create `release/v2.0.0` from `main` and run `npm ci && npm run build`. Commit the min.js and its map, signed, and open a PR. CI requires both files to equal a fresh build. The user squash-merges it.
+3. **Tag.** The user signs and pushes it: `git tag -s v2.0.0 <merge sha> && git push origin v2.0.0`.
+4. **Assets.** Attach:
+   - `webaudio-tinysynth.min.js`
+   - `webaudio-tinysynth.min.js.map`
+   - **`SHA256SUMS`**, made with `sha256sum webaudio-tinysynth.min.js webaudio-tinysynth.min.js.map > SHA256SUMS` at the tag. The consumer asked for this file.
+5. **Notes.** Include:
+   - the sha256 of both files;
+   - raw and gzip sizes from `npm run size` (Node zlib -9 and GNU gzip -9 -n);
+   - the pinned Terser 5.51.2 and Node versions;
+   - **the verbatim output of `npm run verify`**, run from a clean checkout of the tag with `npm ci` (requested by the consumer);
+   - a behaviour summary against upstream, pointing to NOTICE and README "What behaves differently".
+6. **Publish.** The user runs `gh release create v2.0.0 webaudio-tinysynth.min.js webaudio-tinysynth.min.js.map SHA256SUMS --notes-file <notes>`. Publishing is the user's step (D-002).
+7. **Consumer.** Send onchain-midi-player (coordinator session) the tag, both hashes and the release URL. It runs a single re-pin and re-validation at `v2.0.0`.
+
+Before the tag, send the consumer the min.js hash and a behaviour summary when T8 merges. Explicitly flag any T10 fix that touches sound or the API.
+
 ## Gates
 
 | Gate | Requirement | State |
