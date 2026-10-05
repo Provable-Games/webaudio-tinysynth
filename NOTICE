@@ -83,6 +83,18 @@ Modifications by Provable Games, based on upstream commit
     the soundedit.html timbre editor installs edits with setTimbre()
     instead of changing the synth's timbre tables, and installs them
     again after a quality change.
+  - webaudio-tinysynth.js: the metallic noise buffer n1 is generated
+    once per AudioContext installation, when it is first needed (by
+    playMIDI(), before it reads the clock; by the new prewarm(); or by
+    the first note that plays it) instead of at every install; the
+    reverb impulse is not generated when useReverb is 0 (convBuf is
+    null); and the constructor installs the built-in timbres once. The
+    generated data is unchanged for every seed. The first playMIDI()
+    per installation waits for the build (20-47 ms on a desktop) before
+    it sets the start, so the song starts slightly later and nothing
+    within it shifts. A live note sent before that starts after the
+    build with its full envelope (about 46 ms in Chromium); prewarm()
+    after resume() avoids that and removes only this deferred build.
   - webaudio-tinysynth.min.js and its source map are regenerated from
     the modified source.
   - Demo pages and README updated to use the JavaScript API; tests added.
