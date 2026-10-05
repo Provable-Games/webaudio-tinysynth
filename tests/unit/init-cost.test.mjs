@@ -239,6 +239,22 @@ for (const variant of variants) {
         }
       }, SLOW);
 
+      test("a note dropped after the generation leaves an existing voice's requested time alone (Codex review of #63, LOW)", () => {
+        const l = load(variant);
+        l.env.clock.ms = 1000;
+        const synth = new l.Synth({ context: l.at(), quality: 1, seed: 1, useReverb: 0 });
+        synth.setTimbre(0, 0, [{ w: "sine", a: 0.1 }]);
+        synth.noteOn(0, 72, 100, 1.041); // a valid voice whose onset the dropped note's moved time will equal
+        const held = synth.notetab[synth.notetab.length - 1], voices = synth.notetab.length;
+        synth.setTimbre(0, 0, [{ w: "n1", k: 200 }]); // note 72 overflows float32: _note drops it, after the build
+        l.count.stall = 41;
+        synth.noteOn(0, 72, 100, 1.01);
+        expect([synth.notetab.length, l.count.sin], "dropped, built").toEqual([voices, SIN_N1(SR)]);
+        expect(held.s).toBe(1.041);
+        synth.noteOff(0, 72, 1.03); // before the held voice's onset: as in the base, it does not match
+        expect([held.f, held.e]).toEqual([0, 99999]);
+      }, SLOW);
+
       test("a custom n1 timbre in quality 0 plays the seeded data on its first note", () => {
         const l = load(variant);
         const seed = 99;

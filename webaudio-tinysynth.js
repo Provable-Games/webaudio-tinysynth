@@ -1309,8 +1309,11 @@ function WebAudioTinySynthCore(target) {
           o[i].stop(t+p[0].d*this.releaseRatio);
         }
       }
-      if(!this.rhythm[ch]) // t2: each operator's attack end (#59)
-        this.notetab.push({t:t,s:t,e:99999,ch:ch,n:n,o:o,g:g,q:q,t2:p.map(x=>t+x.a),v:vp,r:r,f:0});
+      if(!this.rhythm[ch]){ // t2: each operator's attack end (#59)
+        const nt={t:t,s:t,e:99999,ch:ch,n:n,o:o,g:g,q:q,t2:p.map(x=>t+x.a),v:vp,r:r,f:0};
+        this.notetab.push(nt);
+        return nt; // noteOn() sets s when it moved the onset
+      }
       else // tracked until it ends, so stops, seeks and dispose() reach it (#11, D-019)
         this._src.push({t:t,e:t+p[0].d*this.releaseRatio,ch:ch,o:o,g:g,q:q});
     },
@@ -1485,11 +1488,11 @@ function WebAudioTinySynthCore(target) {
           this._note(t,ch,n,v,p);
         return;
       }
-      this._note(t,ch,n,v,p);
       /* The voice keeps the time it was asked for, s (the clock on entry for no time), to match its
-         note-off and pedal-up; the envelope runs from the moved onset, and a release inside the stall is made at that onset. */
-      const nt=this.notetab[this.notetab.length-1];
-      if(t>u && nt && nt.t==t && nt.ch==ch && nt.n==n)
+         note-off and pedal-up; the envelope runs from the moved onset, and a release inside the stall
+         is made at that onset. Only the voice this call made: a dropped note has none. */
+      const nt=this._note(t,ch,n,v,p);
+      if(t>u && nt)
         nt.s=u;
     },
     setTsMode:(tsmode)=>{
