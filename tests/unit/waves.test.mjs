@@ -17,6 +17,18 @@ import { H, variants, noteHz } from "./helpers.mjs";
 
 const calls = (trace, from = 0) => trace.slice(from).map((line) => JSON.parse(line));
 
+/*
+ * Timeout for the tests that complete two or more context installs (construction counts as one);
+ * on CI each took at least half of Vitest's 5 s default. The time is CPU work, not waiting: no
+ * timer or poll is involved. Every install generates the 0.5 s seeded buffers, and in the harness's
+ * vm context each Math lookup in their loops goes through the contextified global (about 2.8 M
+ * Math.sin calls for n1 at 44.1 kHz). One install costs about 0.43 s at 44.1 kHz and 0.93 s at
+ * 96 kHz on a local x64 core, and about 1.25 s at 44.1 kHz on the arm64 CI runner with the other
+ * unit files running alongside, so the four-install tests reached 5.0-5.1 s there against
+ * Vitest's 5 s default (PR #57; tasks/T6.md §18.9). 60 s keeps more than ten times that.
+ */
+const INSTALLS_TIMEOUT = 60000;
+
 /* The error `fn` throws (from the library's realm, so read by name and message), or null. */
 function thrown(fn) {
   try {
@@ -181,7 +193,7 @@ describe.each(variants)("$name: registering waves (#26)", (variant) => {
       expect([buf.numberOfChannels, buf.length, buf.sampleRate]).toEqual([1, want.frames.length, sr]);
       expect(Buffer.from(buf.getChannelData(0).buffer).equals(Buffer.from(want.frames.buffer))).toBe(true);
     }
-  }, 60000); // 5 s is too short on a loaded machine
+  }, INSTALLS_TIMEOUT);
 
   test("the issue's example values: 64-step triangle k=2/128 frames/375 Hz and 8-sample pulse k=14/112/428.6 Hz at 48 kHz (plus the guard frame)", () => {
     const s = make(variant);
@@ -195,7 +207,7 @@ describe.each(variants)("$name: registering waves (#26)", (variant) => {
     // TinyChip's 32,767-step LFSR (D-028): k = 1 at both rates.
     s.synth.setSampleWave("nNOI", lfsr(32767, 1));
     expect(s.synth.noiseBuf.nNOI.length).toBe(32768);
-  });
+  }, INSTALLS_TIMEOUT);
 
   test("the registry keeps copies: changing the caller's arrays later changes nothing, now or after a context change", () => {
     const s = make(variant);
@@ -213,7 +225,7 @@ describe.each(variants)("$name: registering waves (#26)", (variant) => {
     expect(calls(s.trace, from).filter((c) => c[0] === "createPeriodicWave").map((c) => c.slice(2))).toEqual([[[0, 0, 0], [0, 1, 0.5]], [[0, 0, 0, 0, 0], [0, 9, 9, 9, 9]]]); // registry first (review L2)
     // The stored copy is not the caller's array either.
     expect(s.synth._wv.get("nTRI")[0]).not.toBe(samples);
-  });
+  }, INSTALLS_TIMEOUT);
 
   test("re-registering replaces transactionally: invalid data keeps the old wave; sounding voices keep theirs, later notes get the new one", () => {
     const s = make(variant);
@@ -253,7 +265,7 @@ describe.each(variants)("$name: playing registered waves (#26)", (variant) => {
     const [osc] = sourcesBy(s, (y) => y.noteOn(0, 69, 100, 2));
     expect(osc.fm[0] / osc.freq).toBeCloseTo(carrier.fm[0] / carrier.rate, 12);
     expect(osc.target / osc.freq).toBeCloseTo(carrier.target / carrier.rate, 12);
-  });
+  }, INSTALLS_TIMEOUT);
 
   test("n0 and n1 keep the 440 Hz basis, and FM into them too", () => {
     const s = make(variant);
@@ -299,7 +311,7 @@ describe.each(variants)("$name: playing registered waves (#26)", (variant) => {
     // Before the context exists (lazy), only built-in and registered names are known.
     const lazy = make(variant, { lazy: true });
     expect(thrown(() => lazy.synth.setTimbre(1, 38, [{ w: "nDirect" }]))).toEqual({ name: "TypeError", message: "unknown wave: nDirect" });
-  });
+  }, INSTALLS_TIMEOUT);
 
   test("a caller's buffer written over a registered name plays as a caller's buffer: 440 basis, whole buffer (review L1)", () => {
     const s = make(variant);
@@ -396,7 +408,7 @@ describe.each(variants)("$name: setTimbre and the registry (#26, D-026)", (varia
       const [o] = sourcesBy(s, (y) => y.noteOn(0, 69, 100, 1));
       expect(o.buffer).toBe(buf._id);
     }
-  });
+  }, INSTALLS_TIMEOUT);
 });
 
 describe.each(variants)("$name: the registry across contexts (#26, D-018)", (variant) => {
@@ -413,7 +425,7 @@ describe.each(variants)("$name: the registry across contexts (#26, D-018)", (var
     expect(s.synth.noiseBuf.nTRI).not.toBe(old[0]);
     expect(s.synth.wave.wOrg).not.toBe(old[1]);
     expect(Array.from(s.synth.noiseBuf.nTRI.getChannelData(0))).toEqual(Array.from(heldTable(TRI64, 48000).frames));
-  });
+  }, INSTALLS_TIMEOUT);
 
   test("a wave the new context refuses leaves the installed graph as it was (review L2), and a refused registration stores nothing", () => {
     const s = make(variant);
@@ -500,7 +512,7 @@ describe.each(variants)("$name: the registry across contexts (#26, D-018)", (var
     caller.createPeriodicWave = () => { throw new Error("refused"); };
     expect(thrown(() => t.synth.setAudioContext(caller))).toEqual({ name: "Error", message: "refused" });
     expect(caller.state).toBe("running");
-  });
+  }, INSTALLS_TIMEOUT);
 
   test("dispose() releases the context's waves and keeps the definitions; later calls change nothing audible", async () => {
     const s = make(variant);
@@ -537,5 +549,5 @@ describe.each(variants)("$name: the registry across contexts (#26, D-018)", (var
     a.synth.setAudioContext(a.Ctx());
     b.synth.setAudioContext(b.Ctx());
     expect(strip(b.trace).length - strip(a.trace).length).toBe(2); // and one more at the rebuild
-  });
+  }, INSTALLS_TIMEOUT);
 });

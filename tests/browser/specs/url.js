@@ -8,6 +8,10 @@
  * non-MIDI bytes, a reset connection, a refused connection, and two races in
  * which a slow response arrives after a newer URL or direct load.
  *
+ * Since T5 (#14) the specs/api-url.js assert spec asserts the loadMIDIUrl()
+ * promise contract that these observations preceded (tasks/T6.md §13, §18);
+ * this phase-A spec is kept unchanged as the baseline record.
+ *
  * Every scenario first installs a small "previous" song directly, so the
  * observation shows whether a failed load kept it. Truncated MIDI bytes hang
  * the page at baseline (#4) and are exercised by the hang spec instead.

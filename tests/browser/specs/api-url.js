@@ -2,7 +2,8 @@
  * T5 (#14): the loadMIDIUrl() promise contract against the controlled server
  * (scripts/browser-server.js), in real XMLHttpRequest implementations.
  *
- * Asserted per build: success resolves with the response bytes after one GET;
+ * Asserted per build: success resolves with the response bytes after one GET,
+ * with the song already installed when the promise's handlers run;
  * statuses outside 200-299 reject HTTP_STATUS (a redirect is followed); an
  * empty, non-MIDI or truncated body rejects with loadMIDI()'s code; a reset or
  * refused connection rejects NETWORK_ERROR; opts.signal aborts the request;
@@ -56,7 +57,9 @@ function pageScript() {
       var p = synth.loadMIDIUrl(url, ac ? { signal: ac.signal } : undefined);
       rec.isPromise = !!p && typeof p.then === "function";
       p.then(function (v) {
-        rec.state = "resolved"; rec.byteLength = v.byteLength;
+        // The song the synth holds when the promise's handlers run (#14: it resolves once installed).
+        var st = synth.getPlayStatus();
+        rec.state = "resolved"; rec.byteLength = v.byteLength; rec.atResolve = { maxTick: st.maxTick, events: synth.song ? synth.song.ev.length : null };
       }, function (e) {
         rec.state = "rejected"; rec.name = e && e.name; rec.code = e && typeof e.code === "string" ? e.code : null; rec.status = e && e.status;
       });
@@ -67,7 +70,7 @@ function pageScript() {
     abortWith: function (id, reason) { loads[id].ac.abort(reason); },
     outcome: function (id) {
       var r = loads[id];
-      return { state: r.state, isPromise: r.isPromise, byteLength: r.byteLength, name: r.name, code: r.code, status: r.status };
+      return { state: r.state, isPromise: r.isPromise, byteLength: r.byteLength, atResolve: r.atResolve, name: r.name, code: r.code, status: r.status };
     },
     loadBytes: function (b64) { synth.loadMIDI(this.bytes(b64)); return this.status(); },
     forget: function (url) { synth.loadMIDIUrl(url); }, // fire and forget: nothing handles the result
@@ -237,6 +240,8 @@ function cases(shared) {
         const st = await ev.status(p);
         t.check("200: returns a promise that resolves with the response bytes", o.isPromise && o.state === "resolved" && o.byteLength === WS_BYTES, JSON.stringify(o));
         t.check("200: the song is installed (ws.mid end tick " + WS + ")", st.maxTick === WS, "maxTick " + st.maxTick);
+        t.check("200: the song is already installed when the promise resolves", !!o.atResolve && o.atResolve.maxTick === WS && o.atResolve.events === st.events,
+          JSON.stringify([o.atResolve, st.events]));
         t.check("200: exactly one GET", reached(url).length === 1 && reached(url)[0].status === 200, JSON.stringify(reached(url)));
       }
       // Status policy and malformed bodies: rejected, previous song kept.
