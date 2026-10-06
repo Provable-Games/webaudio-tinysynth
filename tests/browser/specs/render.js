@@ -93,6 +93,7 @@ async function render(p, spec) {
         if (digest.byteLength !== capture.byteLength)
           throw new RangeError("declared byteLength " + capture.byteLength + " differs from validated " + digest.byteLength);
         digests[name] = Object.freeze(digest);
+        recordCreatedBufferDigest(digests, name, digests[name]);
         captures[name] = Buffer.from(capture.bytesBase64, "base64");
         captureTrace[name] = Object.freeze({
           browser: Object.freeze({ channels: capture.channels, frames: capture.frames,
@@ -109,6 +110,7 @@ async function render(p, spec) {
     r.bufferCaptureTrace = captureTrace;
     r.bufferCaptureSettings = bufferCaptureSettings(spec);
     delete r.bufferBytes;
+    for (const name of GENERATED_BUFFER_NAMES) recordBufferMapObservation(digests, name, "renderReturn");
   }
   return r;
 }
@@ -140,7 +142,12 @@ async function renderParts(p, s, ctx, variant = {}) {
  * items' rejections and NaN/Infinity counts added up.
  */
 function combine(s, parts) {
-  if (!s.items) return parts[0];
+  if (!s.items) {
+    const result = parts[0];
+    if (result && result.bufferSha256)
+      for (const name of GENERATED_BUFFER_NAMES) recordBufferMapObservation(result.bufferSha256, name, "combine");
+    return result;
+  }
   const nch = parts[0].channels.length;
   const channels = [];
   for (let c = 0; c < nch; ++c) {
@@ -266,6 +273,31 @@ function objectIntegritySummary(value) {
   };
 }
 
+/* Fixed tuple: [kind, enumerable, configurable, writable, type]; accessors use null writable then get/set flags. */
+function fixedDigestFieldDescriptor(value, key) {
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  if (!descriptor) return ["missing"];
+  if (Object.prototype.hasOwnProperty.call(descriptor, "value"))
+    return ["data", !!descriptor.enumerable, !!descriptor.configurable, !!descriptor.writable, safeValueType(descriptor.value)];
+  return ["accessor", !!descriptor.enumerable, !!descriptor.configurable, null,
+    typeof descriptor.get === "function", typeof descriptor.set === "function"];
+}
+
+function generatedBufferDigestSnapshot(value) {
+  const fields = Object.create(null);
+  for (const key of ["sha256", "frames", "byteLength"]) fields[key] = fixedDigestFieldDescriptor(value, key);
+  fields.channels = descriptorSummary(value, "channels", "channels");
+  let frozen = null;
+  try { frozen = Object.isFrozen(value); } catch { /* Keep failure-only context primitive and bounded. */ }
+  return {
+    valueType: safeValueType(value),
+    fields,
+    frozen,
+    prototype: objectPrototypeKind(value),
+    objectPrototypeChannels: descriptorSummary(Object.prototype, "channels", "flags"),
+  };
+}
+
 function bufferSlotIntegritySummary(bufferMap, name) {
   return {
     own: descriptorSummary(bufferMap, name, "slot"),
@@ -277,24 +309,92 @@ function integrityContextForMap(bufferMap) {
   if (!bufferMap || (typeof bufferMap !== "object" && typeof bufferMap !== "function")) return null;
   let context = GENERATED_BUFFER_INTEGRITY_CONTEXTS.get(bufferMap);
   if (!context) {
-    context = { runtime: runtimeIntegrityFlags(), buffers: Object.create(null) };
+    context = { runtime: null, buffers: Object.create(null) };
     for (const name of GENERATED_BUFFER_NAMES) context.buffers[name] = { stages: Object.create(null) };
     GENERATED_BUFFER_INTEGRITY_CONTEXTS.set(bufferMap, context);
   }
   return context;
 }
 
-function recordBufferIntegrityStage(bufferMap, name, stage, value) {
+function recordCreatedBufferDigest(bufferMap, name, digest) {
   try {
     const context = integrityContextForMap(bufferMap);
     if (!context || !GENERATED_BUFFER_NAMES.includes(name)) return;
-    context.buffers[name].stages[stage] = {
-      value: objectIntegritySummary(value),
-      mapSlot: bufferSlotIntegritySummary(bufferMap, name),
+    const buffer = context.buffers[name];
+    buffer.originalDigest = digest;
+    buffer.stages.digestCreated = {
+      value: generatedBufferDigestSnapshot(digest),
+      sameAsCreatedDigest: true,
     };
   } catch {
     /* Diagnostics must never replace the integrity verdict. */
   }
+}
+
+function recordBufferMapObservation(bufferMap, name, stage) {
+  try {
+    if (!bufferMap || (typeof bufferMap !== "object" && typeof bufferMap !== "function")) return;
+    const context = GENERATED_BUFFER_INTEGRITY_CONTEXTS.get(bufferMap);
+    if (!context || !GENERATED_BUFFER_NAMES.includes(name)) return;
+    const buffer = context.buffers[name];
+    const slot = Object.getOwnPropertyDescriptor(bufferMap, name);
+    const hasValue = !!slot && Object.prototype.hasOwnProperty.call(slot, "value");
+    const value = hasValue ? slot.value : undefined;
+    const summary = objectIntegritySummary(value);
+    const channels = summary.channels;
+    buffer.stages[stage] = {
+      mapSlotKind: !slot ? "missing" : hasValue ? "data" : "accessor",
+      mapSlotValueType: hasValue ? safeValueType(value) : null,
+      objectPrototypeSlotKind: descriptorSummary(Object.prototype, name, "flags").kind,
+      channels: { kind: channels.kind, valueType: channels.valueType || null, value: channels.valueType === "number" ? channels.value : null },
+      frozen: summary.frozen,
+      sameAsCreatedDigest: Object.prototype.hasOwnProperty.call(buffer, "originalDigest") && hasValue && value === buffer.originalDigest,
+    };
+  } catch {
+    /* Diagnostics must never replace the integrity verdict. */
+  }
+}
+
+function recordBufferIntegrityStage(bufferMap, name, stage, value) {
+  try {
+    const context = integrityContextForMap(bufferMap);
+    if (!context || !GENERATED_BUFFER_NAMES.includes(name)) return;
+    const buffer = context.buffers[name];
+    if (stage === "beforeSave" && !context.runtime) context.runtime = runtimeIntegrityFlags();
+    context.buffers[name].stages[stage] = {
+      value: objectIntegritySummary(value),
+      mapSlot: bufferSlotIntegritySummary(bufferMap, name),
+      sameAsCreatedDigest: Object.prototype.hasOwnProperty.call(buffer, "originalDigest") && value === buffer.originalDigest,
+    };
+  } catch {
+    /* Diagnostics must never replace the integrity verdict. */
+  }
+}
+
+/* Map-stage tuple: [map slot kind/type/prototype kind, own channel kind/type/value, frozen, created-digest identity]. */
+function compactBufferMapObservation(stage) {
+  return [
+    [stage.mapSlotKind, stage.mapSlotValueType, stage.objectPrototypeSlotKind],
+    [stage.channels.kind, stage.channels.valueType, stage.channels.value],
+    stage.frozen,
+    stage.sameAsCreatedDigest,
+  ];
+}
+
+/* Creation tuple: [value type, named fixed-field descriptors, frozen, prototype, inherited channels descriptor, identity]. */
+function compactCreatedDigestObservation(stage) {
+  return [stage.value.valueType, stage.value.fields, stage.value.frozen, stage.value.prototype,
+    stage.value.objectPrototypeChannels, stage.sameAsCreatedDigest];
+}
+
+function integrityStagesForContext(stages) {
+  if (!stages) return null;
+  const result = {};
+  for (const stage of Object.keys(stages)) {
+    result[stage] = stage === "digestCreated" ? compactCreatedDigestObservation(stages[stage])
+      : stage === "renderReturn" || stage === "combine" ? compactBufferMapObservation(stages[stage]) : stages[stage];
+  }
+  return result;
 }
 
 function appendBufferIntegrityContext(detail, sourceBuffers, minBuffers, failingSlots) {
@@ -322,7 +422,7 @@ function appendBufferIntegrityContext(detail, sourceBuffers, minBuffers, failing
       focus: focusName ? {
         build: focusBuild,
         buffer: focusName,
-        stages: focusStages || null,
+        stages: integrityStagesForContext(focusStages),
       } : null,
       counterpart: focusName ? {
         build: otherBuild,

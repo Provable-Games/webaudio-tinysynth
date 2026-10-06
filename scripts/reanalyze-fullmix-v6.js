@@ -8,6 +8,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const fullMix = require("../tests/browser/specs/full-mix");
+const { MATRIX } = require("../tests/browser/matrix");
 const matrix = require("./browser-matrix");
 const browserToolchain = require("./browser-toolchain");
 
@@ -80,11 +81,15 @@ function makeReference(rows, reportSha256, matrixRun, historicalToolchain, env =
   const expectedCases = fullMix.referenceExpectedCases();
   const expectedCaseSet = new Set(expectedCases);
   const seenCases = new Set();
+  const hasPinnedSeed = (row) => row.seed === MATRIX.seed && row.matrixSeed === MATRIX.seed &&
+    row.captureRun?.selection?.seed === MATRIX.seed && matrixRun?.selection?.seed === MATRIX.seed &&
+    row.input?.settingsSha256 === fullMix.FIXTURE_BY_ID[row.fixtureId]?.settingsSha256;
+  const canExport = (row) => row.referenceExportEligible === true && hasPinnedSeed(row);
   for (const row of rows) {
     const caseId = row.engine + "/" + row.fixtureId + "/" + row.sampleRate;
     if (!expectedCaseSet.has(caseId) || seenCases.has(caseId)) continue;
     seenCases.add(caseId);
-    if (!row.referenceExportEligible) continue;
+    if (!canExport(row)) continue;
     const recordedToolchain = matrixRun.browserToolchain || null;
     const captureToolchain = recordedToolchain || historicalToolchain;
     const capturedBundle = matrix.browserBundle(captureToolchain, row.engine);
@@ -95,7 +100,7 @@ function makeReference(rows, reportSha256, matrixRun, historicalToolchain, env =
     if (recordedToolchain && JSON.stringify(recordedToolchain) !== JSON.stringify(historicalToolchain))
       throw new Error("current capture toolchain differs from the aggregate-resolved Playwright identity");
     const metadata = {
-      scope: "fixture", fixtureId: row.fixtureId, profileKind: row.profileKind, quality: 1,
+      scope: "fixture", fixtureId: row.fixtureId, profileKind: row.profileKind, quality: 1, seed: row.seed,
       engine: row.engine, browserVersion: row.browserVersion, platform: row.platform, sampleRate: row.sampleRate,
       browserBundle: capturedBundle,
       captureToolchain: {
@@ -138,14 +143,16 @@ function makeReference(rows, reportSha256, matrixRun, historicalToolchain, env =
     if (!engines[row.engine][row.fixtureId]) engines[row.engine][row.fixtureId] = {};
     engines[row.engine][row.fixtureId][row.sampleRate] = pair;
   }
-  const measuredCases = rows.filter((row) => row.referenceExportEligible)
+  const measuredCases = rows.filter(canExport)
     .map((row) => row.engine + "/" + row.fixtureId + "/" + row.sampleRate)
     .filter((id, index, all) => expectedCaseSet.has(id) && all.indexOf(id) === index).sort();
-  const incompleteCases = rows.filter((row) => !row.referenceExportEligible).map((row) => ({
+  const incompleteCases = rows.filter((row) => !canExport(row)).map((row) => ({
     id: row.engine + "/" + row.fixtureId + "/" + row.sampleRate,
     firstAttemptStatus: row.firstAttemptStatus,
     reason: row.fixtureId === "ws-mid-default" && row.engine === "webkit" && row.sampleRate === 48000
       ? "first attempt failed: source and min raw WAVs each contain two over-full-scale channel samples in one frame; a diagnostic repeat retains the same frame and cannot promote attempt 1"
+      : row.referenceExportEligible && !hasPinnedSeed(row)
+        ? "retained matrix seed or fixture settings identity differs from the independently pinned matrix seed"
       : row.referenceEligibilityReason,
   }));
   for (const id of expectedCases) {
@@ -244,7 +251,7 @@ function currentFixtureIdentity(obs, fixture, engine, engineReport) {
   const input = obs && obs.input;
   return obs.engine === engine && obs.browserVersion === engineReport.version && obs.platform === engineReport.platform &&
     obs.scope === "fixture" && obs.qualification === "fixture-only-no-production-approval" &&
-    obs.fixtureId === fixture.id && obs.profileKind === fixture.profileKind && obs.quality === 1 &&
+    obs.fixtureId === fixture.id && obs.profileKind === fixture.profileKind && obs.quality === 1 && obs.seed === MATRIX.seed &&
     obs.midiSha256 === fixture.midiSha256 && obs.setupSha256 === fixture.setupSha256 &&
     obs.settingsSha256 === fixture.settingsSha256 && obs.probePlanSha256 === fixture.probePlanSha256 &&
     obs.methodSha256 === fixture.methodSha256 && obs.toleranceSha256 === fixture.toleranceSha256 &&
@@ -290,6 +297,8 @@ function pairRows(report, reportDir, { env = process.env, root = path.resolve(__
       const fixture = fullMix.FIXTURE_BY_ID[obs.fixtureId];
       if (!fixture || ![44100, 48000].includes(obs.sampleRate)) throw new Error("v5 report has an undeclared full-mix case " + String(c && c.id));
       const currentMethod = obs.methodSha256 === fixture.methodSha256 && obs.toleranceSha256 === fixture.toleranceSha256;
+      const matrixSeed = report.matrixRun && report.matrixRun.selection && report.matrixRun.selection.seed;
+      const pinnedMatrixSeed = matrixSeed === MATRIX.seed && obs.seed === MATRIX.seed;
       const builds = {};
       for (const build of ["source", "min"]) {
         const row = obs.builds && obs.builds[build];
@@ -314,6 +323,13 @@ function pairRows(report, reportDir, { env = process.env, root = path.resolve(__
              diagnostic.sameEnginePcm.reasons.some((reason) => typeof reason !== "string")))
           throw new Error(c.id + " " + build + " captured diagnostic repeat evidence is malformed");
         const first = readAttempt(reportDir, engine, fixture, obs.sampleRate, build, 1, row);
+        const reportedMetrics = row.metrics;
+        const reportedMetricsPresent = !!reportedMetrics && typeof reportedMetrics === "object" && !Array.isArray(reportedMetrics);
+        const reportedMetricsSha256 = reportedMetrics === undefined
+          ? null : hash(Buffer.from(canonical(reportedMetrics)));
+        const firstMetricsMatch = currentMethod && reportedMetricsPresent && sameJson(reportedMetrics, first.metrics);
+        const firstMetricsStatus = !currentMethod ? "prior-method"
+          : !reportedMetricsPresent ? "missing" : firstMetricsMatch ? "matched" : "mismatch";
         const repeat = diagnostic.result === "captured"
           ? readAttempt(reportDir, engine, fixture, obs.sampleRate, build, 2, row)
           : null;
@@ -325,6 +341,12 @@ function pairRows(report, reportDir, { env = process.env, root = path.resolve(__
         builds[build] = {
           priorResult: row.result,
           priorPreBaselineEligible: row.preBaselineEligible === true,
+          firstMetricsEvidence: {
+            status: firstMetricsStatus, reportedPresent: reportedMetricsPresent,
+            reportedSha256: reportedMetricsSha256,
+            recomputedSha256: hash(Buffer.from(canonical(first.metrics))),
+            matchesCurrentMethodWav: firstMetricsMatch,
+          },
           first,
           repeat,
           diagnosticRepeat: {
@@ -367,7 +389,9 @@ function pairRows(report, reportDir, { env = process.env, root = path.resolve(__
         const reportedFault = capture.faultSensitivity;
         const reportedFaultSha256 = reportedFault === undefined ? null : hash(Buffer.from(canonical(reportedFault)));
         const checks = {
+          pinnedMatrixSeed,
           currentFixtureIdentity: currentFixtureIdentity(obs, fixture, engine, engineReport),
+          reportedFirstMetricsMatchRecomputedWav: builds[build].firstMetricsEvidence.matchesCurrentMethodWav,
           currentBrowserBundleIdentity: currentBundleIdentity,
           finiteFirstPcm: first.finite && first.metrics.channels.left.finite && first.metrics.channels.right.finite,
           fullScaleFirstPcm: first.overFullScaleSamples === 0 && first.peak <= 1,
@@ -390,7 +414,8 @@ function pairRows(report, reportDir, { env = process.env, root = path.resolve(__
           producerStatusShape: producerBuildStatusConsistent(capture),
           producerAggregateStatus: producerStatusMatches,
         };
-        return [build, { ...checks, originalFaultSensitivity: reportedFault || null,
+        return [build, { ...checks, firstMetricsEvidence: builds[build].firstMetricsEvidence,
+          originalFaultSensitivity: reportedFault || null,
           originalFaultSummarySha256: reportedFaultSha256, recomputedFault, priorMethodEvidence }];
       }));
       const sourceMinPcmEligible = sourceMin.ok && sameJson(sourceMin, reportedSourceMin) &&
@@ -418,7 +443,7 @@ function pairRows(report, reportDir, { env = process.env, root = path.resolve(__
       rows.push({
         id: c.id, engine, browserVersion: engineReport.version, platform: engineReport.platform,
         fixtureId: fixture.id, profileKind: fixture.profileKind, sampleRate: obs.sampleRate, quality: obs.quality,
-        scope: obs.scope, input: {
+        scope: obs.scope, seed: obs.seed, matrixSeed: matrixSeed === undefined ? null : matrixSeed, input: {
           midiSha256: obs.midiSha256, setupSha256: obs.setupSha256, settingsSha256: obs.settingsSha256,
           probePlanSha256: obs.probePlanSha256, playbackOriginSec: obs.playbackOriginSec,
           captureMethodSha256: obs.methodSha256, captureToleranceSha256: obs.toleranceSha256,

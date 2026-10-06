@@ -7,6 +7,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const fullMix = require("../browser/specs/full-mix");
+const { MATRIX } = require("../browser/matrix");
 const analysis = require("../browser/lib/analysis");
 const H = require("../harness");
 const browserToolchain = require("../../scripts/browser-toolchain");
@@ -205,7 +206,7 @@ function makeReanalysisReport(root, toolchain, engine = "chromium", runtimeVersi
   const toolchainBundle = matrix.browserBundle(toolchain, engine);
   const obs = {
     schemaVersion: 2, scope: "fixture", qualification: "fixture-only-no-production-approval",
-    fixtureId: fixture.id, profileKind: fixture.profileKind, quality: 1,
+    fixtureId: fixture.id, profileKind: fixture.profileKind, quality: 1, seed: MATRIX.seed,
     sampleRate, engine, browserVersion: runtimeVersion || toolchainBundle.browserVersion,
     platform: process.platform + "-" + process.arch, browserBundle: toolchainBundle,
     midiSha256: fixture.midiSha256, setupSha256: fixture.setupSha256,
@@ -224,7 +225,7 @@ function makeReanalysisReport(root, toolchain, engine = "chromium", runtimeVersi
     firstAttempt: true, captureEligiblePreBaseline: true, status: "incomplete",
     builds, sourceMinPcmComparison,
   };
-  const matrixRun = { selection: { specs: ["full-mix"] }, browserToolchain: toolchain };
+  const matrixRun = { selection: { specs: ["full-mix"], seed: MATRIX.seed }, browserToolchain: toolchain };
   const engineReports = Object.fromEntries(["chromium", "firefox", "webkit"].map((name) => [name, {
     version: name === engine ? (runtimeVersion || toolchain.browsers[name].browserVersion) : toolchain.browsers[name].browserVersion,
     platform: obs.platform, cases: [],
@@ -448,7 +449,7 @@ test("renderOne compares measured reference metrics, and rejects missing referen
   const bundle = browserToolchain.engineBundle(toolchain, "chromium");
   const platform = process.platform + "-" + process.arch;
   Object.assign(row.metadata, {
-    scope: "fixture", fixtureId: fixture.id, profileKind: fixture.profileKind, quality: 1,
+    scope: "fixture", fixtureId: fixture.id, profileKind: fixture.profileKind, quality: 1, seed: MATRIX.seed,
     engine: "chromium", browserVersion: "153.0.8010.12", platform, sampleRate, browserBundle: bundle,
     midiSha256: fixture.midiSha256, setupSha256: fixture.setupSha256,
     settingsSha256: fixture.settingsSha256, probePlanSha256: fixture.probePlanSha256,
@@ -568,6 +569,17 @@ test("offline reference export re-derives first-attempt eligibility and validate
     assert.equal(rows.length, 1);
     assert.equal(rows[0].preBaselineEligible, true);
     assert.equal(rows[0].referenceExportEligible, true);
+    assert.equal(rows[0].seed, MATRIX.seed);
+    assert.equal(rows[0].matrixSeed, MATRIX.seed);
+    assert.equal(baseline.fixture.settingsForHash.matrixSeed, MATRIX.seed,
+      "the independently pinned matrix seed participates in the fixture settings identity");
+    for (const build of ["source", "min"]) {
+      assert.equal(rows[0].builds[build].firstMetricsEvidence.status, "matched");
+      assert.equal(rows[0].captureCheckEvidence[build].reportedFirstMetricsMatchRecomputedWav, true);
+      assert.match(rows[0].builds[build].firstMetricsEvidence.reportedSha256, /^[a-f0-9]{64}$/);
+      assert.equal(rows[0].builds[build].firstMetricsEvidence.reportedSha256,
+        rows[0].builds[build].firstMetricsEvidence.recomputedSha256);
+    }
     assert.equal(rows[0].captureCheckEvidence.source.nativeFaultSensitivity, true);
     assert.equal(rows[0].captureCheckEvidence.min.nativeFaultSensitivity, true);
     assert.match(rows[0].captureCheckEvidence.source.originalFaultSummarySha256, /^[a-f0-9]{64}$/);
@@ -583,6 +595,98 @@ test("offline reference export re-derives first-attempt eligibility and validate
     assert.equal(reference.status, "incomplete");
     assert.equal(reference.coverage.measuredCases.length, 1);
     assert.ok(reference.engines.chromium[baseline.fixture.id][baseline.sampleRate]);
+
+    const referenceIdentity = {
+      scope: "fixture", fixtureId: baseline.fixture.id, profileKind: baseline.fixture.profileKind, quality: 1,
+      engine: "chromium", browserVersion: rows[0].browserVersion, platform: rows[0].platform,
+      sampleRate: baseline.sampleRate, seed: MATRIX.seed, browserBundle: rows[0].browserBundle,
+      midiSha256: baseline.fixture.midiSha256, setupSha256: baseline.fixture.setupSha256,
+      settingsSha256: baseline.fixture.settingsSha256, probePlanSha256: baseline.fixture.probePlanSha256,
+      methodSha256: baseline.fixture.methodSha256, toleranceSha256: baseline.fixture.toleranceSha256,
+      playbackOriginSec: fullMix.ORIGIN,
+    };
+    assert.equal(fullMix.selectReference(reference, referenceIdentity, "source").status, "measured",
+      "a current pinned-seed reference remains consumable");
+    for (const wrongSeed of [undefined, MATRIX.seed + 1, String(MATRIX.seed), null]) {
+      assert.equal(fullMix.selectReference(reference, { ...referenceIdentity, seed: wrongSeed }, "source").status,
+        "incomplete", "reference consumption rejects missing, alternate, or invalid requested seed values");
+    }
+    for (const [label, mutate] of [
+      ["missing reference seed", (metadata) => { delete metadata.seed; }],
+      ["alternate reference seed", (metadata) => { metadata.seed = MATRIX.seed + 1; }],
+      ["missing capture-run seed", (metadata) => { delete metadata.captureRun.selection.seed; }],
+      ["alternate capture-run seed", (metadata) => { metadata.captureRun.selection.seed = MATRIX.seed + 1; }],
+      ["fixture settings identity without seed", (metadata) => { metadata.settingsSha256 = "f".repeat(64); }],
+    ]) {
+      const alteredReference = structuredClone(reference);
+      mutate(alteredReference.engines.chromium[baseline.fixture.id][baseline.sampleRate].metadata);
+      assert.equal(fullMix.selectReference(alteredReference, referenceIdentity, "source").status, "incomplete", label);
+    }
+
+    const seedMutations = [
+      ["missing matrix seed", (report) => { delete report.matrixRun.selection.seed; }],
+      ["alternate matrix seed", (report) => { report.matrixRun.selection.seed = MATRIX.seed + 1; }],
+      ["string matrix seed", (report) => { report.matrixRun.selection.seed = String(MATRIX.seed); }],
+      ["null matrix seed", (report) => { report.matrixRun.selection.seed = null; }],
+      ["missing observation seed", (report) => { delete report.chromium.cases[0].observations.fullMix.seed; }],
+      ["alternate observation seed", (report) => { report.chromium.cases[0].observations.fullMix.seed = MATRIX.seed + 1; }],
+    ];
+    for (const [label, mutate] of seedMutations) {
+      const report = structuredClone(baseline.report);
+      mutate(report);
+      const wrongSeedRows = reanalyzer.pairRows(report, temp, options);
+      assert.equal(wrongSeedRows[0].referenceExportEligible, false, label);
+      assert.equal(wrongSeedRows[0].captureCheckEvidence.source.pinnedMatrixSeed, false, label);
+      const rejectedReference = reanalyzer.makeReference(wrongSeedRows, sha256(Buffer.from(label)),
+        report.matrixRun, linuxToolchain, linuxFixture.env, linuxFixture.root);
+      assert.equal(rejectedReference.coverage.measuredCases.length, 0, label);
+    }
+    for (const [label, rowSeed, settingsSha256, matrixSeed, originatingMatrixSeed, originatingRunSeed] of [
+      ["missing exported-row seed", undefined, baseline.fixture.settingsSha256, MATRIX.seed, MATRIX.seed, MATRIX.seed],
+      ["alternate exported-row seed", MATRIX.seed + 1, baseline.fixture.settingsSha256, MATRIX.seed, MATRIX.seed, MATRIX.seed],
+      ["alternate reference-run seed", MATRIX.seed, baseline.fixture.settingsSha256, MATRIX.seed + 1, MATRIX.seed, MATRIX.seed],
+      ["missing originating matrix seed", MATRIX.seed, baseline.fixture.settingsSha256, MATRIX.seed, undefined, MATRIX.seed],
+      ["alternate originating matrix seed", MATRIX.seed, baseline.fixture.settingsSha256, MATRIX.seed, MATRIX.seed + 1, MATRIX.seed],
+      ["missing originating capture-run seed", MATRIX.seed, baseline.fixture.settingsSha256, MATRIX.seed, MATRIX.seed, undefined],
+      ["alternate originating capture-run seed", MATRIX.seed, baseline.fixture.settingsSha256, MATRIX.seed, MATRIX.seed, MATRIX.seed + 1],
+      ["settings identity not bound to seed", MATRIX.seed, "e".repeat(64), MATRIX.seed, MATRIX.seed, MATRIX.seed],
+    ]) {
+      const forgedRow = structuredClone(rows[0]);
+      forgedRow.referenceExportEligible = true;
+      forgedRow.seed = rowSeed;
+      if (originatingMatrixSeed === undefined) delete forgedRow.matrixSeed;
+      else forgedRow.matrixSeed = originatingMatrixSeed;
+      if (originatingRunSeed === undefined) delete forgedRow.captureRun.selection.seed;
+      else forgedRow.captureRun.selection.seed = originatingRunSeed;
+      forgedRow.input.settingsSha256 = settingsSha256;
+      const wrongRun = structuredClone(baseline.matrixRun);
+      wrongRun.selection.seed = matrixSeed;
+      const rejectedReference = reanalyzer.makeReference([forgedRow], sha256(Buffer.from(label)),
+        wrongRun, linuxToolchain, linuxFixture.env, linuxFixture.root);
+      assert.equal(rejectedReference.coverage.measuredCases.length, 0, label);
+    }
+
+    for (const build of ["source", "min"]) for (const [label, mutate, expectedStatus] of [
+      ["missing", (capture) => { delete capture.metrics; }, "missing"],
+      ["null", (capture) => { capture.metrics = null; }, "missing"],
+      ["contradictory", (capture) => { capture.metrics.overall.peak = 2; }, "mismatch"],
+    ]) {
+      const report = structuredClone(baseline.report);
+      mutate(report.chromium.cases[0].observations.fullMix.builds[build]);
+      const metricRows = reanalyzer.pairRows(report, temp, options);
+      const metricRow = metricRows[0];
+      const evidence = metricRow.builds[build].firstMetricsEvidence;
+      assert.equal(evidence.status, expectedStatus, build + " first metrics " + label);
+      assert.equal(metricRow.captureCheckEvidence[build].reportedFirstMetricsMatchRecomputedWav, false,
+        build + " first metrics " + label);
+      assert.equal(metricRow.referenceExportEligible, false, build + " first metrics " + label);
+      assert.match(evidence.recomputedSha256, /^[a-f0-9]{64}$/);
+      if (label === "missing") assert.equal(evidence.reportedSha256, null);
+      else assert.match(evidence.reportedSha256, /^[a-f0-9]{64}$/);
+      const rejectedReference = reanalyzer.makeReference(metricRows, sha256(Buffer.from(build + label)),
+        baseline.matrixRun, linuxToolchain, linuxFixture.env, linuxFixture.root);
+      assert.equal(rejectedReference.coverage.measuredCases.length, 0, build + " first metrics " + label);
+    }
 
     const changedRepeatReport = structuredClone(baseline.report);
     const changedRepeatDiagnostic = changedRepeatReport.chromium.cases[0].observations.fullMix.builds.source.diagnosticRepeat;
@@ -777,7 +881,10 @@ test("offline reference export re-derives first-attempt eligibility and validate
     const priorObs = priorMethod.chromium.cases[0].observations.fullMix;
     priorObs.methodSha256 = "b".repeat(64);
     priorObs.toleranceSha256 = "c".repeat(64);
+    priorObs.builds.source.metrics.overall.peak += 0.01;
+    delete priorObs.builds.min.metrics;
     priorObs.builds.source.diagnosticRepeat.metrics.downbeat.bandRms += 0.01;
+    const originalPriorFirstMetricsSha256 = sha256(Buffer.from(browserToolchain.canonical(priorObs.builds.source.metrics)));
     const originalHistoricalDiagnosticMetricsSha256 = sha256(Buffer.from(
       browserToolchain.canonical(priorObs.builds.source.diagnosticRepeat.metrics)));
     for (const build of ["source", "min"]) {
@@ -790,6 +897,14 @@ test("offline reference export re-derives first-attempt eligibility and validate
     assert.equal(priorRow.referenceExportEligible, false);
     assert.equal(priorRow.captureCheckEvidence.source.priorMethodEvidence, true);
     assert.equal(priorRow.captureCheckEvidence.source.nativeFaultSensitivity, false);
+    assert.equal(priorRow.builds.source.firstMetricsEvidence.status, "prior-method");
+    assert.equal(priorRow.builds.source.firstMetricsEvidence.reportedSha256, originalPriorFirstMetricsSha256);
+    assert.notEqual(priorRow.builds.source.firstMetricsEvidence.reportedSha256,
+      priorRow.builds.source.firstMetricsEvidence.recomputedSha256,
+      "prior-method first metrics remain inspectable without current-method equality claims");
+    assert.equal(priorRow.builds.min.firstMetricsEvidence.status, "prior-method");
+    assert.equal(priorRow.builds.min.firstMetricsEvidence.reportedPresent, false,
+      "missing historical first metrics remain readable but unqualified");
     assert.equal(priorRow.captureCheckEvidence.source.recomputedFault.checksPass, true);
     assert.match(priorRow.captureCheckEvidence.source.originalFaultSummarySha256, /^[a-f0-9]{64}$/);
     assert.equal(priorRow.builds.source.diagnosticRepeat.priorMethodEvidence, true);

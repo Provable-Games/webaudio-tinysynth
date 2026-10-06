@@ -871,7 +871,7 @@ function validateFullMixCase(engine, browserVersion, platform, currentBundle, re
   const expectedTop = {
     schemaVersion: 2, scope: "fixture", qualification: "fixture-only-no-production-approval",
     fixtureId: expected.fixtureId, profileKind: expected.profileKind, sampleRate: expected.sampleRate,
-    quality: 1, engine, browserVersion, platform, browserBundle: currentBundle, midiSha256: expected.midiSha256,
+    quality: 1, seed: MATRIX.seed, engine, browserVersion, platform, browserBundle: currentBundle, midiSha256: expected.midiSha256,
     setupSha256: expected.setupSha256, settingsSha256: expected.settingsSha256,
     probePlanSha256: expected.probePlanSha256, methodSha256: expected.methodSha256,
     toleranceSha256: expected.toleranceSha256,
@@ -905,7 +905,7 @@ function validateFullMixCase(engine, browserVersion, platform, currentBundle, re
   }
   const refTolerances = fullMixSpec.REFERENCE && fullMixSpec.REFERENCE.tolerances;
   const referenceIdentity = {
-    scope: "fixture", fixtureId: expected.fixtureId, profileKind: expected.profileKind, quality: 1,
+    scope: "fixture", fixtureId: expected.fixtureId, profileKind: expected.profileKind, quality: 1, seed: obs.seed,
     engine, browserVersion, platform, sampleRate: expected.sampleRate, browserBundle: currentBundle,
     midiSha256: expected.midiSha256, setupSha256: expected.setupSha256,
     settingsSha256: expected.settingsSha256, probePlanSha256: expected.probePlanSha256,

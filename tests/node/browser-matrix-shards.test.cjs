@@ -13,6 +13,7 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const crypto = require("node:crypto");
 const H = require("../harness");
+const MATRIX = require("../browser/matrix").MATRIX;
 const CONTEXT = {
   repository: "Provable-Games/webaudio-tinysynth",
   workflowRef: "Provable-Games/webaudio-tinysynth/.github/workflows/browser-matrix.yml@refs/pull/79/merge",
@@ -68,7 +69,7 @@ test("generated-buffer SHA-256 uses known Float32LE planar channel bytes", async
     n0: seedReference.n0(seed, sampleRate),
     n1: seedReference.n1(seed, sampleRate),
   };
-  const captureBuilds = async () => {
+  const captureBuilds = async ({ afterRender, afterCombine } = {}) => {
     const captures = {};
     for (const build of ["source", "min"]) {
       const actualSpec = renderSpec.renderSpec(scenario, { seed, sr: sampleRate, quality }, { captureBufferSha256: true });
@@ -77,7 +78,10 @@ test("generated-buffer SHA-256 uses known Float32LE planar channel bytes", async
         byteLength: channels.length * channels[0].length * 4,
       }]));
       const captured = await renderSpec.render({ page: { evaluate: async () => ({ bufferBytes }) } }, actualSpec);
-      captures[build] = renderSpec.combine(scenario, [captured]);
+      if (afterRender) afterRender(build, captured);
+      const combined = renderSpec.combine(scenario, [captured]);
+      if (afterCombine) afterCombine(build, combined);
+      captures[build] = combined;
     }
     return captures;
   };
@@ -123,7 +127,7 @@ test("generated-buffer SHA-256 uses known Float32LE planar channel bytes", async
   const originalExecArgvDescriptor = Object.getOwnPropertyDescriptor(process, "execArgv");
   let inheritedChannelsGetterCalls = 0, inheritedChannelsSetterCalls = 0;
   let inheritedConvBufGetterCalls = 0, inheritedConvBufSetterCalls = 0;
-  try {
+  const installSyntheticAccessors = () => {
     Object.defineProperty(Object.prototype, "channels", {
       configurable: true,
       get() { ++inheritedChannelsGetterCalls; return undefined; },
@@ -140,6 +144,15 @@ test("generated-buffer SHA-256 uses known Float32LE planar channel bytes", async
         Object.defineProperty(this, "convBuf", { configurable: true, enumerable: true, writable: true, value });
       },
     });
+  };
+  const restoreSyntheticAccessors = () => {
+    if (inheritedChannels) Object.defineProperty(Object.prototype, "channels", inheritedChannels);
+    else delete Object.prototype.channels;
+    if (inheritedConvBuf) Object.defineProperty(Object.prototype, "convBuf", inheritedConvBuf);
+    else delete Object.prototype.convBuf;
+  };
+  try {
+    installSyntheticAccessors();
     process.env.NODE_OPTIONS = "T6_PRIVATE_NODE_OPTIONS_DO_NOT_EMIT";
     const privateExecArgv = ["--require=/T6_PRIVATE_PRELOAD_PATH", "--credential=T6_PRIVATE_ARG_VALUE", "--import", "/T6_PRIVATE_IMPORT_PATH"];
     for (let i = 0; i < 70; ++i) privateExecArgv.push("--T6_PRIVATE_FLAG_" + i + "=T6_PRIVATE_FLAG_VALUE");
@@ -161,11 +174,83 @@ test("generated-buffer SHA-256 uses known Float32LE planar channel bytes", async
         },
       });
     }
+    restoreSyntheticAccessors();
+    const originCaptures = await captureBuilds({
+      afterRender(build, rendered) {
+        installSyntheticAccessors();
+        if (build === "source") {
+          const original = rendered.bufferSha256.convBuf;
+          rendered.bufferSha256.convBuf = Object.freeze({
+            sha256: original.sha256,
+            channels: 1,
+            frames: original.frames,
+            byteLength: original.byteLength,
+          });
+        }
+      },
+      afterCombine(build, combined) {
+        try {
+          renderSpec.saveGeneratedBufferCaptures(combined, quality, sampleRate, build, { out: resultFile, save: () => true });
+        } finally {
+          restoreSyntheticAccessors();
+        }
+      },
+    });
+    const originIntegrity = renderSpec.generatedBufferIntegrityCheck(originCaptures.source.bufferSha256,
+      originCaptures.min.bufferSha256, {
+        quality, sampleRate, expectedFrames: Math.floor(sampleRate * 0.5), requireSaved: true,
+      });
+    assert.equal(originIntegrity.ok, false, "the actual generated-buffer guard still rejects a frozen post-render channel replacement");
+    assert.match(originIntegrity.detail, /source convBuf channels=1 expected=2/);
+    const originMarker = " | integrity-context=";
+    const originMarkerAt = originIntegrity.detail.lastIndexOf(originMarker);
+    assert.notEqual(originMarkerAt, -1);
+    const originContextText = originIntegrity.detail.slice(originMarkerAt + originMarker.length);
+    const originContext = JSON.parse(originContextText);
+    assert.equal(originContext.omitted, undefined, "origin context must not fall back to size omission: " + originContextText);
+    assert.equal(originContext.unavailable, undefined, "origin context must not fall back to serialization failure: " + originContextText);
+    assert.ok(originContext.focus && typeof originContext.focus === "object", "origin context retains focused stages: " + originContextText);
+    const originStages = originContext.focus.stages;
+    assert.equal(originContext.focus.build, "source");
+    assert.equal(originContext.focus.buffer, "convBuf");
+    const createdDigest = originStages.digestCreated;
+    const createdFields = createdDigest[1];
+    assert.equal(createdDigest[0], "object");
+    assert.deepEqual(createdFields.channels, {
+      kind: "data", enumerable: true, configurable: false, writable: false, valueType: "number", value: 2,
+    });
+    assert.deepEqual(createdFields.sha256, ["data", true, false, false, "string"]);
+    assert.deepEqual(createdFields.frames, ["data", true, false, false, "number"]);
+    assert.deepEqual(createdFields.byteLength, ["data", true, false, false, "number"]);
+    assert.equal(createdDigest[2], true);
+    assert.equal(createdDigest[3], "Object.prototype");
+    assert.deepEqual(createdDigest[4], { kind: "missing" });
+    assert.equal(createdDigest[5], true);
+    assert.deepEqual(originStages.renderReturn[0], ["data", "object", "missing"]);
+    assert.deepEqual(originStages.renderReturn[1], ["data", "number", 2]);
+    assert.equal(originStages.renderReturn[2], true);
+    assert.equal(originStages.renderReturn[3], true);
+    assert.deepEqual(originStages.combine[0], ["data", "object", "accessor"]);
+    assert.deepEqual(originStages.combine[1], ["data", "number", 1]);
+    assert.equal(originStages.combine[2], true);
+    assert.equal(originStages.combine[3], false);
+    assert.equal(originStages.beforeSave.mapSlot.objectPrototype.kind, "accessor");
+    assert.equal(originStages.beforeSave.value.channels.value, 1);
+    assert.equal(originStages.beforeSave.sameAsCreatedDigest, false);
+    assert.equal(originStages.comparison.value.channels.value, 1);
+    assert.equal(originStages.comparison.sameAsCreatedDigest, false);
+    assert.equal(originCaptures.source.bufferCaptureTrace.convBuf.node.channels, 2,
+      "the original Node byte measurement remains stereo after the map entry is replaced");
+    assert.equal(originContext.runtime.nodeOptionsSet, true);
+    assert.equal(originContext.runtime.preloadPresent, true);
+    assert.equal(originContext.runtime.execArgvTruncated, true);
+    assert.ok(originContext.runtime.execArgvFlags.includes("--require"));
+    assert.ok(originContext.runtime.execArgvFlags.includes("--import"));
+    assert.ok(originContextText.length <= 4096, "upstream origin context remains useful under the existing serialization bound");
+    assert.doesNotMatch(originContextText, /T6_PRIVATE|\/T6_PRIVATE|NODE_OPTIONS_DO_NOT_EMIT/,
+      "upstream observations retain only sanitized runtime flags and fixed metadata descriptors");
   } finally {
-    if (inheritedChannels) Object.defineProperty(Object.prototype, "channels", inheritedChannels);
-    else delete Object.prototype.channels;
-    if (inheritedConvBuf) Object.defineProperty(Object.prototype, "convBuf", inheritedConvBuf);
-    else delete Object.prototype.convBuf;
+    restoreSyntheticAccessors();
     if (hadNodeOptions) process.env.NODE_OPTIONS = originalNodeOptions;
     else delete process.env.NODE_OPTIONS;
     if (originalExecArgvDescriptor) Object.defineProperty(process, "execArgv", originalExecArgvDescriptor);
@@ -228,6 +313,9 @@ test("generated-buffer SHA-256 uses known Float32LE planar channel bytes", async
     assert.equal(diagnostic.failure.slotCount, 2);
     assert.deepEqual(diagnostic.failure.slots, ["source/convBuf", "min/n1"],
       "context identifies multiple independently failing generated buffers with a bounded slot list");
+    assert.equal(stages.digestCreated[5], true);
+    assert.equal(stages.renderReturn[3], true);
+    assert.equal(stages.combine[3], true);
     for (const stageName of ["beforeSave", "afterSave"]) {
       assert.deepEqual(stages[stageName].value.channels, {
         kind: "data", enumerable: true, configurable: false, writable: false, valueType: "number", value: 2,
@@ -235,9 +323,13 @@ test("generated-buffer SHA-256 uses known Float32LE planar channel bytes", async
       assert.equal(stages[stageName].value.frozen, true);
       assert.equal(stages[stageName].mapSlot.own.kind, "data");
       assert.equal(stages[stageName].mapSlot.own.valueType, "object");
+      assert.equal(stages[stageName].sameAsCreatedDigest, true);
     }
     assert.equal(stages.constructedRow.value.channels.value, 2);
     assert.equal(stages.afterInsert.value.channels.value, 2);
+    assert.equal(stages.constructedRow.sameAsCreatedDigest, false);
+    assert.equal(stages.afterInsert.sameAsCreatedDigest, false);
+    assert.equal(stages.comparison.sameAsCreatedDigest, false);
     assert.equal(stages.beforeSave.value.objectPrototypeChannels.kind, "accessor");
     assert.equal(stages.beforeSave.value.objectPrototypeChannels.get, true);
     assert.equal(stages.beforeSave.value.objectPrototypeChannels.set, true);
@@ -416,13 +508,14 @@ for (const engine of ["chromium", "firefox", "webkit"]) {
         },
         midiSha256: fixture.midiSha256, setupSha256: fixture.setupSha256,
         settingsSha256: fixture.settingsSha256, probePlanSha256: fixture.probePlanSha256,
+        seed: MATRIX.seed,
         methodSha256: fixture.methodSha256, toleranceSha256: fixture.toleranceSha256,
         referenceToleranceSha256: stableSha256(Buffer.from(stableCanonical(TEST_TOLERANCES))),
         playbackOriginSec: seedFullMixSpec.ORIGIN,
         captureRun: { runId: "synthetic-test", runAttempt: "1", workflowRef: "synthetic/test@refs/heads/test",
           eventName: "pull_request", testedSha: CONTEXT.testedSha, matrixConfigSha256: "c".repeat(64),
           browserToolchain: TEST_TOOLCHAIN,
-          selection: { specs: ["full-mix"] }, buildSha256: { source: "a".repeat(64), min: "b".repeat(64) } },
+          selection: { specs: ["full-mix"], seed: MATRIX.seed }, buildSha256: { source: "a".repeat(64), min: "b".repeat(64) } },
         captureReportSha256: "d".repeat(64), captureMethodSha256: "e".repeat(64),
         captureToleranceSha256: "f".repeat(64),
       };
@@ -454,7 +547,6 @@ const TEST_REFERENCE_BYTES = Buffer.from(JSON.stringify(TEST_REFERENCE));
 process.env.TINYSYNTH_BROWSER_MATRIX_REFERENCE = TEST_REFERENCE_FILE;
 delete require.cache[require.resolve("../browser/specs/full-mix")];
 delete require.cache[require.resolve("../../scripts/browser-matrix")];
-const MATRIX = require("../browser/matrix").MATRIX;
 const FULL_MIX = require("../browser/specs/full-mix");
 const {
   shardLayout, selectedSpecs, parseArgs, expectedResultPaths, caseManifest, reportProvenance, readFloatStereoWav,
@@ -666,7 +758,7 @@ function fakeFullMixCase(def, engine, index, step) {
   return {
     schemaVersion: 2, scope: "fixture", qualification: "fixture-only-no-production-approval",
     fixtureId: fixture.id, profileKind: fixture.profileKind, label: fixture.label,
-    sampleRate: expected.sampleRate, quality: 1, engine,
+    sampleRate: expected.sampleRate, quality: 1, seed: MATRIX.seed, engine,
     browserVersion: testBrowserVersion(engine), platform: "linux-x64", browserBundle: testBrowserBundle(engine),
     midiSha256: fixture.midiSha256, setupSha256: fixture.setupSha256, settingsSha256: fixture.settingsSha256,
     probePlanSha256: fixture.probePlanSha256, methodSha256: fixture.methodSha256, toleranceSha256: fixture.toleranceSha256,
@@ -880,6 +972,10 @@ test("qualification merge uses the same strict aggregate for render headroom and
 
 test("qualification eligibility is recomputed from manifest rows and first-attempt cleanliness", () => {
   const mutations = [
+    ["missing observation seed", (_row, _fixture, _sampleRate, fullMix) => { delete fullMix.seed; }, /fullMix seed is missing or mismatched/],
+    ["alternate observation seed", (_row, _fixture, _sampleRate, fullMix) => { fullMix.seed = MATRIX.seed + 1; }, /fullMix seed is missing or mismatched/],
+    ["string observation seed", (_row, _fixture, _sampleRate, fullMix) => { fullMix.seed = String(MATRIX.seed); }, /fullMix seed is missing or mismatched/],
+    ["null observation seed", (_row, _fixture, _sampleRate, fullMix) => { fullMix.seed = null; }, /fullMix seed is missing or mismatched/],
     ["native channel", (row) => { row.noteInstances.rows[0].channel = (row.noteInstances.rows[0].channel + 1) % 16; }, /actual native voice\/source creation/],
     ["native pitch", (row) => { row.noteInstances.rows[0].pitch += 1; }, /actual native voice\/source creation/],
     ["native velocity", (row) => { row.noteInstances.rows[0].velocity -= 1; }, /actual native voice\/source creation/],
@@ -925,7 +1021,7 @@ test("qualification eligibility is recomputed from manifest rows and first-attem
     const validate = (change) => {
       const item = JSON.parse(JSON.stringify(validCase));
       const row = item.observations.fullMix.builds.source;
-      if (change) change(row, FULL_MIX.FIXTURE_BY_ID[expected.fixtureId], expected.sampleRate);
+      if (change) change(row, FULL_MIX.FIXTURE_BY_ID[expected.fixtureId], expected.sampleRate, item.observations.fullMix);
       const problems = [];
       validateFullMixCase("chromium", testBrowserVersion("chromium"), "linux-x64", testBrowserBundle("chromium"),
         rel, resultFile, item, expected, problems);

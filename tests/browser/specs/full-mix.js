@@ -15,6 +15,7 @@ const smf = require("../lib/smf");
 const A = require("../lib/analysis");
 const FA = require("../lib/first-attempt");
 const { tolerances } = require("../tolerances");
+const { MATRIX } = require("../matrix");
 const browserToolchainSpec = require(path.join(pages.ROOT, "scripts/browser-toolchain"));
 
 const ORIGIN = 0.1;
@@ -85,6 +86,7 @@ function canonical(value) {
 
 function selectReference(reference, identity, build) {
   const problems = [];
+  if (!identity || identity.seed !== MATRIX.seed) problems.push("seed is not the pinned matrix seed");
   if (!reference || typeof reference !== "object" || Array.isArray(reference))
     return { status: "incomplete", reference: null, problems: ["measured reference is missing"] };
   if (reference.analysisVersion !== ANALYSIS_VERSION) problems.push("analysisVersion");
@@ -103,6 +105,7 @@ function selectReference(reference, identity, build) {
       : metadata[key] === value;
     if (!same) problems.push(key);
   }
+  if (metadata?.captureRun?.selection?.seed !== MATRIX.seed) problems.push("captureRun.selection.seed");
   const row = entry && entry[build];
   if (!row || typeof row !== "object" || Array.isArray(row) || !row.metrics || typeof row.metrics !== "object" || Array.isArray(row.metrics))
     problems.push(build + " metrics");
@@ -316,7 +319,8 @@ function createProfile({ id, label, midi, setupBytes, settings, waves, timbres, 
     installConversion: "fixture wave/timbre JSON is converted by tests/browser/specs/waves.js call preparation; not current on-chain/player wire bytes",
   } : { profile: "synthetic ws.mid default q1 profile; not application settings" };
   const settingsForHash = {
-    settings, probeChannels: PROBE_CHANNELS, probeTuning: "standard master tuning and independent reserved channels; no channel-wide cleanup messages",
+    settings, matrixSeed: MATRIX.seed, probeChannels: PROBE_CHANNELS,
+    probeTuning: "standard master tuning and independent reserved channels; no channel-wide cleanup messages",
     probes: probes.map(({ id: probeId, channel, program, pitch, expectedPitch, velocity, attackSec }) =>
       ({ id: probeId, channel, program, pitch, expectedPitch, velocity, attackSec })),
     offlineVoices: manifest.offlineVoices, playbackOriginSec: ORIGIN, tailSec: REVERB_TAIL,
@@ -913,6 +917,7 @@ function referenceCoverageProblems(reference = REFERENCE) {
       const validCaptureToolchain = captureToolchainMatchesBundle && (directToolchain || historicalToolchain);
       if (meta.scope !== "fixture" || meta.fixtureId !== fixture.id || meta.profileKind !== fixture.profileKind ||
           meta.engine !== engine || !meta.browserVersion || !meta.platform || meta.sampleRate !== rate || meta.quality !== 1 ||
+          meta.seed !== MATRIX.seed || meta.captureRun?.selection?.seed !== MATRIX.seed ||
           !validBundle || !browserToolchainSpec.matchesBrowserVersion(bundle, meta.browserVersion) || !validCaptureToolchain ||
           meta.midiSha256 !== fixture.midiSha256 || meta.setupSha256 !== fixture.setupSha256 ||
           meta.settingsSha256 !== fixture.settingsSha256 || meta.probePlanSha256 !== fixture.probePlanSha256 ||
@@ -978,6 +983,7 @@ function referenceCoverageProblems(reference = REFERENCE) {
 function profileForCase(fixture, sampleRate) {
   return {
     fixtureId: fixture.id, profileKind: fixture.profileKind, sampleRate, quality: 1,
+    seed: MATRIX.seed,
     masterVol: fixture.settings.masterVol, reverbLev: fixture.settings.reverbLev,
     liveVoices: fixture.liveVoices, offlineVoices: fixture.offlineVoices,
     playbackOriginSec: ORIGIN, songEndSec: fixture.songEndSec, renderDurationSec: fixture.renderDurationSec,
@@ -1014,7 +1020,7 @@ async function renderOne(t, build, options, fixture, sampleRate, matrix) {
   const identity = {
     scope: "fixture", fixtureId: fixture.id, profileKind: fixture.profileKind, quality: 1,
     engine: t.engine, browserVersion: t.version, platform: t.shared && t.shared.platform,
-    sampleRate, browserBundle: t.shared && t.shared.browserBundle,
+    sampleRate, seed: options.seed, browserBundle: t.shared && t.shared.browserBundle,
     midiSha256: fixture.midiSha256, setupSha256: fixture.setupSha256,
     settingsSha256: fixture.settingsSha256, probePlanSha256: fixture.probePlanSha256,
     methodSha256: fixture.methodSha256, toleranceSha256: fixture.toleranceSha256,
@@ -1069,8 +1075,9 @@ function cases(shared) {
             first.page.pageErrors.length === 0 && first.page.aborted.length === 0;
           const timingComplete = fixture.timingComplete;
           const fault = faultSensitivity(first.channels, sampleRate, fixture, first.metrics, first.voices);
+          const pinnedSeed = options.seed === MATRIX.seed;
           const preBaselineEligible = finiteBoth && fullScale && exactVoices && exactProbeVoices && probeComplete && separation && pageClean &&
-            timingComplete && fault.checksPass && firstArtifact.saved;
+            timingComplete && fault.checksPass && firstArtifact.saved && pinnedSeed;
           const comparison = first.comparisonProblems.length === 0;
           const firstResult = !preBaselineEligible ? "fail"
             : first.referenceStatus !== "measured" ? "incomplete"
@@ -1099,6 +1106,8 @@ function cases(shared) {
               ", pageErrors=" + JSON.stringify(first.page.pageErrors.slice(0, 2)) + ", aborted=" + JSON.stringify(first.page.aborted.slice(0, 2)));
           t.check(build + " first attempt is eligible for native reference capture before comparison", preBaselineEligible,
             "a diagnostic repeat cannot replace this first capture");
+          t.check(build + " first attempt used the pinned matrix seed", pinnedSeed,
+            JSON.stringify({ actualSeed: options.seed, expectedSeed: MATRIX.seed }));
           t.check(build + " first attempt agrees with measured engine/build song and probe reference", comparison,
             JSON.stringify({ status: first.reference ? "compared" : "incomplete-no-reference", problems: first.comparisonProblems.slice(0, 8) }));
 
@@ -1153,7 +1162,7 @@ function cases(shared) {
         const observation = {
           schemaVersion: 2, scope: "fixture", qualification: "fixture-only-no-production-approval",
           fixtureId: fixture.id, profileKind: fixture.profileKind, label: fixture.label,
-          sampleRate, quality: 1, engine, browserVersion: version, platform, browserBundle,
+          sampleRate, quality: 1, seed: options.seed, engine, browserVersion: version, platform, browserBundle,
           midiSha256: fixture.midiSha256, setupSha256: fixture.setupSha256,
           settingsSha256: fixture.settingsSha256, probePlanSha256: fixture.probePlanSha256,
           methodSha256: fixture.methodSha256, toleranceSha256: fixture.toleranceSha256,
