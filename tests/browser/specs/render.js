@@ -316,6 +316,11 @@ function createFirstPcmRetainer(t, { quality, sampleRate }, maxPairs = MAX_RETAI
   };
 }
 
+/* Raw peaks feed the strict qualification GM headroom gate; RMS stays in its existing display form. */
+function rawGmMeasurements(slots) {
+  return { peaks: slots.map((x) => x.peak), rms: slots.map((x) => +x.rms.toExponential(4)) };
+}
+
 function cases(shared) {
   const { matrix, options, engine } = shared;
   const tol = tolerances(engine);
@@ -505,7 +510,7 @@ function cases(shared) {
               }
               const extra = s.verify(m, tol, check);
               if (s.gm && extra && extra.overFullScale.length) gmOver[s.name] = extra.overFullScale;
-              measurements[s.name + (parity ? "" : "/" + build)] = s.gm ? { peaks: m.slots.map((x) => +x.peak.toFixed(5)), rms: m.slots.map((x) => +x.rms.toExponential(4)) } : m;
+              measurements[s.name + (parity ? "" : "/" + build)] = s.gm ? rawGmMeasurements(m.slots) : m;
             }
             hashes[s.name] = res.source.map((r) => r.hash);
             buffers[s.name] = res.source[0].buffers;
@@ -561,4 +566,4 @@ function cases(shared) {
 }
 
 module.exports = { cases, renderSpec, bufferCaptureSettings, renderScenario, renderParts, combine, saveGeneratedBufferCaptures,
-  openRenderPage, render, decode, maxDiff, createFirstPcmRetainer };
+  openRenderPage, render, decode, maxDiff, createFirstPcmRetainer, rawGmMeasurements };

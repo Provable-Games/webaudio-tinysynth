@@ -10,6 +10,8 @@ const fullMix = require("../browser/specs/full-mix");
 const analysis = require("../browser/lib/analysis");
 const H = require("../harness");
 const browserToolchain = require("../../scripts/browser-toolchain");
+const matrix = require("../../scripts/browser-matrix");
+const reanalyzer = require("../../scripts/reanalyze-fullmix-v6");
 
 function fixtureAndPcm(sampleRate = 8000) {
   const fixture = {
@@ -99,6 +101,132 @@ function resolveBrowserToolchainFixture(webkitPath, revisionOverrides) {
 
 function sha256(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+function makeReanalysisPcm() {
+  const fixture = fullMix.FIXTURE_BY_ID["tinychip-ws-mid"], sampleRate = 44100;
+  const frames = Math.ceil(fixture.renderDurationSec * sampleRate);
+  const channels = [new Float32Array(frames), new Float32Array(frames)];
+  function tone(startSec, durationSec, pitch, amplitude) {
+    const from = Math.max(0, Math.round(startSec * sampleRate));
+    const to = Math.min(frames, Math.round((startSec + durationSec) * sampleRate));
+    const hz = analysis.midiHz(pitch);
+    for (let i = from; i < to; ++i) {
+      const value = amplitude * Math.sin(2 * Math.PI * hz * (i - from) / sampleRate);
+      channels[0][i] += value;
+      channels[1][i] += value;
+    }
+  }
+  for (const note of fixture.notes) {
+    const duration = note.durationSec === null ? 0.1 : Math.max(0.02, note.durationSec);
+    const pitch = note.id === fixture.downbeat.noteId ? fixture.downbeat.expectedPitch : note.pitch;
+    const amplitude = note.id === fixture.downbeat.noteId ? 0.15
+      : note.id === fixture.notes[0].id ? 0.08 : note.unpitched ? 0.0005 : 0.002;
+    tone(note.onsetSec, duration, pitch, amplitude);
+  }
+  fixture.probes.forEach((probe, i) => tone(probe.startSec, 0.5, probe.expectedPitch, i === 0 ? 0.02 : 0.016));
+  return { fixture, sampleRate, channels };
+}
+
+function stereoFloatWav(channels, sampleRate) {
+  const frames = channels[0].length, dataLength = frames * 8;
+  const bytes = Buffer.alloc(44 + dataLength);
+  bytes.write("RIFF", 0, "ascii"); bytes.writeUInt32LE(bytes.length - 8, 4);
+  bytes.write("WAVEfmt ", 8, "ascii"); bytes.writeUInt32LE(16, 16);
+  bytes.writeUInt16LE(3, 20); bytes.writeUInt16LE(2, 22);
+  bytes.writeUInt32LE(sampleRate, 24); bytes.writeUInt32LE(sampleRate * 8, 28);
+  bytes.writeUInt16LE(8, 32); bytes.writeUInt16LE(32, 34);
+  bytes.write("data", 36, "ascii"); bytes.writeUInt32LE(dataLength, 40);
+  for (let i = 0; i < frames; ++i) {
+    bytes.writeFloatLE(channels[0][i], 44 + i * 8);
+    bytes.writeFloatLE(channels[1][i], 48 + i * 8);
+  }
+  return bytes;
+}
+
+function makeReanalysisReport(root, toolchain, engine = "chromium", runtimeVersion) {
+  const { fixture, sampleRate, channels } = makeReanalysisPcm();
+  const wav = stereoFloatWav(channels, sampleRate);
+  const planar = Buffer.concat(channels.map((channel) => {
+    const bytes = Buffer.alloc(channel.length * 4);
+    for (let i = 0; i < channel.length; ++i) bytes.writeFloatLE(channel[i], i * 4);
+    return bytes;
+  }));
+  const artifactSha = sha256(wav), pcmSha = sha256(planar);
+  const metrics = fullMix.analyzeChannels(channels, sampleRate, fixture);
+  const noteInstances = {
+    complete: true, expectedCount: fixture.notes.length, createdCount: fixture.notes.length, extras: [],
+    prunedInstances: [], rows: fixture.notes.map((note) => ({
+      id: note.id, status: "created", channel: note.channel, pitch: note.pitch, velocity: note.velocity,
+      program: note.program, actualProgram: note.program, onsetSec: note.onsetSec, sourceCount: 1,
+      percussion: note.channel === 9, pruned: false,
+    })),
+  };
+  const probeInstances = {
+    complete: true, expectedCount: fixture.probes.length, createdCount: fixture.probes.length,
+    prunedInstances: [], rows: fixture.probes.map((probe) => ({
+      id: probe.id, status: "created", channel: probe.channel, pitch: probe.pitch, velocity: probe.velocity,
+      program: probe.program, actualProgram: probe.program, onsetSec: probe.startSec, sourceCount: 1, pruned: false,
+    })),
+  };
+  const sourceMinPcmComparison = fullMix.sameEnginePcm(channels, channels, engine);
+  const checks = [];
+  const builds = {};
+  for (const build of ["source", "min"]) {
+    const dir = path.join(root, engine, "full-mix");
+    fs.mkdirSync(dir, { recursive: true });
+    const base = "tinychip-ws-mid-q1-44100-" + build;
+    const firstPath = "full-mix/" + base + "-first.wav";
+    const repeatPath = "full-mix/" + base + "-diagnostic-repeat.wav";
+    fs.writeFileSync(path.join(root, engine, firstPath), wav);
+    fs.writeFileSync(path.join(root, engine, repeatPath), wav);
+    const artifact = (relative) => ({ path: relative, saved: true, sha256: artifactSha,
+      pcmSha256: pcmSha, bytes: wav.length, sampleRate, channels: 2, encoding: "WAVE_FORMAT_IEEE_FLOAT" });
+    const faultSensitivity = fullMix.faultSensitivity(channels, sampleRate, fixture, metrics, noteInstances);
+    builds[build] = {
+      attempt: 1, firstAttempt: true, result: "incomplete", preBaselineEligible: true,
+      artifact: artifact(firstPath), noteInstances: structuredClone(noteInstances),
+      probeInstances: structuredClone(probeInstances), metrics: structuredClone(metrics),
+      pageErrors: [], aborted: [], intervalCount: 1, rejections: [], faultSensitivity,
+      referenceStatus: "incomplete", comparisonProblems: [],
+      diagnosticRepeat: { attempt: 2, neverPromotesFirstAttempt: true, artifact: artifact(repeatPath) },
+    };
+    builds[build].sourceMinPcmComparison = sourceMinPcmComparison;
+    checks.push({ name: build + " first attempt completed without scheduler, rejection, page error or network request", ok: true });
+    checks.push({ name: build + " first attempt is eligible for native reference capture before comparison", ok: true });
+  }
+  checks.push({ name: "source and fresh-min first-attempt raw PCM match without alignment", ok: true });
+  const toolchainBundle = matrix.browserBundle(toolchain, engine);
+  const obs = {
+    schemaVersion: 2, scope: "fixture", qualification: "fixture-only-no-production-approval",
+    fixtureId: fixture.id, profileKind: fixture.profileKind, quality: 1,
+    sampleRate, engine, browserVersion: runtimeVersion || toolchainBundle.browserVersion,
+    platform: process.platform + "-" + process.arch, browserBundle: toolchainBundle,
+    midiSha256: fixture.midiSha256, setupSha256: fixture.setupSha256,
+    settingsSha256: fixture.settingsSha256, probePlanSha256: fixture.probePlanSha256,
+    methodSha256: fixture.methodSha256, toleranceSha256: fixture.toleranceSha256,
+    referenceProvenance: fullMix.referenceProvenance(),
+    referenceToleranceSha256: fullMix.referenceProvenance().referenceToleranceSha256,
+    masterVol: fixture.settings.masterVol, reverbLev: fixture.settings.reverbLev,
+    playbackOriginSec: fullMix.ORIGIN, songEndSec: fixture.songEndSec, durationSec: fixture.renderDurationSec,
+    input: { midiPath: "tests/fixtures/consumer/waves-song.mid", setupProvenance: fixture.setupProvenance,
+      noteCount: fixture.notes.length }, setupProvenance: structuredClone(fixture.setupProvenance),
+    noteTiming: { complete: fixture.timingComplete, unmatchedNoteOffs: fixture.unmatchedNoteOffs,
+      unpitchedOneShotCount: fixture.unpitchedOneShotCount,
+      ambiguousPairings: fixture.notes.filter((n) => n.pairingAmbiguous).length,
+      durationUnknown: fixture.notes.filter((n) => n.durationSec === null).length },
+    firstAttempt: true, captureEligiblePreBaseline: true, status: "incomplete",
+    builds, sourceMinPcmComparison,
+  };
+  const matrixRun = { selection: { specs: ["full-mix"] }, browserToolchain: toolchain };
+  const engineReports = Object.fromEntries(["chromium", "firefox", "webkit"].map((name) => [name, {
+    version: name === engine ? (runtimeVersion || toolchain.browsers[name].browserVersion) : toolchain.browsers[name].browserVersion,
+    platform: obs.platform, cases: [],
+  }]));
+  engineReports[engine].cases.push({ id: "full-mix tinychip-ws-mid q1 44100", status: "pass", checks,
+    observations: { fullMix: obs } });
+  const report = { matrixRun, ...engineReports };
+  return { fixture, sampleRate, channels, report: JSON.parse(JSON.stringify(report)), matrixRun };
 }
 
 test("browser toolchain follows pinned macOS WebKit override bundles and retains exact bundle identities", () => {
@@ -421,4 +549,125 @@ test("reference comparison refuses absent, null or non-finite tolerance/observat
   invalid.channels.left.windowLevels[0].rms = null;
   assert.match(fullMix.compareBuildToReference(metrics, invalid, tolerances).join(" "), /window 0 is malformed/);
   assert.match(fullMix.compareBuildToReference(metrics, null, tolerances).join(" "), /reference metrics are missing/);
+});
+
+test("offline reference export re-derives first-attempt eligibility and validates declared browser overrides", () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "tinysynth-v6-reference-export-"));
+  const linuxFixture = createBrowserToolchainFixture("/cache/webkit-2359/pw_run.sh");
+  const linuxToolchain = linuxFixture.resolve();
+  try {
+    const baseline = makeReanalysisReport(temp, linuxToolchain);
+    const options = { env: linuxFixture.env, root: linuxFixture.root };
+    const rows = reanalyzer.pairRows(baseline.report, temp, options);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].preBaselineEligible, true);
+    assert.equal(rows[0].referenceExportEligible, true);
+    assert.equal(rows[0].captureCheckEvidence.source.nativeFaultSensitivity, true);
+    assert.equal(rows[0].captureCheckEvidence.min.nativeFaultSensitivity, true);
+    assert.match(rows[0].captureCheckEvidence.source.originalFaultSummarySha256, /^[a-f0-9]{64}$/);
+    assert.deepEqual(rows[0].captureCheckEvidence.source.originalFaultSensitivity,
+      baseline.report.chromium.cases[0].observations.fullMix.builds.source.faultSensitivity);
+    const reference = reanalyzer.makeReference(rows, sha256(Buffer.from("retained-test-report")),
+      baseline.matrixRun, linuxToolchain, linuxFixture.env, linuxFixture.root);
+    assert.equal(reference.status, "incomplete");
+    assert.equal(reference.coverage.measuredCases.length, 1);
+    assert.ok(reference.engines.chromium[baseline.fixture.id][baseline.sampleRate]);
+
+    const rejects = [
+      ["sample-rounded note onset", (obs) => { obs.builds.source.noteInstances.rows[0].onsetSec += 3 / baseline.sampleRate; },
+        "independentNoteSourceMap"],
+      ["actual program", (obs) => { obs.builds.source.noteInstances.rows[0].actualProgram++; },
+        "independentNoteSourceMap"],
+      ["velocity", (obs) => { obs.builds.source.noteInstances.rows[0].velocity--; },
+        "independentNoteSourceMap"],
+      ["percussion mapping", (obs) => { obs.builds.source.noteInstances.rows.find((row) => row.channel === 9).percussion = false; },
+        "independentNoteSourceMap"],
+      ["early prune", (obs) => { obs.builds.source.noteInstances.rows[0].pruned = true; },
+        "independentNoteSourceMap"],
+      ["missing prune telemetry", (obs) => { delete obs.builds.source.noteInstances.prunedInstances; },
+        "independentNoteSourceMap"],
+      ["sample-rounded probe onset", (obs) => { obs.builds.source.probeInstances.rows[0].onsetSec += 3 / baseline.sampleRate; },
+        "independentProbeSourceMap"],
+      ["page error", (obs) => { obs.builds.source.pageErrors.push("pageerror: fixture fault"); },
+        "noSchedulerPageOrNetworkError"],
+      ["aborted request", (obs) => { obs.builds.source.aborted.push("https://invalid.test/"); },
+        "noSchedulerPageOrNetworkError"],
+      ["rejected page operation", (obs) => { obs.builds.source.rejections.push({ name: "fixture rejection" }); },
+        "noSchedulerPageOrNetworkError"],
+      ["contradictory fault subresult", (obs) => { obs.builds.source.faultSensitivity.relativeProbe.relativeRejected = false; },
+        "nativeFaultSensitivity"],
+      ["changed settings identity", (obs) => { obs.settingsSha256 = "f".repeat(64); },
+        "currentFixtureIdentity"],
+      ["changed MIDI identity", (obs) => { obs.midiSha256 = "d".repeat(64); },
+        "currentFixtureIdentity"],
+      ["stale method identity", (obs) => { obs.methodSha256 = "e".repeat(64); },
+        "currentFixtureIdentity"],
+      ["contradictory aggregate status", (obs) => { obs.status = "pass"; },
+        "producerAggregateStatus"],
+      ["contradictory build pass", (obs) => { obs.builds.source.result = "pass"; },
+        "producerStatusShape"],
+    ];
+    for (const [label, mutate, check] of rejects) {
+      const report = structuredClone(baseline.report);
+      mutate(report.chromium.cases[0].observations.fullMix);
+      const rejected = reanalyzer.pairRows(report, temp, options)[0];
+      assert.equal(rejected.captureCheckEvidence.source[check], false, label);
+      assert.equal(rejected.referenceExportEligible, false, label);
+      assert.equal(reanalyzer.makeReference([rejected], sha256(Buffer.from(label)), baseline.matrixRun,
+        linuxToolchain, linuxFixture.env, linuxFixture.root).coverage.measuredCases.length, 0, label);
+    }
+
+    const failedComparison = structuredClone(baseline.report);
+    const failedObs = failedComparison.chromium.cases[0].observations.fullMix;
+    Object.assign(failedObs.builds.source, { result: "fail", referenceStatus: "measured", comparisonProblems: ["RMS drift"] });
+    failedObs.status = "fail";
+    const failedRow = reanalyzer.pairRows(failedComparison, temp, options)[0];
+    assert.equal(failedRow.producerAggregateStatusMatches, true);
+    assert.equal(failedRow.preBaselineEligible, false);
+    assert.equal(failedRow.referenceExportEligible, false);
+
+    const priorMethod = structuredClone(baseline.report);
+    const priorObs = priorMethod.chromium.cases[0].observations.fullMix;
+    priorObs.methodSha256 = "b".repeat(64);
+    priorObs.toleranceSha256 = "c".repeat(64);
+    for (const build of ["source", "min"]) {
+      delete priorObs.builds[build].pageErrors;
+      delete priorObs.builds[build].aborted;
+    }
+    const priorRow = reanalyzer.pairRows(priorMethod, temp, options)[0];
+    assert.equal(priorRow.firstAttemptStatus, "incomplete");
+    assert.equal(priorRow.preBaselineEligible, false);
+    assert.equal(priorRow.referenceExportEligible, false);
+    assert.equal(priorRow.captureCheckEvidence.source.priorMethodEvidence, true);
+    assert.equal(priorRow.captureCheckEvidence.source.nativeFaultSensitivity, false);
+    assert.equal(priorRow.captureCheckEvidence.source.recomputedFault.checksPass, true);
+    assert.match(priorRow.captureCheckEvidence.source.originalFaultSummarySha256, /^[a-f0-9]{64}$/);
+    assert.equal(reanalyzer.makeReference([priorRow], sha256(Buffer.from("prior-method")), baseline.matrixRun,
+      linuxToolchain, linuxFixture.env, linuxFixture.root).coverage.measuredCases.length, 0);
+
+    const macFixture = createBrowserToolchainFixture("/cache/webkit_mac14_arm64_special-2251/pw_run.sh");
+    try {
+      const macToolchain = macFixture.resolve();
+      assert.equal(macToolchain.browsers.webkit.browserVersion, null);
+      const override = makeReanalysisReport(temp, macToolchain, "webkit", "observed-webkit-override-version");
+      const macOptions = { env: macFixture.env, root: macFixture.root };
+      const macRows = reanalyzer.pairRows(override.report, temp, macOptions);
+      assert.equal(macRows.length, 1);
+      assert.equal(macRows[0].referenceExportEligible, true);
+      const macReference = reanalyzer.makeReference(macRows, sha256(Buffer.from("override-report")),
+        override.matrixRun, macToolchain, macFixture.env, macFixture.root);
+      const macMetadata = macReference.engines.webkit[override.fixture.id][override.sampleRate].metadata;
+      assert.equal(macMetadata.browserVersion, "observed-webkit-override-version");
+      assert.equal(macMetadata.browserBundle.browserVersion, null);
+
+      const noObservedVersion = { ...macRows[0], browserVersion: "" };
+      assert.throws(() => reanalyzer.makeReference([noObservedVersion], sha256(Buffer.from("blank-version")),
+        override.matrixRun, macToolchain, macFixture.env, macFixture.root), /version differs/);
+    } finally {
+      macFixture.close();
+    }
+  } finally {
+    linuxFixture.close();
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
 });

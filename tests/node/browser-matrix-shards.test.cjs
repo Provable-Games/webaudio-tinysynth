@@ -1216,6 +1216,44 @@ test("only strict qualification enforces the new aggregate GM peak ceiling", () 
   assert.match(qualification.out, /over-full-scale render peak webkit render q1 44100 gm-drums slot 14 = 1\.259/);
 });
 
+test("render producer preserves raw Float32 GM headroom across JSON and strict qualification", () => {
+  const peakFromSample = (sample) => {
+    const pcm = new Float32Array(8);
+    pcm[0] = sample;
+    const row = renderSpec.rawGmMeasurements([{ peak: testAnalysis.peak(pcm), rms: testAnalysis.rms(pcm) }]);
+    return JSON.parse(JSON.stringify(row));
+  };
+  const setFirstPeak = (row) => (files) => {
+    const [rel, report] = first(files, "webkit", "render");
+    const c = report.webkit.cases.find((item) => item.spec === "render" && item.dims.quality === 1 && item.dims.sampleRate === 44100);
+    const measurements = c.observations.measurements["gm-programs-0-31"];
+    measurements.peaks[0] = row.peaks[0];
+    files[rel] = report;
+  };
+
+  const exactlyOne = peakFromSample(1);
+  assert.equal(exactlyOne.peaks[0], 1);
+  const atLimit = qualificationMerged(setFirstPeak(exactlyOne));
+  assert.equal(atLimit.status, 0, atLimit.out);
+
+  const nextFloatAboveOne = Math.fround(1 + 2 ** -23);
+  assert.equal(nextFloatAboveOne, 1.0000001192092896);
+  for (const sample of [nextFloatAboveOne, -nextFloatAboveOne]) {
+    const producerRow = peakFromSample(sample);
+    assert.equal(producerRow.peaks[0], nextFloatAboveOne,
+      "the actual analysis and report producer preserve the first Float32 magnitude above 1");
+    const change = setFirstPeak(producerRow);
+    const ordinary = merged(change);
+    assert.equal(ordinary.status, 0, ordinary.out, "the ordinary browser-matrix lane remains non-enforcing");
+    const qualification = qualificationMerged(change);
+    assert.equal(qualification.status, 1, qualification.out);
+    assert.match(qualification.out,
+      /webkit render q1 44100 has over-full-scale peak for gm-programs-0-31 slot 0 = 1\.0000001192092896/);
+    assert.match(qualification.out,
+      /over-full-scale render peak webkit render q1 44100 gm-programs-0-31 slot 0 = 1\.0000001192092896/);
+  }
+});
+
 test("merge normalizes malformed case timing and worker diagnostics instead of crashing", () => {
   let r = merged((files) => {
     const [k, v] = first(files, "chromium", "embed");

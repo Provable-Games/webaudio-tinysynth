@@ -9,6 +9,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const fullMix = require("../tests/browser/specs/full-mix");
 const matrix = require("./browser-matrix");
+const browserToolchain = require("./browser-toolchain");
 
 function hash(bytes) {
   return crypto.createHash("sha256").update(bytes).digest("hex");
@@ -74,14 +75,22 @@ function compactMetrics(metrics) {
   };
 }
 
-function makeReference(rows, reportSha256, matrixRun, historicalToolchain) {
+function makeReference(rows, reportSha256, matrixRun, historicalToolchain, env = process.env, root = path.resolve(__dirname, "..")) {
   const engines = {};
+  const expectedCases = fullMix.referenceExpectedCases();
+  const expectedCaseSet = new Set(expectedCases);
+  const seenCases = new Set();
   for (const row of rows) {
-    if (!row.preBaselineEligible) continue;
+    const caseId = row.engine + "/" + row.fixtureId + "/" + row.sampleRate;
+    if (!expectedCaseSet.has(caseId) || seenCases.has(caseId)) continue;
+    seenCases.add(caseId);
+    if (!row.referenceExportEligible) continue;
     const recordedToolchain = matrixRun.browserToolchain || null;
     const captureToolchain = recordedToolchain || historicalToolchain;
     const capturedBundle = matrix.browserBundle(captureToolchain, row.engine);
-    if (capturedBundle.browserVersion !== row.browserVersion)
+    if (capturedBundle.engine !== row.engine ||
+        !browserToolchain.isPinnedBrowserBundle(capturedBundle, env, root) ||
+        !browserToolchain.matchesBrowserVersion(capturedBundle, row.browserVersion))
       throw new Error("retained " + row.engine + " version differs from its Playwright bundle identity");
     if (recordedToolchain && JSON.stringify(recordedToolchain) !== JSON.stringify(historicalToolchain))
       throw new Error("current capture toolchain differs from the aggregate-resolved Playwright identity");
@@ -129,16 +138,27 @@ function makeReference(rows, reportSha256, matrixRun, historicalToolchain) {
     if (!engines[row.engine][row.fixtureId]) engines[row.engine][row.fixtureId] = {};
     engines[row.engine][row.fixtureId][row.sampleRate] = pair;
   }
-  const expectedCases = fullMix.referenceExpectedCases();
-  const measuredCases = rows.filter((row) => row.preBaselineEligible)
-    .map((row) => row.engine + "/" + row.fixtureId + "/" + row.sampleRate).sort();
-  const incompleteCases = rows.filter((row) => !row.preBaselineEligible).map((row) => ({
+  const measuredCases = rows.filter((row) => row.referenceExportEligible)
+    .map((row) => row.engine + "/" + row.fixtureId + "/" + row.sampleRate)
+    .filter((id, index, all) => expectedCaseSet.has(id) && all.indexOf(id) === index).sort();
+  const incompleteCases = rows.filter((row) => !row.referenceExportEligible).map((row) => ({
     id: row.engine + "/" + row.fixtureId + "/" + row.sampleRate,
     firstAttemptStatus: row.firstAttemptStatus,
     reason: row.fixtureId === "ws-mid-default" && row.engine === "webkit" && row.sampleRate === 48000
       ? "first attempt failed: source and min raw WAVs each contain two over-full-scale channel samples in one frame; a diagnostic repeat retains the same frame and cannot promote attempt 1"
-      : row.eligibilityReason,
+      : row.referenceEligibilityReason,
   }));
+  for (const id of expectedCases) {
+    const count = rows.filter((row) => row.engine + "/" + row.fixtureId + "/" + row.sampleRate === id).length;
+    if (count !== 1) incompleteCases.push({
+      id, firstAttemptStatus: "incomplete",
+      reason: count === 0 ? "no retained first-attempt row was supplied" : "duplicate first-attempt rows were supplied",
+    });
+  }
+  for (const row of rows) {
+    const id = row.engine + "/" + row.fixtureId + "/" + row.sampleRate;
+    if (!expectedCaseSet.has(id)) incompleteCases.push({ id, firstAttemptStatus: "incomplete", reason: "row is outside the declared full-mix matrix" });
+  }
   return {
     schemaVersion: 2, scope: "fixture", status: incompleteCases.length ? "incomplete" : "complete",
     analysisVersion: fullMix.ANALYSIS_VERSION, methodSha256: fullMix.FIXTURES[0].methodSha256,
@@ -169,13 +189,17 @@ function overFullScaleFrames(channels) {
 
 function readAttempt(reportDir, engine, fixture, sampleRate, build, attempt, sourceRef) {
   const artifact = attempt === 1 ? sourceRef.artifact : sourceRef.diagnosticRepeat && sourceRef.diagnosticRepeat.artifact;
-  if (!artifact || typeof artifact.path !== "string") throw new Error(engine + " " + fixture.id + " " + sampleRate + " " + build + " attempt " + attempt + " lacks a raw artifact");
-  const file = path.resolve(reportDir, engine, artifact.path);
+  if (!artifact || typeof artifact.path !== "string" || artifact.saved !== true ||
+      artifact.sampleRate !== sampleRate || artifact.channels !== 2 || artifact.encoding !== "WAVE_FORMAT_IEEE_FLOAT")
+    throw new Error(engine + " " + fixture.id + " " + sampleRate + " " + build + " attempt " + attempt + " lacks a retained stereo Float32 artifact");
   const expectedFrames = Math.ceil(fixture.renderDurationSec * sampleRate);
-  const raw = matrix.readFloatStereoWav(file, sampleRate, expectedFrames);
+  const expectedByteLength = 44 + expectedFrames * 8;
+  const shardRoot = path.join(reportDir, engine);
+  const bytes = matrix.readArtifactUnderShard(shardRoot, artifact.path, expectedByteLength);
+  const raw = matrix.parseFloatStereoWav(bytes, sampleRate, expectedFrames);
   const rawSha256 = hash(raw.bytes), planarPcmSha256 = pcmHash(raw.channels);
   if (rawSha256 !== artifact.sha256 || raw.bytes.length !== artifact.bytes || planarPcmSha256 !== artifact.pcmSha256)
-    throw new Error("raw artifact metadata does not match bytes: " + file);
+    throw new Error("raw artifact metadata does not match bytes: " + path.join(engine, artifact.path));
   const metrics = fullMix.analyzeChannels(raw.channels, sampleRate, fixture);
   const finite = raw.channels.every((x) => fullMixFinite(x));
   return {
@@ -192,39 +216,64 @@ function fullMixFinite(channel) {
   return true;
 }
 
-function exactNoteMap(row, fixture) {
-  const note = row && row.noteInstances;
-  return !!note && note.complete === true && note.expectedCount === fixture.notes.length &&
-    note.createdCount === fixture.notes.length && Array.isArray(note.rows) && note.rows.length === fixture.notes.length &&
-    note.rows.every((actual, i) => {
-      const expected = fixture.notes[i];
-      return actual && actual.id === expected.id && actual.status === "created" &&
-        actual.channel === expected.channel && actual.pitch === expected.pitch && actual.velocity === expected.velocity &&
-        actual.program === expected.program && actual.actualProgram === expected.program &&
-        Number.isSafeInteger(actual.sourceCount) && actual.sourceCount > 0 && actual.pruned === false;
-    }) && Array.isArray(note.extras) && note.extras.length === 0 &&
-    Array.isArray(note.prunedInstances) && note.prunedInstances.length === 0;
-}
-
-function exactProbeMap(row, fixture) {
-  const probes = row && row.probeInstances;
-  return !!probes && probes.complete === true && probes.expectedCount === fixture.probes.length &&
-    probes.createdCount === fixture.probes.length && Array.isArray(probes.rows) && probes.rows.length === fixture.probes.length &&
-    probes.rows.every((actual, i) => {
-      const expected = fixture.probes[i];
-      return actual && actual.id === expected.id && actual.status === "created" &&
-        actual.channel === expected.channel && actual.pitch === expected.pitch && actual.velocity === expected.velocity &&
-        actual.program === expected.program && actual.actualProgram === expected.program &&
-        Number.isSafeInteger(actual.sourceCount) && actual.sourceCount > 0 && actual.pruned === false;
-    }) && Array.isArray(probes.prunedInstances) && probes.prunedInstances.length === 0;
-}
-
 function checkPass(caseRow, name) {
-  const found = Array.isArray(caseRow.checks) && caseRow.checks.find((check) => check && check.name === name);
-  return !!found && found.ok === true;
+  const found = Array.isArray(caseRow.checks) ? caseRow.checks.filter((check) => check && check.name === name) : [];
+  return found.length === 1 && found[0].ok === true;
 }
 
-function pairRows(report) {
+function sameJson(a, b) {
+  return canonical(a) === canonical(b);
+}
+
+function noteTimingComplete(obs, fixture) {
+  const timing = obs && obs.noteTiming;
+  return fixture.timingComplete === true && !!timing && timing.complete === fixture.timingComplete &&
+    timing.unmatchedNoteOffs === fixture.unmatchedNoteOffs &&
+    timing.unpitchedOneShotCount === fixture.unpitchedOneShotCount &&
+    timing.ambiguousPairings === fixture.notes.filter((n) => n.pairingAmbiguous).length &&
+    timing.durationUnknown === fixture.notes.filter((n) => n.durationSec === null).length;
+}
+
+function currentFixtureIdentity(obs, fixture, engine, engineReport) {
+  const input = obs && obs.input;
+  return obs.engine === engine && obs.browserVersion === engineReport.version && obs.platform === engineReport.platform &&
+    obs.scope === "fixture" && obs.qualification === "fixture-only-no-production-approval" &&
+    obs.fixtureId === fixture.id && obs.profileKind === fixture.profileKind && obs.quality === 1 &&
+    obs.midiSha256 === fixture.midiSha256 && obs.setupSha256 === fixture.setupSha256 &&
+    obs.settingsSha256 === fixture.settingsSha256 && obs.probePlanSha256 === fixture.probePlanSha256 &&
+    obs.methodSha256 === fixture.methodSha256 && obs.toleranceSha256 === fixture.toleranceSha256 &&
+    obs.playbackOriginSec === fullMix.ORIGIN && obs.masterVol === fixture.settings.masterVol &&
+    obs.reverbLev === fixture.settings.reverbLev && obs.songEndSec === fixture.songEndSec &&
+    obs.durationSec === fixture.renderDurationSec && sameJson(obs.setupProvenance, fixture.setupProvenance) &&
+    !!input && sameJson(input.setupProvenance, fixture.setupProvenance) &&
+    input.noteCount === fixture.notes.length &&
+    input.midiPath === (fixture.id === "tinychip-ws-mid" ? "tests/fixtures/consumer/waves-song.mid" : "ws.mid");
+}
+
+function producerBuildStatusConsistent(capture) {
+  if (!capture || typeof capture.preBaselineEligible !== "boolean" ||
+      !["pass", "fail", "incomplete"].includes(capture.result)) return false;
+  if (!capture.preBaselineEligible) return capture.result === "fail";
+  if (capture.result === "incomplete") return capture.referenceStatus === undefined || capture.referenceStatus === "incomplete";
+  if (capture.result === "pass") return capture.referenceStatus === "measured" &&
+    Array.isArray(capture.comparisonProblems) && capture.comparisonProblems.length === 0;
+  return capture.referenceStatus === "measured" && Array.isArray(capture.comparisonProblems) &&
+    capture.comparisonProblems.length > 0;
+}
+
+function producerSummaryConsistent(obs, sourceMin) {
+  const derived = fullMix.deriveFullMixStatus(obs && obs.builds, sourceMin.ok);
+  return sameJson(derived, {
+    captureEligiblePreBaseline: obs && obs.captureEligiblePreBaseline,
+    status: obs && obs.status,
+  });
+}
+
+function pairRows(report, reportDir, { env = process.env, root = path.resolve(__dirname, "..") } = {}) {
+  if (typeof reportDir !== "string" || !reportDir) throw new Error("pairRows requires the retained report directory");
+  const resolvedToolchain = matrix.resolveBrowserToolchain(env);
+  const recordedToolchain = report.matrixRun && report.matrixRun.browserToolchain;
+  const toolchainMatches = !!recordedToolchain && sameJson(recordedToolchain, resolvedToolchain);
   const rows = [];
   for (const engine of ["chromium", "firefox", "webkit"]) {
     const engineReport = report[engine];
@@ -243,26 +292,43 @@ function pairRows(report) {
         builds[build] = {
           priorResult: row.result,
           priorPreBaselineEligible: row.preBaselineEligible === true,
-          first: readAttempt(argsv.input, engine, fixture, obs.sampleRate, build, 1, row),
-          repeat: readAttempt(argsv.input, engine, fixture, obs.sampleRate, build, 2, row),
+          first: readAttempt(reportDir, engine, fixture, obs.sampleRate, build, 1, row),
+          repeat: readAttempt(reportDir, engine, fixture, obs.sampleRate, build, 2, row),
         };
         builds[build].firstVsRepeat = fullMix.sameEnginePcm(
-          readChannels(builds[build].first.path, builds[build].first.sampleRate, fixture),
-          readChannels(builds[build].repeat.path, builds[build].repeat.sampleRate, fixture), engine,
+          builds[build].first.channels, builds[build].repeat.channels, engine,
         );
       }
-      const sourceChannels = readChannels(builds.source.first.path, obs.sampleRate, fixture);
-      const minChannels = readChannels(builds.min.first.path, obs.sampleRate, fixture);
+      const sourceChannels = builds.source.first.channels;
+      const minChannels = builds.min.first.channels;
       const sourceMin = fullMix.sameEnginePcm(sourceChannels, minChannels, engine);
       const reportedSourceMin = obs.sourceMinPcmComparison;
+      const producerStatusMatches = producerSummaryConsistent(obs, sourceMin);
+      const expectedBundle = matrix.browserBundle(resolvedToolchain, engine);
+      const currentBundleIdentity = toolchainMatches && sameJson(obs.browserBundle, expectedBundle) &&
+        expectedBundle.engine === engine && browserToolchain.isPinnedBrowserBundle(expectedBundle, env, root) &&
+        browserToolchain.matchesBrowserVersion(expectedBundle, engineReport.version);
       const captureCheckEvidence = Object.fromEntries(["source", "min"].map((build) => {
         const capture = obs.builds[build], first = builds[build].first;
         const probes = first.metrics.probes;
+        let recomputedFault = null;
+        try {
+          if (matrix.nativeNoteEvidenceComplete(capture.noteInstances, fixture, obs.sampleRate))
+            recomputedFault = fullMix.faultSensitivity(first.channels, obs.sampleRate, fixture, first.metrics, capture.noteInstances);
+        } catch { /* malformed native evidence remains ineligible */ }
+        const currentMethod = obs.methodSha256 === fixture.methodSha256 && obs.toleranceSha256 === fixture.toleranceSha256;
+        const faultMatchesCurrentMethod = currentMethod && !!recomputedFault && recomputedFault.checksPass === true &&
+          sameJson(capture.faultSensitivity, recomputedFault);
+        const priorMethodEvidence = !currentMethod;
+        const reportedFault = capture.faultSensitivity;
+        const reportedFaultSha256 = reportedFault === undefined ? null : hash(Buffer.from(canonical(reportedFault)));
         const checks = {
+          currentFixtureIdentity: currentFixtureIdentity(obs, fixture, engine, engineReport),
+          currentBrowserBundleIdentity: currentBundleIdentity,
           finiteFirstPcm: first.finite && first.metrics.channels.left.finite && first.metrics.channels.right.finite,
           fullScaleFirstPcm: first.overFullScaleSamples === 0 && first.peak <= 1,
-          independentNoteSourceMap: exactNoteMap(capture, fixture),
-          independentProbeSourceMap: exactProbeMap(capture, fixture),
+          independentNoteSourceMap: matrix.nativeNoteEvidenceComplete(capture.noteInstances, fixture, obs.sampleRate),
+          independentProbeSourceMap: matrix.nativeProbeEvidenceComplete(capture.probeInstances, fixture, obs.sampleRate),
           intendedIsolatedPitchAndEnvelope: probes.length === fixture.probes.length && probes.every((probe, i) =>
             probe.id === fixture.probes[i].id && probe.status === "measured" && Number.isFinite(probe.pitchCents) &&
             Math.abs(probe.pitchCents) <= fullMix.PROBE_PITCH_LIMIT_CENTS &&
@@ -271,21 +337,41 @@ function pairRows(report) {
             Number.isFinite(probe.onsetMs) && probe.levelRms > 0 && Array.isArray(probe.envelope) && probe.envelope.length === 40),
           isolatedQuietSeparation: first.metrics.isolation.length === fixture.probes.length &&
             first.metrics.isolation.every((x) => Number.isFinite(x.preProbeRms) && x.preProbeRms <= 1e-5),
-          completeNativeTiming: fixture.timingComplete,
-          nativeFaultSensitivity: capture.faultSensitivity && capture.faultSensitivity.checksPass === true,
-          noSchedulerPageOrNetworkError: capture.intervalCount === 1 && Array.isArray(capture.rejections) &&
-            capture.rejections.length === 0 && checkPass(c, build + " first attempt completed without scheduler, rejection, page error or network request"),
-          producerPreBaselineGate: builds[build].priorPreBaselineEligible && checkPass(c, build + " first attempt is eligible for native reference capture before comparison"),
+          completeNativeTiming: noteTimingComplete(obs, fixture),
+          nativeFaultSensitivity: faultMatchesCurrentMethod,
+          currentCaptureMethod: currentMethod,
+          noSchedulerPageOrNetworkError: matrix.firstAttemptPageClean(capture, c.checks, build),
+          producerPreBaselineGate: capture.preBaselineEligible === true &&
+            checkPass(c, build + " first attempt is eligible for native reference capture before comparison"),
+          producerStatusShape: producerBuildStatusConsistent(capture),
+          producerAggregateStatus: producerStatusMatches,
         };
-        return [build, checks];
+        return [build, { ...checks, originalFaultSensitivity: reportedFault || null,
+          originalFaultSummarySha256: reportedFaultSha256, recomputedFault, priorMethodEvidence }];
       }));
-      const sourceMinPcmEligible = sourceMin.ok && JSON.stringify(sourceMin) === JSON.stringify(reportedSourceMin) &&
+      const sourceMinPcmEligible = sourceMin.ok && sameJson(sourceMin, reportedSourceMin) &&
         checkPass(c, "source and fresh-min first-attempt raw PCM match without alignment");
-      const preBaselineEligible = Object.values(captureCheckEvidence).every((checks) => Object.values(checks).every(Boolean)) && sourceMinPcmEligible;
+      const captureGateChecks = Object.fromEntries(Object.entries(captureCheckEvidence).map(([build, checks]) => [build,
+        Object.fromEntries(Object.entries(checks).filter(([name, value]) =>
+          typeof value === "boolean" && !["priorMethodEvidence"].includes(name)))]));
+      const independentlyEligible = Object.values(captureGateChecks).every((checks) => Object.values(checks).every(Boolean)) &&
+        sourceMinPcmEligible;
+      const priorFirstFailure = ["source", "min"].some((build) => builds[build].priorResult === "fail");
+      const preBaselineEligible = independentlyEligible && !priorFirstFailure;
       const eligibilityReasons = [];
-      for (const [build, checks] of Object.entries(captureCheckEvidence)) for (const [name, ok] of Object.entries(checks))
-        if (!ok) eligibilityReasons.push(build + ": " + name);
+      for (const [build, checks] of Object.entries(captureGateChecks)) for (const [name, ok] of Object.entries(checks))
+        if (typeof ok === "boolean" && !ok) eligibilityReasons.push(build + ": " + name);
       if (!sourceMinPcmEligible) eligibilityReasons.push("source/min first-attempt PCM differs or producer comparison does not match raw samples");
+      if (priorFirstFailure) eligibilityReasons.push("producer retained a first-attempt fail; a later or offline reanalysis cannot promote it");
+      const currentMethod = obs.methodSha256 === fixture.methodSha256 && obs.toleranceSha256 === fixture.toleranceSha256;
+      if (!currentMethod) eligibilityReasons.push("retained capture method/tolerance differs from the current hashed fixture contract");
+      if (captureCheckEvidence.source.priorMethodEvidence || captureCheckEvidence.min.priorMethodEvidence)
+        eligibilityReasons.push("prior-method fault summaries are historical; missing current-method page/fault evidence cannot certify a current reference");
+      const referenceExportEligible = preBaselineEligible && ["source", "min"].every((build) =>
+        builds[build].priorResult === "pass" || builds[build].priorResult === "incomplete");
+      const referenceEligibilityReason = !preBaselineEligible
+        ? "one or more current first-attempt integrity, method, native identity/timing, page or fault gates are incomplete or failed"
+        : referenceExportEligible ? null : "a first-attempt engine/build comparison failed; it cannot be exported as a new reference";
       rows.push({
         id: c.id, engine, browserVersion: engineReport.version, platform: engineReport.platform,
         fixtureId: fixture.id, profileKind: fixture.profileKind, sampleRate: obs.sampleRate, quality: obs.quality,
@@ -295,11 +381,14 @@ function pairRows(report) {
           captureMethodSha256: obs.methodSha256, captureToleranceSha256: obs.toleranceSha256,
         },
         captureRun: report.matrixRun,
+        browserBundle: obs.browserBundle || null,
+        currentToolchainMatches: toolchainMatches,
         captureSetupProvenance: obs.setupProvenance,
         independentVoiceEvidence: Object.fromEntries(["source", "min"].map((build) => [build, {
           expected: obs.builds[build].noteInstances && obs.builds[build].noteInstances.expectedCount,
           created: obs.builds[build].noteInstances && obs.builds[build].noteInstances.createdCount,
-          pruned: obs.builds[build].noteInstances && obs.builds[build].noteInstances.prunedInstances.length,
+          pruned: obs.builds[build].noteInstances && Array.isArray(obs.builds[build].noteInstances.prunedInstances)
+            ? obs.builds[build].noteInstances.prunedInstances.length : null,
           probeExpected: obs.builds[build].probeInstances && obs.builds[build].probeInstances.expectedCount,
           probeCreated: obs.builds[build].probeInstances && obs.builds[build].probeInstances.createdCount,
         }])),
@@ -309,18 +398,21 @@ function pairRows(report) {
           pruned: obs.builds[build].noteInstances && obs.builds[build].noteInstances.prunedInstances,
         }])),
         builds, sourceMinPcmComparison: sourceMin,
-        reportedSourceMinPcmComparisonMatches: JSON.stringify(sourceMin) === JSON.stringify(reportedSourceMin),
-        preBaselineEligible, captureCheckEvidence, eligibilityReasons,
-        firstAttemptStatus: preBaselineEligible ? "eligible" : "fail",
+        reportedSourceMinPcmComparisonMatches: sameJson(sourceMin, reportedSourceMin),
+        producerAggregateStatusMatches: producerStatusMatches,
+        preBaselineEligible, independentlyEligible, referenceExportEligible,
+        captureCheckEvidence, eligibilityReasons,
+        firstAttemptStatus: preBaselineEligible ? "eligible" : priorFirstFailure ||
+          !captureCheckEvidence.source.fullScaleFirstPcm || !captureCheckEvidence.min.fullScaleFirstPcm ? "fail" : "incomplete",
         originalCaptureVerdict: Object.fromEntries(["source", "min"].map((build) => [build, builds[build].priorResult])),
-        eligibilityReason: preBaselineEligible ? null : "one or more retained first-attempt gates failed; diagnostic repeats do not promote eligibility",
+        referenceEligibilityReason,
       });
       const firstDefect = ["source", "min"].map((build) => builds[build].first)
         .find((capture) => capture.overFullScaleFrames.length);
       if (firstDefect) {
         const frame = firstDefect.overFullScaleFrames[0].frame, atSec = frame / obs.sampleRate;
         const expectedNotes = fixture.notes.filter((note) => note.onsetSec <= atSec && (note.offSec === null || note.offSec > atSec));
-        const actualRows = obs.builds.source.noteInstances.rows;
+        const actualRows = obs.builds.source.noteInstances && obs.builds.source.noteInstances.rows || [];
         rows[rows.length - 1].activeNativeVoiceMapAtFirstOverFullScaleFrame = {
           seconds: atSec,
           independentExpectedNotes: expectedNotes.map((note) => ({
@@ -332,60 +424,58 @@ function pairRows(report) {
         };
       }
       for (const build of ["source", "min"]) {
-        delete builds[build].first.channels;
-        delete builds[build].repeat.channels;
+      delete builds[build].first.channels;
+      delete builds[build].repeat.channels;
       }
     }
   }
   return rows;
 }
 
-function readChannels(relativePath, sampleRate, fixture) {
-  const file = path.resolve(argsv.input, relativePath);
-  return matrix.readFloatStereoWav(file, sampleRate, Math.ceil(fixture.renderDurationSec * sampleRate)).channels;
+function main(argv) {
+  const argsv = args(argv);
+  const reportFile = path.join(argsv.input, "results.json");
+  const reportBytes = fs.readFileSync(reportFile);
+  const report = JSON.parse(reportBytes.toString("utf8"));
+  if (!report.matrixRun || !report.matrixRun.selection || !report.matrixRun.selection.specs.includes("full-mix"))
+    throw new Error("input results are not a retained full-mix matrix run");
+  const rows = pairRows(report, argsv.input);
+  const historicalToolchain = matrix.resolveBrowserToolchain();
+  const expected = fullMix.referenceExpectedCases();
+  const actual = rows.map((row) => row.engine + "/" + row.fixtureId + "/" + row.sampleRate).sort();
+  if (JSON.stringify(actual) !== JSON.stringify(expected.slice().sort()))
+    throw new Error("input run is missing or duplicates declared engine/fixture/rate cases");
+  const eligible = rows.filter((row) => row.referenceExportEligible).map((row) => row.engine + "/" + row.fixtureId + "/" + row.sampleRate).sort();
+  const ineligible = rows.filter((row) => !row.referenceExportEligible).map((row) => ({
+    id: row.engine + "/" + row.fixtureId + "/" + row.sampleRate,
+    firstAttemptStatus: row.firstAttemptStatus, reason: row.referenceEligibilityReason,
+  }));
+  const result = {
+    schemaVersion: 1, scope: "fixture", reportKind: "offline-reanalysis-no-rerender-no-promotion",
+    analysisVersion: fullMix.ANALYSIS_VERSION, methodSha256: fullMix.FIXTURES[0].methodSha256,
+    toleranceSha256: fullMix.FIXTURES[0].toleranceSha256, referenceToleranceSha256,
+    referenceToleranceDerivation: "eligible first-attempt versus retained diagnostic-repeat features: max window drift 0.0003422 dB, max note-window 0.00000773 dB, max transient envelope 0.00000270 dB, max downbeat projection 0.000000612 dB, max peak delta 1.78814e-7; tighter measured features retain modest bounded floors; 35-cent isolated pitch threshold is the independently justified normative policy",
+    capture: { reportPath: "results.json", reportSha256: hash(reportBytes), matrixRun: report.matrixRun,
+      toolchain: report.matrixRun.browserToolchain || historicalToolchain,
+      toolchainSource: report.matrixRun.browserToolchain ? "recorded-in-capture-matrixRun-browserToolchain" : "reconstructed-from-retained-v5-pinned-runner-toolchain" },
+    expectedCases: expected, rows, coverage: {
+      expected: expected.length, eligible: eligible.length, status: eligible.length === expected.length ? "complete" : "incomplete",
+      eligibleCases: eligible, incompleteCases: ineligible,
+    },
+  };
+  fs.mkdirSync(path.dirname(argsv.out), { recursive: true });
+  fs.writeFileSync(argsv.out, JSON.stringify(result, null, 2) + "\n");
+  if (argsv["reference-out"]) {
+    const reference = makeReference(rows, result.capture.reportSha256, report.matrixRun, historicalToolchain);
+    fs.mkdirSync(path.dirname(argsv["reference-out"]), { recursive: true });
+    fs.writeFileSync(argsv["reference-out"], JSON.stringify(reference, null, 2) + "\n");
+    result.reference = { path: argsv["reference-out"], status: reference.status,
+      measured: reference.coverage.measuredCases.length, expected: reference.coverage.expectedCases.length };
+    fs.writeFileSync(argsv.out, JSON.stringify(result, null, 2) + "\n");
+  }
+  console.log("v6 offline reanalysis: " + rows.length + " engine/fixture/rate cases, " + eligible.length + "/" + expected.length + " reference-eligible; " + argsv.out);
 }
 
-const argsv = args(process.argv.slice(2));
-const reportFile = path.join(argsv.input, "results.json");
-const reportBytes = fs.readFileSync(reportFile);
-const report = JSON.parse(reportBytes.toString("utf8"));
-if (!report.matrixRun || !report.matrixRun.selection || !report.matrixRun.selection.specs.includes("full-mix"))
-  throw new Error("input results are not a retained full-mix matrix run");
-const rows = pairRows(report);
-const historicalToolchain = matrix.resolveBrowserToolchain();
-const expected = fullMix.referenceExpectedCases();
-const actual = rows.map((row) => row.engine + "/" + row.fixtureId + "/" + row.sampleRate).sort();
-if (JSON.stringify(actual) !== JSON.stringify(expected.slice().sort()))
-  throw new Error("input run is missing or duplicates declared engine/fixture/rate cases");
-const eligible = rows.filter((row) => row.preBaselineEligible).map((row) => row.engine + "/" + row.fixtureId + "/" + row.sampleRate).sort();
-const ineligible = rows.filter((row) => !row.preBaselineEligible).map((row) => ({
-  id: row.engine + "/" + row.fixtureId + "/" + row.sampleRate,
-  firstAttemptStatus: row.firstAttemptStatus,
-  reason: row.fixtureId === "ws-mid-default" && row.engine === "webkit" && row.sampleRate === 48000
-    ? "both first-attempt source/min WAVs contain the retained over-full-scale sample at frame 653088; no normalization or repeat promotion"
-          : row.eligibilityReasons.join("; "),
-}));
-const result = {
-  schemaVersion: 1, scope: "fixture", reportKind: "offline-reanalysis-no-rerender-no-promotion",
-  analysisVersion: fullMix.ANALYSIS_VERSION, methodSha256: fullMix.FIXTURES[0].methodSha256,
-  toleranceSha256: fullMix.FIXTURES[0].toleranceSha256, referenceToleranceSha256,
-  referenceToleranceDerivation: "eligible first-attempt versus retained diagnostic-repeat features: max window drift 0.0003422 dB, max note-window 0.00000773 dB, max transient envelope 0.00000270 dB, max downbeat projection 0.000000612 dB, max peak delta 1.78814e-7; tighter measured features retain modest bounded floors; 35-cent isolated pitch threshold is the independently justified normative policy",
-  capture: { reportPath: "results.json", reportSha256: hash(reportBytes), matrixRun: report.matrixRun,
-    toolchain: report.matrixRun.browserToolchain || historicalToolchain,
-    toolchainSource: report.matrixRun.browserToolchain ? "recorded-in-capture-matrixRun-browserToolchain" : "reconstructed-from-retained-v5-pinned-runner-toolchain" },
-  expectedCases: expected, rows, coverage: {
-    expected: expected.length, eligible: eligible.length, status: eligible.length === expected.length ? "complete" : "incomplete",
-    eligibleCases: eligible, incompleteCases: ineligible,
-  },
-};
-fs.mkdirSync(path.dirname(argsv.out), { recursive: true });
-fs.writeFileSync(argsv.out, JSON.stringify(result, null, 2) + "\n");
-if (argsv["reference-out"]) {
-  const reference = makeReference(rows, result.capture.reportSha256, report.matrixRun, historicalToolchain);
-  fs.mkdirSync(path.dirname(argsv["reference-out"]), { recursive: true });
-  fs.writeFileSync(argsv["reference-out"], JSON.stringify(reference, null, 2) + "\n");
-  result.reference = { path: argsv["reference-out"], status: reference.status,
-    measured: reference.coverage.measuredCases.length, expected: reference.coverage.expectedCases.length };
-  fs.writeFileSync(argsv.out, JSON.stringify(result, null, 2) + "\n");
-}
-console.log("v6 offline reanalysis: " + rows.length + " engine/fixture/rate cases, " + eligible.length + "/" + expected.length + " reference-eligible; " + argsv.out);
+if (require.main === module) main(process.argv.slice(2));
+
+module.exports = { pairRows, makeReference, main, REFERENCE_TOLERANCES };
