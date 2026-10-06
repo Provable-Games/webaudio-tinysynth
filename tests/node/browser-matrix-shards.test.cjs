@@ -61,26 +61,63 @@ test("generated-buffer SHA-256 uses known Float32LE planar channel bytes", async
 
   const scenario = SCENARIOS.find((item) => item.name === "reverb");
   const sampleRate = 44100, quality = 1;
+  const seed = 1;
   const generated = {
-    convBuf: seedReference.convBuf(MATRIX.seed, sampleRate),
-    n0: seedReference.n0(MATRIX.seed, sampleRate),
-    n1: seedReference.n1(MATRIX.seed, sampleRate),
+    convBuf: seedReference.convBuf(seed, sampleRate),
+    n0: seedReference.n0(seed, sampleRate),
+    n1: seedReference.n1(seed, sampleRate),
   };
-  const captures = {};
-  for (const build of ["source", "min"]) {
-    const actualSpec = renderSpec.renderSpec(scenario, { seed: MATRIX.seed, sr: sampleRate, quality }, { captureBufferSha256: true });
-    const bufferBytes = Object.fromEntries(Object.entries(generated).map(([name, channels]) => [name, {
-      bytesBase64: float32Digest.base64Planar(channels), channels: channels.length, frames: channels[0].length,
-      byteLength: channels.length * channels[0].length * 4,
-    }]));
-    const captured = await renderSpec.render({ page: { evaluate: async () => ({ bufferBytes }) } }, actualSpec);
-    captures[build] = renderSpec.combine(scenario, [captured]);
-  }
+  const captureBuilds = async () => {
+    const captures = {};
+    for (const build of ["source", "min"]) {
+      const actualSpec = renderSpec.renderSpec(scenario, { seed, sr: sampleRate, quality }, { captureBufferSha256: true });
+      const bufferBytes = Object.fromEntries(Object.entries(generated).map(([name, channels]) => [name, {
+        bytesBase64: float32Digest.base64Planar(channels), channels: channels.length, frames: channels[0].length,
+        byteLength: channels.length * channels[0].length * 4,
+      }]));
+      const captured = await renderSpec.render({ page: { evaluate: async () => ({ bufferBytes }) } }, actualSpec);
+      captures[build] = renderSpec.combine(scenario, [captured]);
+    }
+    return captures;
+  };
+  const makeObservation = (captures) => JSON.parse(JSON.stringify({
+    schemaVersion: 1, method: "sha256-f32le-planar-channel-order-v1",
+    producer: "node-crypto-after-browser-byte-transfer",
+    encoding: "IEEE-754 binary32 little-endian; planar channel-index order; sample bytes only",
+    scenarioId: "reverb", attempt: 1, firstAttempt: true,
+    settings: { source: captures.source.bufferCaptureSettings, min: captures.min.bufferCaptureSettings },
+    builds: { source: captures.source.bufferSha256, min: captures.min.bufferSha256 },
+  }));
+  const dimensions = { dims: { sampleRate, quality } };
+  const noOutputCaptures = await captureBuilds();
+  for (const build of ["source", "min"])
+    renderSpec.saveGeneratedBufferCaptures(noOutputCaptures[build], quality, sampleRate, build, { out: null, save: () => null });
+  const noOutputObservation = makeObservation(noOutputCaptures);
+  assert.equal(noOutputObservation.settings.source.seed, seed);
+  assert.deepEqual(renderBufferShaProblems(dimensions, noOutputObservation, "local no-output producer", { expectedSeed: seed, requireSaved: false }), [],
+    "local no-output producer retains valid first-attempt metadata without claiming sidecars were saved");
+  assert.ok(renderBufferShaProblems(dimensions, noOutputObservation, "strict aggregate", { expectedSeed: seed, requireSaved: true })
+    .some((problem) => /retention is false, expected true/.test(problem)),
+  "strict aggregate still refuses local no-output descriptors");
+  const localEngines = Object.fromEntries(MATRIX.engines.map((engine) => [engine, { version: "synthetic",
+    cases: [{ id: "render-reverb-q1-44100", spec: "render", dims: dimensions.dims,
+      observations: { measurements: measurements(), "generated buffer SHA-256 (first reverb-enabled attempt)": noOutputObservation } }] }]));
+  const localChecks = crossEngine(localEngines, "core", { expectedSeed: seed, requireSaved: false });
+  assert.ok(localChecks.some((check) => check.name.includes("actual generated-buffer SHA-256") && check.ok),
+    "local cross-engine validation accepts no-output descriptors only under its explicit local retention policy");
+  assert.ok(crossEngine(localEngines).some((check) => check.name.includes("actual generated-buffer SHA-256") && !check.ok),
+    "default strict cross-engine validation does not infer local seed or no-output policy");
+  assert.ok(renderBufferShaProblems(dimensions, noOutputObservation, "wrong expected seed", { expectedSeed: MATRIX.seed, requireSaved: false })
+    .some((problem) => /active reverb-probe settings|independent seeded reference/.test(problem)),
+  "a stale independently expected seed cannot validate an alternate-seed report");
+
+  const captures = await captureBuilds();
   const persisted = [];
   const artifactRoot = fs.mkdtempSync(path.join(os.tmpdir(), "matrix-buffer-producer-"));
   const resultFile = path.join(artifactRoot, "browser-results-chromium-1", "browser-matrix", "results.json");
   for (const build of ["source", "min"]) {
     renderSpec.saveGeneratedBufferCaptures(captures[build], quality, sampleRate, build, {
+      out: resultFile,
       save: (rel, bytes) => {
         const target = path.join(path.dirname(resultFile), "chromium", rel);
         fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -90,16 +127,8 @@ test("generated-buffer SHA-256 uses known Float32LE planar channel bytes", async
       },
     });
   }
-  const observation = JSON.parse(JSON.stringify({
-    schemaVersion: 1, method: "sha256-f32le-planar-channel-order-v1",
-    producer: "node-crypto-after-browser-byte-transfer",
-    encoding: "IEEE-754 binary32 little-endian; planar channel-index order; sample bytes only",
-    scenarioId: "reverb", attempt: 1, firstAttempt: true,
-    settings: { source: captures.source.bufferCaptureSettings, min: captures.min.bufferCaptureSettings },
-    builds: { source: captures.source.bufferSha256, min: captures.min.bufferSha256 },
-  }));
-  const dimensions = { dims: { sampleRate, quality } };
-  assert.deepEqual(renderBufferShaProblems(dimensions, observation, "producer control"), [],
+  const observation = makeObservation(captures);
+  assert.deepEqual(renderBufferShaProblems(dimensions, observation, "producer control", { expectedSeed: seed }), [],
     "actual render/decode/hash/combine/save producer output retains both first reverb builds through JSON serialization");
   const resultRel = "browser-results-chromium-1/browser-matrix/results.json";
   const producerCase = { id: "render-reverb-q1-44100", dims: dimensions.dims,
@@ -126,10 +155,20 @@ test("generated-buffer SHA-256 uses known Float32LE planar channel bytes", async
   fs.rmSync(artifactRoot, { recursive: true, force: true });
   const wrongProbe = structuredClone(observation);
   wrongProbe.settings.source.activeProbe.pitch = 70;
-  assert.ok(renderBufferShaProblems(dimensions, wrongProbe, "producer control").some((problem) => /active reverb-probe settings/.test(problem)));
+  assert.ok(renderBufferShaProblems(dimensions, wrongProbe, "producer control", { expectedSeed: seed }).some((problem) => /active reverb-probe settings/.test(problem)));
   const missingProbe = structuredClone(observation);
   delete missingProbe.settings.min;
-  assert.ok(renderBufferShaProblems(dimensions, missingProbe, "producer control").some((problem) => /active reverb-probe settings/.test(problem)));
+  assert.ok(renderBufferShaProblems(dimensions, missingProbe, "producer control", { expectedSeed: seed }).some((problem) => /active reverb-probe settings/.test(problem)));
+  const changedBrowserStage = structuredClone(observation);
+  changedBrowserStage.builds.source.convBuf.captureTrace.browser.channels = 1;
+  assert.ok(renderBufferShaProblems(dimensions, changedBrowserStage, "producer control", { expectedSeed: seed })
+    .some((problem) => /browser-declared buffer dimensions\/length differ from Node-validated bytes/.test(problem)),
+  "the aggregate reports a browser-stage channel contradiction without normalizing it");
+  const changedFinalDescriptor = structuredClone(observation);
+  changedFinalDescriptor.builds.source.convBuf.channels = 1;
+  assert.ok(renderBufferShaProblems(dimensions, changedFinalDescriptor, "producer control", { expectedSeed: seed })
+    .some((problem) => /final descriptor differs from the Node-validated capture-stage snapshot/.test(problem)),
+  "the aggregate locates a post-Node descriptor mutation separately from browser-reported metadata");
 });
 
 function testPcm(fixture, sampleRate) {
@@ -237,7 +276,7 @@ const MATRIX = require("../browser/matrix").MATRIX;
 const FULL_MIX = require("../browser/specs/full-mix");
 const {
   shardLayout, selectedSpecs, parseArgs, expectedResultPaths, caseManifest, reportProvenance, readFloatStereoWav,
-  renderBufferShaProblems, generatedBufferArtifactProblems,
+  renderBufferShaProblems, generatedBufferArtifactProblems, crossEngine,
 } = require("../../scripts/browser-matrix");
 const SCRIPT = path.join(H.ROOT, "scripts", "browser-matrix.js");
 const SPECS = Object.keys(MATRIX.specs);
@@ -293,6 +332,16 @@ test("--shard selects the spec part of both the assert and observe selection", (
   assert.deepEqual([...union].sort(), SPECS.filter((s) => s !== "full-mix").sort());
   assert.deepEqual(selectedSpecs(parseArgs([])), SPECS.filter((s) => s !== "full-mix" && MATRIX.specs[s].kind === "assert"));
   assert.deepEqual(selectedSpecs(parseArgs(["--mode=full-mix-qualification", "--shard=1/1"])), ["render", "full-mix"]);
+});
+
+test("shard result expectations match the producer's actual provenance spec order", () => {
+  for (const [rel, expected] of expectedResultPaths()) {
+    const args = ["--shard=" + expected.index + "/" + expected.total];
+    if (expected.step === "browser-observe") args.unshift("--specs=hang,variation");
+    const options = parseArgs(args);
+    const produced = reportProvenance(options, [expected.engine], CONTEXT);
+    assert.deepEqual(produced.selection.specs, expected.specs, rel);
+  }
 });
 
 test("bad --shard values and a merge without explicit expected context are refused", () => {
@@ -411,7 +460,13 @@ function fakeCase(def, engine, index, step) {
       ATTACHMENTS.set(path.posix.join(artifactRoot, rel), bytes);
       const measurement = float32Digest.sha256Base64Planar(bytes.toString("base64"), channels.length, channels[0].length);
       assert.equal(measurement.sha256, expected[name]);
-      return [name, { ...measurement, artifact: { path: rel, saved: true } }];
+      return [name, { ...measurement,
+        captureTrace: {
+          browser: { channels: channels.length, frames: channels[0].length, byteLength: bytes.length, base64Chars: bytes.toString("base64").length },
+          node: { channels: measurement.channels, frames: measurement.frames, byteLength: measurement.byteLength,
+            decodedByteLength: bytes.length, sha256: measurement.sha256 },
+        },
+        artifact: { path: rel, saved: true } }];
     }));
     const reverb = SCENARIOS.find((scenario) => scenario.name === "reverb");
     const probeSettings = renderSpec.bufferCaptureSettings(renderSpec.renderSpec(reverb,

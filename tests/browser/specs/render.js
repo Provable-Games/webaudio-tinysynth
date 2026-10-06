@@ -76,6 +76,7 @@ async function render(p, spec) {
   if (r.bufferBytes) {
     const digests = {};
     const captures = {};
+    const captureTrace = {};
     for (const name of ["convBuf", "n0", "n1"]) {
       const capture = r.bufferBytes[name];
       if (capture === null) {
@@ -93,12 +94,19 @@ async function render(p, spec) {
           throw new RangeError("declared byteLength " + capture.byteLength + " differs from validated " + digest.byteLength);
         digests[name] = Object.freeze(digest);
         captures[name] = Buffer.from(capture.bytesBase64, "base64");
+        captureTrace[name] = Object.freeze({
+          browser: Object.freeze({ channels: capture.channels, frames: capture.frames,
+            byteLength: capture.byteLength, base64Chars: capture.bytesBase64.length }),
+          node: Object.freeze({ channels: digest.channels, frames: digest.frames,
+            byteLength: digest.byteLength, decodedByteLength: captures[name].length, sha256: digest.sha256 }),
+        });
       } catch (error) {
         throw new Error("invalid generated Float32 buffer bytes for " + name + ": " + error.message, { cause: error });
       }
     }
     r.bufferSha256 = digests;
     r.bufferCaptures = captures;
+    r.bufferCaptureTrace = captureTrace;
     r.bufferCaptureSettings = bufferCaptureSettings(spec);
     delete r.bufferBytes;
   }
@@ -145,7 +153,7 @@ function combine(s, parts) {
   const sr = parts[0].sr;
   return {
     sr, channels, buffers: parts[0].buffers, bufferSha256: parts[0].bufferSha256,
-    bufferCaptures: parts[0].bufferCaptures,
+    bufferCaptures: parts[0].bufferCaptures, bufferCaptureTrace: parts[0].bufferCaptureTrace,
     bufferCaptureSettings: parts[0].bufferCaptureSettings, randomCalls: parts[0].randomCalls,
     internalContext: [...new Set(parts.map((r) => r.internalContext))].join(","),
     hash: parts.map((r) => r.hash).join("+"),
@@ -169,6 +177,7 @@ function saveGeneratedBufferCaptures(result, quality, sampleRate, build, t) {
     const rel = "generated-buffers/q" + quality + "-" + sampleRate + "-reverb-" + build + "-" + name + ".f32le";
     const saved = t.save(rel, bytes);
     result.bufferSha256[name] = Object.freeze(Object.assign({}, measurement, {
+      captureTrace: result.bufferCaptureTrace && result.bufferCaptureTrace[name],
       artifact: Object.freeze({ path: rel, saved: !!saved }),
     }));
   }
@@ -300,18 +309,44 @@ function cases(shared) {
               const equalBufferMeasurements = (left, right) => ["convBuf", "n0", "n1"].every((name) =>
                 left && right && left[name] && right[name] &&
                 ["sha256", "channels", "frames", "byteLength"].every((key) => left[name][key] === right[name][key]));
-              const validBuffers = (value) => value && ["convBuf", "n0", "n1"].every((name) => {
+              const bufferShapeProblems = (value, buildName) => ["convBuf", "n0", "n1"].flatMap((name) => {
+                if (!value || typeof value !== "object") return [buildName + " descriptors missing"];
                 const row = value[name];
                 const channels = name === "convBuf" ? 2 : 1;
-                const rel = "generated-buffers/q" + quality + "-" + sr + "-reverb-" + (value === sourceBuffers ? "source" : "min") + "-" + name + ".f32le";
-                return row && /^[a-f0-9]{64}$/.test(row.sha256) && row.channels === channels && row.frames === expectedFrames &&
-                  row.byteLength === channels * expectedFrames * 4 && row.artifact && row.artifact.path === rel && row.artifact.saved === true;
+                const rel = "generated-buffers/q" + quality + "-" + sr + "-reverb-" + buildName + "-" + name + ".f32le";
+                const at = buildName + " " + name;
+                if (!row) return [at + " descriptor missing"];
+                const problems = [];
+                if (!/^[a-f0-9]{64}$/.test(row.sha256)) problems.push(at + " SHA-256 malformed");
+                if (row.channels !== channels) problems.push(at + " channels=" + row.channels + " expected=" + channels);
+                if (row.frames !== expectedFrames) problems.push(at + " frames=" + row.frames + " expected=" + expectedFrames);
+                if (row.byteLength !== channels * expectedFrames * 4)
+                  problems.push(at + " byteLength=" + row.byteLength + " expected=" + (channels * expectedFrames * 4));
+                const trace = row.captureTrace;
+                if (!trace || !trace.browser || !trace.node) problems.push(at + " browser/Node capture-stage snapshot missing");
+                else {
+                  const b = trace.browser, n = trace.node;
+                  if (b.channels !== n.channels || b.frames !== n.frames || b.byteLength !== n.byteLength || b.byteLength !== n.decodedByteLength)
+                    problems.push(at + " browser snapshot=" + JSON.stringify(b) + " Node snapshot=" + JSON.stringify(n));
+                  if (n.channels !== row.channels || n.frames !== row.frames || n.byteLength !== row.byteLength || n.sha256 !== row.sha256)
+                    problems.push(at + " final descriptor=" + JSON.stringify({ channels: row.channels, frames: row.frames, byteLength: row.byteLength, sha256: row.sha256 }) +
+                      " differs from Node snapshot=" + JSON.stringify(n));
+                  if (b.base64Chars !== Math.ceil(n.decodedByteLength / 3) * 4)
+                    problems.push(at + " base64Chars=" + b.base64Chars + " does not match decoded bytes=" + n.decodedByteLength);
+                }
+                if (!row.artifact || row.artifact.path !== rel || row.artifact.saved !== !!t.out)
+                  problems.push(at + " artifact retention/path mismatch (saved=" + (row.artifact && row.artifact.saved) + ")");
+                return problems;
               });
-              const sourceMinMatch = validBuffers(sourceBuffers) && validBuffers(minBuffers) &&
+              const bufferProblems = [
+                ...bufferShapeProblems(sourceBuffers, "source"),
+                ...bufferShapeProblems(minBuffers, "min"),
+              ];
+              const sourceMinMatch = !bufferProblems.length &&
                 equalBufferMeasurements(sourceBuffers, minBuffers);
               t.check("reverb-enabled first-attempt generated Float32 buffers have complete source/min SHA-256 measurements",
                 sourceMinMatch,
-                sourceMinMatch ? JSON.stringify(sourceBuffers) : "missing, malformed or different source/min SHA-256 descriptors");
+                sourceMinMatch ? JSON.stringify(sourceBuffers) : bufferProblems.slice(0, 8).join("; ") || "source/min SHA-256 descriptors differ");
               const expectedBuffers = SEED_EXPECTED.hashes[sr] && SEED_EXPECTED.hashes[sr][seed];
               if (expectedBuffers) {
                 const expectedMatch = sourceMinMatch && ["convBuf", "n0", "n1"].every((name) => sourceBuffers[name].sha256 === expectedBuffers[name]);

@@ -201,7 +201,7 @@ function isRecord(value) {
 }
 
 /* Validate the exact first-attempt probe that creates all three buffers. */
-function renderBufferShaProblems(c, observation, where) {
+function renderBufferShaProblems(c, observation, where, { expectedSeed = MATRIX.seed, requireSaved = true } = {}) {
   const problems = [];
   const add = (message) => problems.push(where + " " + message);
   if (!isRecord(observation)) return [where + " is missing generated-buffer SHA-256 evidence"];
@@ -213,10 +213,12 @@ function renderBufferShaProblems(c, observation, where) {
       observation.encoding !== RENDER_BUFFER_SHA_ENCODING || observation.scenarioId !== "reverb" ||
       observation.attempt !== 1 || observation.firstAttempt !== true)
     add("has malformed generated-buffer SHA-256 method or first-attempt metadata");
+  if (!Number.isSafeInteger(expectedSeed) || expectedSeed < 0 || expectedSeed > 0xffffffff)
+    add("expected generated-buffer seed is invalid");
   const rate = c.dims && c.dims.sampleRate;
   const quality = c.dims && c.dims.quality;
   const expectedSettings = {
-    seed: MATRIX.seed, sampleRate: rate, quality, options: { quality, useReverb: 1 },
+    seed: expectedSeed, sampleRate: rate, quality, options: { quality, useReverb: 1 },
     masterVol: 0.05, reverbLev: null, durationSec: 1.6,
     timbres: REVERB_CAPTURE_TIMBRES,
     steps: REVERB_CAPTURE_STEPS,
@@ -243,7 +245,7 @@ function renderBufferShaProblems(c, observation, where) {
       const row = build[name], at = buildName + " " + name;
       const artifactPath = "generated-buffers/q" + quality + "-" + rate + "-reverb-" + buildName + "-" + name + ".f32le";
       if (!isRecord(row)) { add(at + " generated-buffer descriptor is missing or malformed"); valid = false; continue; }
-      if (stableJson(Object.keys(row).sort()) !== stableJson(["artifact", "byteLength", "channels", "frames", "sha256"])) {
+      if (stableJson(Object.keys(row).sort()) !== stableJson(["artifact", "byteLength", "captureTrace", "channels", "frames", "sha256"])) {
         add(at + " descriptor fields are incomplete or unexpected"); valid = false;
       }
       if (typeof row.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(row.sha256)) {
@@ -253,13 +255,39 @@ function renderBufferShaProblems(c, observation, where) {
       if (row.frames !== frames) { add(at + " frame count is " + String(row.frames) + ", expected " + frames); valid = false; }
       const byteLength = channels * frames * 4;
       if (row.byteLength !== byteLength) { add(at + " byte length is " + String(row.byteLength) + ", expected " + byteLength); valid = false; }
+      const trace = row.captureTrace;
+      if (!isRecord(trace) || stableJson(Object.keys(trace).sort()) !== stableJson(["browser", "node"]) ||
+          !isRecord(trace.browser) || stableJson(Object.keys(trace.browser).sort()) !== stableJson(["base64Chars", "byteLength", "channels", "frames"]) ||
+          !isRecord(trace.node) || stableJson(Object.keys(trace.node).sort()) !== stableJson(["byteLength", "channels", "decodedByteLength", "frames", "sha256"])) {
+        add(at + " browser-to-Node generated-buffer capture-stage snapshot is missing or malformed");
+        valid = false;
+      } else {
+        const browser = trace.browser, node = trace.node;
+        if (![browser.channels, browser.frames, browser.byteLength, browser.base64Chars,
+          node.channels, node.frames, node.byteLength, node.decodedByteLength].every(Number.isSafeInteger) ||
+            typeof node.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(node.sha256)) {
+          add(at + " browser-to-Node capture-stage snapshot has malformed dimensions or digest");
+          valid = false;
+        }
+        if (browser.channels !== node.channels || browser.frames !== node.frames || browser.byteLength !== node.byteLength ||
+            browser.byteLength !== node.decodedByteLength || browser.base64Chars !== Math.ceil(node.decodedByteLength / 3) * 4) {
+          add(at + " browser-declared buffer dimensions/length differ from Node-validated bytes");
+          valid = false;
+        }
+        if (node.channels !== row.channels || node.frames !== row.frames || node.byteLength !== row.byteLength || node.sha256 !== row.sha256) {
+          add(at + " final descriptor differs from the Node-validated capture-stage snapshot");
+          valid = false;
+        }
+      }
       if (!isRecord(row.artifact)) { add(at + " raw byte artifact reference is missing or malformed"); valid = false; }
       else {
         if (stableJson(Object.keys(row.artifact).sort()) !== stableJson(["path", "saved"])) {
           add(at + " raw byte artifact fields are incomplete or unexpected"); valid = false;
         }
         if (row.artifact.path !== artifactPath) { add(at + " raw byte artifact path is mismatched"); valid = false; }
-        if (row.artifact.saved !== true) { add(at + " raw byte artifact is not retained (saved must be true)"); valid = false; }
+        if (row.artifact.saved !== requireSaved) {
+          add(at + " raw byte artifact retention is " + String(row.artifact.saved) + ", expected " + String(requireSaved)); valid = false;
+        }
       }
     }
     return valid;
@@ -270,7 +298,7 @@ function renderBufferShaProblems(c, observation, where) {
     build[name] && { sha256: build[name].sha256, channels: build[name].channels, frames: build[name].frames, byteLength: build[name].byteLength }]));
   if (sourceValid && minValid && stableJson(measurementsOnly(observation.builds.source)) !== stableJson(measurementsOnly(observation.builds.min)))
     add("source/min generated-buffer SHA-256 measurements disagree");
-  const expected = Number.isSafeInteger(rate) && SEED_EXPECTED.hashes[rate] && SEED_EXPECTED.hashes[rate][MATRIX.seed];
+  const expected = Number.isSafeInteger(rate) && SEED_EXPECTED.hashes[rate] && SEED_EXPECTED.hashes[rate][expectedSeed];
   if (expected && sourceValid) {
     for (const name of ["convBuf", "n0", "n1"]) {
       if (observation.builds.source[name].sha256 !== expected[name])
@@ -557,7 +585,7 @@ function summarize(all, o) {
  * (deterministic data); GM per-slot energies at the default level and the
  * linear-level makeup gain must agree within tolerances.crossEngineDb.
  */
-function crossEngine(all, mode = "core") {
+function crossEngine(all, mode = "core", { expectedSeed = MATRIX.seed, requireSaved = true } = {}) {
   const { DEFAULT } = require("../tests/browser/tolerances");
   const engines = MATRIX.engines.filter((e) => all[e] && all[e].version && all[e].cases.some((c) => c.spec === "render"));
   const checks = [];
@@ -571,7 +599,7 @@ function crossEngine(all, mode = "core") {
     }
     const ms = cs.map((c) => c.observations && c.observations.measurements);
     const bufferValues = cs.map((c) => c.observations && c.observations[RENDER_BUFFER_SHA_OBSERVATION]);
-    const bufferProblems = cs.flatMap((c, i) => renderBufferShaProblems(c, bufferValues[i], engines[i] + " " + id));
+    const bufferProblems = cs.flatMap((c, i) => renderBufferShaProblems(c, bufferValues[i], engines[i] + " " + id, { expectedSeed, requireSaved }));
     const hashLists = bufferValues.map((b) => isRecord(b) ? stableJson(b) : null);
     const hashesMatch = hashLists.every(Boolean) && new Set(hashLists).size === 1;
     checks.push({ name: id + ": actual generated-buffer SHA-256 matches across builds and engines",
@@ -694,7 +722,7 @@ async function orchestrate(o) {
     if (o.shard) res.shard = o.shard.k + "/" + o.shard.n;
     all[engine] = res;
   }
-  const cross = crossEngine(all, o.mode);
+  const cross = crossEngine(all, o.mode, { expectedSeed: o.seed, requireSaved: !!o.out });
   if (o.out) {
     const report = Object.assign({ matrixRun: reportProvenance(o, engines, runContext) }, all, { crossEngine: cross });
     fs.writeFileSync(path.join(o.out, "results.json"), JSON.stringify(report, null, 1));
@@ -732,7 +760,8 @@ function expectedShardSteps(index, mode = "core") {
   if (mode === "full-mix-qualification")
     return index === 1 ? { "browser-matrix": QUALIFICATION_SPECS, "browser-observe": [] }
       : { "browser-matrix": [], "browser-observe": [] };
-  const specs = shardLayout(MATRIX.shards)[index - 1].specs.filter((spec) => spec !== "full-mix");
+  const assigned = new Set(shardLayout(MATRIX.shards)[index - 1].specs.filter((spec) => spec !== "full-mix"));
+  const specs = Object.keys(MATRIX.specs).filter((spec) => assigned.has(spec));
   return {
     "browser-matrix": specs.filter((s) => MATRIX.specs[s].kind === "assert"),
     "browser-observe": specs.filter((s) => MATRIX.specs[s].kind === "observe"),
@@ -1223,7 +1252,7 @@ function merge(o) {
     if (!all[engine]) problems.push(engine + ": no valid shard results");
     else if (!all[engine].cases.length) problems.push(engine + ": no cases were reported");
   }
-  const cross = crossEngine(all, o.mode);
+  const cross = crossEngine(all, o.mode, { expectedSeed: MATRIX.seed, requireSaved: true });
   for (const c of cross) if (!c.ok) problems.push("cross-engine: " + c.name + " (" + c.detail + ")");
   const declared = Object.keys(MATRIX.specs);
   const view = { mode: o.mode, specs: selectedSpecs(o), engines: null, overrides: {}, seed: MATRIX.seed };
