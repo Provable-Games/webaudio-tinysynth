@@ -115,6 +115,7 @@ jobs:
           path: |
             ${{ runner.temp }}/browser-matrix/results.json
             ${{ runner.temp }}/browser-matrix/${{ matrix.engine }}/full-mix/*.wav
+            ${{ runner.temp }}/browser-matrix/${{ matrix.engine }}/first-attempt-pcm/**/*.wav
             ${{ runner.temp }}/browser-matrix/${{ matrix.engine }}/generated-buffers/*.f32le
             ${{ runner.temp }}/browser-observe/results.json
           if-no-files-found: warn

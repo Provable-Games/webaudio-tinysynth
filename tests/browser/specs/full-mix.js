@@ -15,6 +15,7 @@ const smf = require("../lib/smf");
 const A = require("../lib/analysis");
 const FA = require("../lib/first-attempt");
 const { tolerances } = require("../tolerances");
+const browserToolchainSpec = require(path.join(pages.ROOT, "scripts/browser-toolchain"));
 
 const ORIGIN = 0.1;
 const REVERB_TAIL = 2.5;
@@ -892,17 +893,7 @@ function referenceCoverageProblems(reference = REFERENCE) {
       const bundle = meta.browserBundle;
       const captureToolchain = meta.captureToolchain;
       const captureBundle = captureToolchain && captureToolchain.browserBundle;
-      const bundleIdentity = bundle && typeof bundle === "object" ? Object.fromEntries(
-        Object.entries(bundle).filter(([key]) => key !== "identitySha256")) : null;
-      const validBundle = bundle && typeof bundle === "object" && !Array.isArray(bundle) &&
-        bundle.schemaVersion === 1 && bundle.engine === engine &&
-        typeof bundle.playwrightCoreVersion === "string" && /^\d+\.\d+\.\d+/.test(bundle.playwrightCoreVersion) &&
-        typeof bundle.browsersManifestSha256 === "string" && /^[a-f0-9]{64}$/i.test(bundle.browsersManifestSha256) &&
-        typeof bundle.revision === "string" && /^\d+$/.test(bundle.revision) &&
-        bundle.bundleId === (engine === "chromium" ? "chromium_headless_shell-" : engine + "-") + bundle.revision &&
-        typeof bundle.browserVersion === "string" &&
-        typeof bundle.identitySha256 === "string" && /^[a-f0-9]{64}$/i.test(bundle.identitySha256) &&
-        sha256(Buffer.from(canonical(bundleIdentity))) === bundle.identitySha256;
+      const validBundle = bundle && bundle.engine === engine && browserToolchainSpec.isPinnedBrowserBundle(bundle);
       const captureToolchainMatchesBundle = captureToolchain && captureToolchain.schemaVersion === 1 &&
         captureToolchain.playwrightCoreVersion === bundle?.playwrightCoreVersion &&
         captureToolchain.browsersManifestSha256 === bundle?.browsersManifestSha256 &&
@@ -922,7 +913,7 @@ function referenceCoverageProblems(reference = REFERENCE) {
       const validCaptureToolchain = captureToolchainMatchesBundle && (directToolchain || historicalToolchain);
       if (meta.scope !== "fixture" || meta.fixtureId !== fixture.id || meta.profileKind !== fixture.profileKind ||
           meta.engine !== engine || !meta.browserVersion || !meta.platform || meta.sampleRate !== rate || meta.quality !== 1 ||
-          !validBundle || meta.browserVersion !== bundle?.browserVersion || !validCaptureToolchain ||
+          !validBundle || !browserToolchainSpec.matchesBrowserVersion(bundle, meta.browserVersion) || !validCaptureToolchain ||
           meta.midiSha256 !== fixture.midiSha256 || meta.setupSha256 !== fixture.setupSha256 ||
           meta.settingsSha256 !== fixture.settingsSha256 || meta.probePlanSha256 !== fixture.probePlanSha256 ||
           meta.methodSha256 !== fixture.methodSha256 || meta.toleranceSha256 !== fixture.toleranceSha256 ||
@@ -1136,6 +1127,7 @@ function cases(shared) {
             attempt: 1, firstAttempt: true, result: firstResult,
             preBaselineEligible, metrics: first.metrics, noteInstances: first.voices, probeInstances: first.probeVoices,
             artifact: firstArtifact,
+            pageErrors: first.page.pageErrors, aborted: first.page.aborted,
             midiMessagesSent: first.firstAttempt.midiMessagesSent, parsedEventCount: first.firstAttempt.eventCount,
             intervalCount: first.firstAttempt.intervalCount, rejections: first.firstAttempt.rejections,
             pcmSha256: first.pcmHashes, diagnosticRepeat, faultSensitivity: fault,

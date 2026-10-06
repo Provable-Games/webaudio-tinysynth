@@ -223,7 +223,7 @@ function testPcm(fixture, sampleRate) {
   const songEnd = Math.min(length, Math.round(fixture.songEndSec * sampleRate));
   const songHz = testAnalysis.midiHz(fixture.downbeat.expectedPitch);
   for (let i = songStart; i < songEnd; ++i) {
-    const value = 0.02 * Math.sin(2 * Math.PI * songHz * (i - songStart) / sampleRate);
+    const value = 0.1 * Math.sin(2 * Math.PI * songHz * (i - songStart) / sampleRate);
     channels[0][i] += value;
     channels[1][i] += value;
   }
@@ -234,9 +234,9 @@ function testPcm(fixture, sampleRate) {
 }
 
 const TEST_TOLERANCES = {
-  overallDb: 0.1, peakAbs: 0.01, windowFloor: 1e-8, windowDb: 0.1, noteWindowDb: 0.1,
+  overallDb: 0.001, peakAbs: 0.01, windowFloor: 1e-8, windowDb: 0.1, noteWindowDb: 0.1,
   independentProbePitchCents: 35, downbeatBandDb: 0.1, probePitchCents: 0.1, transientEnvelopeDb: 0.1,
-  balanceDb: 0.1, probeOnsetMs: 0.1, probeLevelDb: 0.1, probeEnvelopeDb: 0.1, relativeProbeDb: 0.1,
+  balanceDb: 0.001, probeOnsetMs: 0.1, probeLevelDb: 0.1, probeEnvelopeDb: 0.1, relativeProbeDb: 0.001,
 };
 const syntheticEngines = {};
 const testBrowserVersion = (engine) => TEST_TOOLCHAIN.browsers[engine].browserVersion;
@@ -312,7 +312,7 @@ const MATRIX = require("../browser/matrix").MATRIX;
 const FULL_MIX = require("../browser/specs/full-mix");
 const {
   shardLayout, selectedSpecs, parseArgs, expectedResultPaths, caseManifest, reportProvenance, readFloatStereoWav,
-  renderBufferShaProblems, generatedBufferArtifactProblems, crossEngine,
+  renderBufferShaProblems, generatedBufferArtifactProblems, crossEngine, worker, validateFullMixCase,
 } = require("../../scripts/browser-matrix");
 const SCRIPT = path.join(H.ROOT, "scripts", "browser-matrix.js");
 const SPECS = Object.keys(MATRIX.specs);
@@ -396,6 +396,74 @@ test("--list --shard prints the declared layout without launching a browser", ()
   for (let k = 1; k <= MATRIX.shards; ++k) assert.match(r.out, new RegExp("shard " + k + "/" + MATRIX.shards));
 });
 
+test("worker guard accepts an observed declared-override version but stays strict for pinned and blank versions", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "matrix-worker-version-"));
+  const packageDir = path.join(root, "node_modules", "playwright-core");
+  fs.mkdirSync(packageDir, { recursive: true });
+  const entry = path.join(packageDir, "index.js");
+  const pathsFile = path.join(packageDir, "paths.json");
+  fs.writeFileSync(path.join(packageDir, "package.json"), JSON.stringify({ name: "playwright-core", version: "1.63.0" }));
+  fs.writeFileSync(path.join(packageDir, "browsers.json"), JSON.stringify({ browsers: [
+    { name: "chromium-headless-shell", revision: "1243", browserVersion: "153.0.8010.12" },
+    { name: "firefox", revision: "1543", browserVersion: "155.0" },
+    { name: "webkit", revision: "2359", revisionOverrides: { mac14: "2251" }, browserVersion: "26.6" },
+  ] }));
+  fs.writeFileSync(entry, [
+    '"use strict";',
+    'const fs = require("node:fs");',
+    'const path = require("node:path");',
+    'module.exports = Object.fromEntries(["chromium", "firefox", "webkit"].map((engine) => [engine, { executablePath: () => JSON.parse(fs.readFileSync(path.join(__dirname, "paths.json"), "utf8"))[engine] }]));',
+  ].join("\n"));
+  const paths = { chromium: "/cache/chromium-1243/chrome-linux64/chrome", firefox: "/cache/firefox-1543/firefox/firefox" };
+  const casesModule = require("../browser/lib/cases");
+  const browserServer = require("../../scripts/browser-server");
+  const oldSession = casesModule.EngineSession;
+  const oldStartServer = browserServer.startServer;
+  const oldSpecifier = process.env.PLAYWRIGHT_CORE;
+  let runtimeVersion = "";
+  let serverStarted = false;
+  casesModule.EngineSession = class MockEngineSession {
+    constructor() { this.version = runtimeVersion; this.relaunches = 0; this.fatal = null; }
+    async launch() {}
+    async closeBrowser() { return true; }
+  };
+  browserServer.startServer = async () => {
+    serverStarted = true;
+    return { requests: [], close: async () => {} };
+  };
+  process.env.PLAYWRIGHT_CORE = entry;
+  const run = async (webkitPath, version, label) => {
+    runtimeVersion = version;
+    fs.writeFileSync(pathsFile, JSON.stringify({ ...paths, webkit: webkitPath }));
+    serverStarted = false;
+    const resultsFile = path.join(root, label + ".json");
+    await worker({ engine: "webkit", out: null, results: resultsFile, seed: MATRIX.seed,
+      overrides: {}, specs: [], mode: "core", observe: false, shard: null });
+    return { results: JSON.parse(fs.readFileSync(resultsFile, "utf8")), serverStarted };
+  };
+  try {
+    const override = await run("/cache/webkit_mac14_special-2251/pw_run.sh", "synthetic-platform-version", "override");
+    assert.equal(override.results.browserBundle.browserVersion, null);
+    assert.equal(override.results.version, "synthetic-platform-version");
+    assert.equal(override.results.launchError, null);
+    assert.equal(override.serverStarted, true, "the nonempty observed override version proceeds past the worker launch guard");
+
+    const blank = await run("/cache/webkit_mac14_special-2251/pw_run.sh", "", "blank");
+    assert.match(blank.results.launchError, /reported browser version .* differs from pinned/);
+    assert.equal(blank.serverStarted, false, "a blank runtime version is rejected before the matrix starts");
+
+    const mismatch = await run("/cache/webkit-2359/pw_run.sh", "26.7", "default-mismatch");
+    assert.match(mismatch.results.launchError, /differs from pinned webkit-2359 version 26.6/);
+    assert.equal(mismatch.serverStarted, false, "default-version pins remain exact");
+  } finally {
+    if (oldSpecifier === undefined) delete process.env.PLAYWRIGHT_CORE;
+    else process.env.PLAYWRIGHT_CORE = oldSpecifier;
+    casesModule.EngineSession = oldSession;
+    browserServer.startServer = oldStartServer;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 function measurements() {
   return Object.assign({ linearity: { ratio: 0.5, makeup: 1 } }, Object.fromEntries(GROUPS.map((key) => [key, {
     rms: Array(key === "gm-drums" ? 47 : 32).fill(0.1), peaks: Array(key === "gm-drums" ? 47 : 32).fill(0.2),
@@ -431,6 +499,7 @@ function fakeFullMixCase(def, engine, index, step) {
     onsetSec: probe.startSec, sourceCount: 2, pruned: false }));
   const probeInstances = { rows: probes, expectedCount: probes.length, createdCount: probes.length,
     prunedInstances: [], complete: true };
+  const faultSensitivity = FULL_MIX.faultSensitivity(channels, expected.sampleRate, fixture, metrics, noteInstances);
   const builds = {};
   for (const build of ["source", "min"]) {
     const artifact = artifactReference(engine, index, step, fixture, expected.sampleRate, build, 1, channels);
@@ -440,15 +509,14 @@ function fakeFullMixCase(def, engine, index, step) {
       attempt: 1, firstAttempt: true, result: "pass", preBaselineEligible: true, metrics,
       noteInstances, probeInstances, artifact, pcmSha256: pcmHashes,
       midiMessagesSent: fixture.notes.length, parsedEventCount: fixture.notes.length,
-      intervalCount: 0, rejections: [], sourceMinPcmComparison: sourceMin,
+      intervalCount: 1, rejections: [], pageErrors: [], aborted: [], sourceMinPcmComparison: sourceMin,
       referenceStatus: "measured", comparisonProblems: [],
       diagnosticRepeat: { attempt: 2, role: "diagnostic-only", result: "captured", firstVerdict: "pass",
         neverPromotesFirstAttempt: true, artifact: diagnosticArtifact, metrics, noteInstances,
         sameEnginePcm: sameEngine },
-      faultSensitivity: { checksPass: true },
+      faultSensitivity,
     };
   }
-  const faultSensitivity = FULL_MIX.faultSensitivity(channels, expected.sampleRate, fixture, metrics, noteInstances);
   return {
     schemaVersion: 2, scope: "fixture", qualification: "fixture-only-no-production-approval",
     fixtureId: fixture.id, profileKind: fixture.profileKind, label: fixture.label,
@@ -522,7 +590,13 @@ function fakeCase(def, engine, index, step) {
       builds: { source: buffers("source"), min: buffers("min") },
     };
   }
-  if (def.spec === "full-mix") c.observations.fullMix = fakeFullMixCase(def, engine, index, step);
+  if (def.spec === "full-mix") {
+    c.observations.fullMix = fakeFullMixCase(def, engine, index, step);
+    for (const build of ["source", "min"]) c.checks.push({
+      name: build + " first attempt completed without scheduler, rejection, page error or network request",
+      ok: true, detail: "synthetic passing fixture",
+    });
+  }
   return c;
 }
 
@@ -656,6 +730,69 @@ test("qualification merge uses the same strict aggregate for render headroom and
     specs: ["render", "full-mix"], seed: MATRIX.seed, overrides: {} }, ["chromium"], CONTEXT);
   assert.deepEqual(present.fullMixReference, FULL_MIX.referenceProvenance());
   assert.equal(present.fullMixReference.status, "present");
+});
+
+test("qualification eligibility is recomputed from manifest rows and first-attempt cleanliness", () => {
+  const mutations = [
+    ["native channel", (row) => { row.noteInstances.rows[0].channel = (row.noteInstances.rows[0].channel + 1) % 16; }, /actual native voice\/source creation/],
+    ["native pitch", (row) => { row.noteInstances.rows[0].pitch += 1; }, /actual native voice\/source creation/],
+    ["native velocity", (row) => { row.noteInstances.rows[0].velocity -= 1; }, /actual native voice\/source creation/],
+    ["native expected program", (row) => { row.noteInstances.rows[0].program += 1; }, /actual native voice\/source creation/],
+    ["native actual program", (row) => { row.noteInstances.rows[0].actualProgram += 1; }, /actual native voice\/source creation/],
+    ["native percussion marker", (row) => { row.noteInstances.rows[0].percussion = !row.noteInstances.rows[0].percussion; }, /actual native voice\/source creation/],
+    ["native sample onset", (row, fixture, sampleRate) => {
+      const onset = fixture.notes[0].onsetSec;
+      row.noteInstances.rows[0].onsetSec = (Math.round(onset * sampleRate) + 2) / sampleRate;
+    }, /actual native voice\/source creation/],
+    ["native prune marker", (row) => { row.noteInstances.rows[0].pruned = true; }, /actual native voice\/source creation/],
+    ["probe channel", (row) => { row.probeInstances.rows[0].channel = (row.probeInstances.rows[0].channel + 1) % 16; }, /actual isolated-probe voice\/source creation/],
+    ["probe pitch", (row) => { row.probeInstances.rows[0].pitch += 1; }, /actual isolated-probe voice\/source creation/],
+    ["probe velocity", (row) => { row.probeInstances.rows[0].velocity -= 1; }, /actual isolated-probe voice\/source creation/],
+    ["probe expected program", (row) => { row.probeInstances.rows[0].program += 1; }, /actual isolated-probe voice\/source creation/],
+    ["probe actual program", (row) => { row.probeInstances.rows[0].actualProgram += 1; }, /actual isolated-probe voice\/source creation/],
+    ["probe sample onset", (row, fixture, sampleRate) => {
+      const onset = fixture.probes[0].startSec;
+      row.probeInstances.rows[0].onsetSec = (Math.round(onset * sampleRate) + 2) / sampleRate;
+    }, /actual isolated-probe voice\/source creation/],
+    ["probe prune marker", (row) => { row.probeInstances.rows[0].pruned = true; }, /actual isolated-probe voice\/source creation/],
+    ["scheduler interval", (row) => { row.intervalCount = 2; }, /scheduler, rejection, page-error or network-abort/],
+    ["MIDI rejection", (row) => { row.rejections = ["rejected event"]; }, /scheduler, rejection, page-error or network-abort/],
+    ["page error", (row) => { row.pageErrors = ["synthetic page error"]; }, /scheduler, rejection, page-error or network-abort/],
+    ["network abort", (row) => { row.aborted = ["https://example.invalid/unexpected"]; }, /scheduler, rejection, page-error or network-abort/],
+    ["missing page diagnostics", (row) => { delete row.pageErrors; }, /scheduler, rejection, page-error or network-abort/],
+    ["fault verdict", (row) => { row.faultSensitivity.checksPass = false; }, /fault-sensitivity schema or verdict/],
+    ["fault child result", (row) => { row.faultSensitivity.relativeProbe.relativeRejected = false; }, /fault-sensitivity schema or verdict/],
+  ];
+  const expected = FULL_MIX.expectedCases().find((item) => item.fixtureId === "tinychip-ws-mid" && item.sampleRate === 44100);
+  const caseDef = { id: expected.id, spec: "full-mix", kind: "assert", dims: expected.dims };
+  ATTACHMENTS.clear();
+  const validCase = fakeCase(caseDef, "chromium", 1, "browser-matrix");
+  const reportDir = fs.mkdtempSync(path.join(os.tmpdir(), "full-mix-eligibility-fixture-"));
+  const resultFile = path.join(reportDir, "browser-results-chromium-1", "browser-matrix", "results.json");
+  const rel = "browser-results-chromium-1/browser-matrix/results.json";
+  try {
+    for (const [artifact, bytes] of ATTACHMENTS) {
+      const file = path.join(reportDir, ...artifact.split("/"));
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, bytes);
+    }
+    const validate = (change) => {
+      const item = JSON.parse(JSON.stringify(validCase));
+      const row = item.observations.fullMix.builds.source;
+      if (change) change(row, FULL_MIX.FIXTURE_BY_ID[expected.fixtureId], expected.sampleRate);
+      const problems = [];
+      validateFullMixCase("chromium", testBrowserVersion("chromium"), "linux-x64", testBrowserBundle("chromium"),
+        rel, resultFile, item, expected, problems);
+      return problems.join("\n");
+    };
+    assert.equal(validate(null), "", "the unmodified retained fixture must reach the valid aggregate boundary");
+    for (const [label, change, failure] of mutations) {
+      const problems = validate(change);
+      assert.match(problems, failure, label);
+    }
+  } finally {
+    fs.rmSync(reportDir, { recursive: true, force: true });
+  }
 });
 
 test("missing reference survives a complete mocked full-mix run and fails strict aggregate", async () => {
@@ -1134,6 +1271,9 @@ test("the workflow shard list, MATRIX.shards and job name agree", () => {
   assert.ok(yml.includes("name: full-mix qualification aggregate"), "separate strict qualification check name");
   assert.ok(yml.includes("pattern: browser-results-*"), "core artifact selection");
   assert.ok(yml.includes("pattern: full-mix-qualification-*"), "qualification artifact selection");
+  const browserJob = yml.split("  browser:\n")[1].split("\n  full-mix-qualification:")[0];
+  assert.ok(browserJob.includes("${{ runner.temp }}/browser-matrix/${{ matrix.engine }}/first-attempt-pcm/**/*.wav"),
+    "the ordinary shard artifact retains bounded first-attempt PCM evidence");
   const qualificationJob = yml.split("  full-mix-qualification:\n")[1].split("\n  demos:")[0];
   const output = /--out="\$RUNNER_TEMP\/([^"]+)"/.exec(qualificationJob);
   const upload = /\n\x20{10}path: \$\{\{ runner\.temp \}\}\/([^\n]+)\n/.exec(qualificationJob);

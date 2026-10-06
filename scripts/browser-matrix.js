@@ -496,9 +496,11 @@ async function worker(o) {
     return 1;
   }
   results.version = session.version;
-  if (session.version !== results.browserBundle.browserVersion) {
+  const pinnedBrowserBundle = browserToolchainSpec.isPinnedBrowserBundle(results.browserBundle, process.env, ROOT);
+  const reportedVersionMatches = browserToolchainSpec.matchesBrowserVersion(results.browserBundle, session.version);
+  if (!pinnedBrowserBundle || !reportedVersionMatches) {
     results.launchError = "reported browser version " + session.version + " differs from pinned " + results.browserBundle.bundleId +
-      " version " + results.browserBundle.browserVersion;
+      " version " + String(results.browserBundle.browserVersion) + (pinnedBrowserBundle ? "" : " (bundle is not an exact pinned manifest entry)");
     save();
     console.log("FAIL: " + engine + " " + results.launchError);
     await session.closeBrowser();
@@ -788,6 +790,48 @@ function validateFiniteNumbers(value, where, problems) {
 
 function finiteNumber(value) { return typeof value === "number" && Number.isFinite(value); }
 
+function sampleRoundedOnsetMatches(actualSec, expectedSec, sampleRate) {
+  return finiteNumber(actualSec) && finiteNumber(expectedSec) && Number.isSafeInteger(sampleRate) && sampleRate > 0 &&
+    Math.round(actualSec * sampleRate) === Math.round(expectedSec * sampleRate);
+}
+
+function nativeNoteEvidenceComplete(evidence, fixture, sampleRate) {
+  if (!evidence || evidence.complete !== true || evidence.expectedCount !== fixture.notes.length ||
+      evidence.createdCount !== fixture.notes.length || !Array.isArray(evidence.rows) ||
+      evidence.rows.length !== fixture.notes.length || !Array.isArray(evidence.extras) || evidence.extras.length !== 0 ||
+      !Array.isArray(evidence.prunedInstances) || evidence.prunedInstances.length !== 0) return false;
+  return fixture.notes.every((want, i) => {
+    const row = evidence.rows[i];
+    return row && row.id === want.id && row.status === "created" && row.channel === want.channel &&
+      row.pitch === want.pitch && row.velocity === want.velocity && row.program === want.program &&
+      row.actualProgram === want.program && sampleRoundedOnsetMatches(row.onsetSec, want.onsetSec, sampleRate) &&
+      Number.isSafeInteger(row.sourceCount) && row.sourceCount > 0 && row.percussion === (want.channel === 9) && row.pruned === false;
+  });
+}
+
+function nativeProbeEvidenceComplete(evidence, fixture, sampleRate) {
+  if (!evidence || evidence.complete !== true || evidence.expectedCount !== fixture.probes.length ||
+      evidence.createdCount !== fixture.probes.length || !Array.isArray(evidence.rows) ||
+      evidence.rows.length !== fixture.probes.length || !Array.isArray(evidence.prunedInstances) ||
+      evidence.prunedInstances.length !== 0) return false;
+  return fixture.probes.every((want, i) => {
+    const row = evidence.rows[i];
+    return row && row.id === want.id && row.status === "created" && row.channel === want.channel &&
+      row.pitch === want.pitch && row.velocity === want.velocity && row.program === want.program &&
+      row.actualProgram === want.program && sampleRoundedOnsetMatches(row.onsetSec, want.startSec, sampleRate) &&
+      Number.isSafeInteger(row.sourceCount) && row.sourceCount > 0 && row.pruned === false;
+  });
+}
+
+function firstAttemptPageClean(row, caseChecks, build) {
+  const pageCheckName = build + " first attempt completed without scheduler, rejection, page error or network request";
+  const pageChecks = Array.isArray(caseChecks) ? caseChecks.filter((check) => check && check.name === pageCheckName) : [];
+  return row && row.intervalCount === 1 && Array.isArray(row.rejections) && row.rejections.length === 0 &&
+    Array.isArray(row.pageErrors) && row.pageErrors.length === 0 && row.pageErrors.every((x) => typeof x === "string") &&
+    Array.isArray(row.aborted) && row.aborted.length === 0 && row.aborted.every((x) => typeof x === "string") &&
+    pageChecks.length === 1 && pageChecks[0].ok === true;
+}
+
 function parseFloatStereoWav(bytes, expectedSampleRate, expectedFrames) {
   if (!Buffer.isBuffer(bytes)) throw new TypeError("raw WAV bytes must be a Buffer");
   if (!Number.isSafeInteger(expectedFrames) || expectedFrames < 1 || bytes.length !== 44 + expectedFrames * 8)
@@ -872,6 +916,7 @@ function validateFullMixCase(engine, browserVersion, platform, currentBundle, re
     fullMixSpec.selectReference(fullMixSpec.REFERENCE, referenceIdentity, build)]));
   const expectedNotes = new Map(fixture.notes.map((n) => [n.id, n]));
   const parsedBuilds = {};
+  const buildEligibility = {};
 
   const readArtifact = (artifact, build, attempt, row, label, diagnosticOnly = false) => {
     const at = where + " " + build + " " + label;
@@ -894,31 +939,51 @@ function validateFullMixCase(engine, browserVersion, platform, currentBundle, re
       raw = parseFloatStereoWav(rawBytes, expected.sampleRate, expectedFrames);
     }
     catch (e) { problems.push(at + " raw audio artifact is missing or invalid: " + e.message); return null; }
-    if (raw.bytes.length !== artifact.bytes || sha256(raw.bytes) !== artifact.sha256)
+    let artifactValid = true;
+    if (raw.bytes.length !== artifact.bytes || sha256(raw.bytes) !== artifact.sha256) {
       problems.push(at + " raw audio artifact byte count/hash differs");
+      artifactValid = false;
+    }
     const pcmSha256 = sha256(Buffer.concat(raw.channels.map((x) => Buffer.from(x.buffer, x.byteOffset, x.byteLength))));
-    if (pcmSha256 !== artifact.pcmSha256) problems.push(at + " raw planar-channel PCM hash does not match the recorded float samples");
+    if (pcmSha256 !== artifact.pcmSha256) {
+      problems.push(at + " raw planar-channel PCM hash does not match the recorded float samples");
+      artifactValid = false;
+    }
     const pcmChannelsSha256 = raw.channels.map((x) => sha256(Buffer.from(x.buffer, x.byteOffset, x.byteLength)));
-    if (Array.isArray(row.pcmSha256) && stableJson(row.pcmSha256) !== stableJson(pcmChannelsSha256))
+    if (Array.isArray(row.pcmSha256) && stableJson(row.pcmSha256) !== stableJson(pcmChannelsSha256)) {
       problems.push(at + " per-channel PCM hashes do not match the raw WAV");
+      artifactValid = false;
+    }
     const finite = raw.channels.map((x) => analysis.nonFinite(x));
-    if (!diagnosticOnly && finite.some((x) => x.nan || x.inf)) problems.push(at + " raw Float32 PCM contains a non-finite sample");
-    if (!diagnosticOnly && raw.channels.some((x) => analysis.peak(x) > 1)) problems.push(at + " raw Float32 PCM contains an over-full-scale sample");
+    if (!diagnosticOnly && finite.some((x) => x.nan || x.inf)) {
+      problems.push(at + " raw Float32 PCM contains a non-finite sample");
+      artifactValid = false;
+    }
+    const withinFullScale = raw.channels.every((x) => analysis.peak(x) <= 1);
+    if (!diagnosticOnly && !withinFullScale) {
+      problems.push(at + " raw Float32 PCM contains an over-full-scale sample");
+      artifactValid = false;
+    }
     let recomputed;
     try { recomputed = fullMixSpec.analyzeChannels(raw.channels, expected.sampleRate, fixture); }
-    catch (e) { problems.push(at + " native measurement recomputation failed: " + e.message); return { channels: raw.channels, metrics: null }; }
-    if (!row.metrics || stableJson(row.metrics) !== stableJson(recomputed))
+    catch (e) { problems.push(at + " native measurement recomputation failed: " + e.message); return { channels: raw.channels, metrics: null, artifactValid: false, finite: false, withinFullScale: false }; }
+    const metricsMatch = !!row.metrics && stableJson(row.metrics) === stableJson(recomputed);
+    if (!metricsMatch) {
       problems.push(at + " report measurements differ from analysis recomputed from the raw artifact");
-    return { channels: raw.channels, metrics: recomputed };
+      artifactValid = false;
+    }
+    return { channels: raw.channels, metrics: recomputed, artifactValid,
+      finite: finite.every((x) => !x.nan && !x.inf), withinFullScale, metricsMatch };
   };
 
   for (const build of ["source", "min"]) {
     const row = builds[build], at = where + " " + build;
     const selectedReference = selectedReferences[build];
+    buildEligibility[build] = false;
     if (!row || typeof row !== "object" || Array.isArray(row) || row.firstAttempt !== true || row.attempt !== 1 ||
         !["pass", "fail", "incomplete"].includes(row.result) || typeof row.preBaselineEligible !== "boolean") {
       problems.push(at + " first-attempt status or eligibility is malformed");
-    } else if (row.result !== "pass") problems.push(at + " first-attempt result is " + row.result);
+    }
     if (!row || row.referenceStatus !== selectedReference.status)
       problems.push(at + " producer reference status differs from the aggregate's exact identity selection");
     const artifact = row && row.artifact;
@@ -926,6 +991,7 @@ function validateFullMixCase(engine, browserVersion, platform, currentBundle, re
     if (parsed) parsedBuilds[build] = parsed;
     if (!row || !row.metrics || typeof row.metrics !== "object" || Array.isArray(row.metrics)) {
       problems.push(at + " metrics are missing");
+      buildEligibility[build] = false;
       continue;
     }
     if (parsed && parsed.metrics) {
@@ -959,20 +1025,12 @@ function validateFullMixCase(engine, browserVersion, platform, currentBundle, re
           problems.push(at + " local note-window feature is missing or mismatched: " + String(note && note.id));
       }
       const voiceRows = row.noteInstances;
-      if (!voiceRows || voiceRows.complete !== true || voiceRows.expectedCount !== expected.expectedNoteIds.length ||
-          voiceRows.createdCount !== expected.expectedNoteIds.length || !Array.isArray(voiceRows.rows) ||
-          voiceRows.rows.length !== expected.expectedNoteIds.length || !Array.isArray(voiceRows.extras) || voiceRows.extras.length !== 0 ||
-          !Array.isArray(voiceRows.prunedInstances) || voiceRows.prunedInstances.length !== 0 ||
-          stableJson(voiceRows.rows.map((x) => x && x.id)) !== stableJson(expected.expectedNoteIds) ||
-          voiceRows.rows.some((x) => !x || x.status !== "created" || x.sourceCount <= 0 || !Number.isSafeInteger(x.sourceCount)))
+      const voicesComplete = nativeNoteEvidenceComplete(voiceRows, fixture, expected.sampleRate);
+      if (!voicesComplete)
         problems.push(at + " actual native voice/source creation, prune, or event mapping is incomplete");
       const probeRows = row.probeInstances;
-      if (!probeRows || probeRows.complete !== true || probeRows.expectedCount !== expected.expectedPitchProbeIds.length ||
-          probeRows.createdCount !== expected.expectedPitchProbeIds.length || !Array.isArray(probeRows.rows) ||
-          probeRows.rows.length !== expected.expectedPitchProbeIds.length || !Array.isArray(probeRows.prunedInstances) ||
-          probeRows.prunedInstances.length !== 0 ||
-          stableJson(probeRows.rows.map((x) => x && x.id)) !== stableJson(expected.expectedPitchProbeIds) ||
-          probeRows.rows.some((x) => !x || x.status !== "created" || !Number.isSafeInteger(x.sourceCount) || x.sourceCount <= 0))
+      const probesCreated = nativeProbeEvidenceComplete(probeRows, fixture, expected.sampleRate);
+      if (!probesCreated)
         problems.push(at + " actual isolated-probe voice/source creation or prune evidence is incomplete");
 
       const downbeat = metrics.downbeat;
@@ -982,6 +1040,9 @@ function validateFullMixCase(engine, browserVersion, platform, currentBundle, re
           !finiteNumber(downbeat.rightBandRms) || downbeat.rightBandRms <= 0 || downbeat.channel !== "stereo")
         problems.push(at + " fixed-target mixed-bus downbeat frequency-projection observation is missing or malformed");
       const probes = metrics.probes;
+      let probeMetricsComplete = Array.isArray(probes) && probes.length === expected.expectedPitchProbeIds.length &&
+        stableJson(probes.map((x) => x && x.id)) === stableJson(expected.expectedPitchProbeIds) &&
+        probes.every((x) => x && x.status === "measured");
       if (!Array.isArray(probes) || probes.length !== expected.expectedPitchProbeIds.length ||
           stableJson(probes.map((x) => x && x.id)) !== stableJson(expected.expectedPitchProbeIds))
         problems.push(at + " isolated fixture-timbre probe list is incomplete or reordered");
@@ -994,25 +1055,42 @@ function validateFullMixCase(engine, browserVersion, platform, currentBundle, re
             probe.envelope.some((x) => !finiteNumber(x) || x < 0))
           problems.push(at + " isolated pitch/envelope probe is incomplete: " + String(probe && probe.id));
       }
-      if (!finiteNumber(metrics.relativeProbeLevelDb) || !Array.isArray(metrics.isolation) ||
-          metrics.isolation.length !== expected.expectedPitchProbeIds.length ||
-          metrics.isolation.some((x) => !x || !finiteNumber(x.preProbeRms) || x.preProbeRms > 1e-5))
+      const isolationComplete = Array.isArray(metrics.isolation) && metrics.isolation.length === fixture.probes.length &&
+        fixture.probes.every((want, i) => metrics.isolation[i] && metrics.isolation[i].id === want.id &&
+          metrics.isolation[i].startSec === want.startSec && finiteNumber(metrics.isolation[i].preProbeRms) &&
+          metrics.isolation[i].preProbeRms <= 1e-5);
+      if (!finiteNumber(metrics.relativeProbeLevelDb) || !isolationComplete)
         problems.push(at + " relative-level or post-song quiet-separation evidence is incomplete");
       if (!metrics.transient || metrics.transient.noteId !== fixture.notes[0].id ||
           !Array.isArray(metrics.transient.left) || !Array.isArray(metrics.transient.right) ||
           metrics.transient.left.length !== metrics.transient.right.length ||
           metrics.transient.left.some((x) => !finiteNumber(x) || x < 0) || metrics.transient.right.some((x) => !finiteNumber(x) || x < 0))
         problems.push(at + " first-downbeat 1 ms onset/envelope evidence is missing");
-      const expectedResult = row && row.preBaselineEligible !== true ? "fail"
-        : selectedReference.status !== "measured" ? "incomplete"
-          : fullMixSpec.compareBuildToReference(metrics, selectedReference.reference.metrics, refTolerances).length ? "fail" : "pass";
-      if (row && row.result !== expectedResult)
-        problems.push(at + " producer first-attempt result differs from aggregate derivation (expected " + expectedResult + ")");
-      const expectedComparisonProblems = selectedReference.status === "measured"
-        ? fullMixSpec.compareBuildToReference(metrics, selectedReference.reference.metrics, refTolerances)
-        : selectedReference.problems;
-      if (row && stableJson(row.comparisonProblems) !== stableJson(expectedComparisonProblems))
-        problems.push(at + " producer comparison diagnostics differ from aggregate reference selection/recomputation");
+      const pageClean = firstAttemptPageClean(row, c.checks, build);
+      if (!pageClean)
+        problems.push(at + " first-attempt scheduler, rejection, page-error or network-abort evidence is not clean");
+      let faultSensitivityComplete = false;
+      if (parsed && Array.isArray(voiceRows && voiceRows.rows)) {
+        try {
+          const independentlyRecomputedFault = fullMixSpec.faultSensitivity(parsed.channels, expected.sampleRate, fixture, metrics, voiceRows);
+          const faultSensitivityMatches = stableJson(row.faultSensitivity) === stableJson(independentlyRecomputedFault);
+          faultSensitivityComplete = faultSensitivityMatches && independentlyRecomputedFault.checksPass === true;
+          if (!faultSensitivityMatches)
+            problems.push(at + " retained fault-sensitivity schema or verdict differs from first-attempt PCM/native evidence");
+          else if (!independentlyRecomputedFault.checksPass)
+            problems.push(at + " first-attempt fault-sensitivity checks did not pass");
+        } catch (e) {
+          problems.push(at + " retained fault-sensitivity evidence cannot be recomputed: " + e.message);
+        }
+      } else problems.push(at + " retained fault-sensitivity evidence cannot be recomputed without first-attempt PCM/native rows");
+      const timingComplete = fixture.timingComplete === true && obs.noteTiming && obs.noteTiming.complete === true;
+      const finiteBoth = !!parsed && parsed.finite && Object.values(metrics.channels || {}).length === 2 &&
+        Object.values(metrics.channels || {}).every((x) => x && x.finite === true && x.nan === 0 && x.inf === 0);
+      const fullScale = !!parsed && parsed.withinFullScale && metrics.overall && metrics.overall.overFullScaleSamples === 0 &&
+        finiteNumber(metrics.overall.peak) && metrics.overall.peak <= 1;
+      const artifactRetained = !!(artifact && artifact.saved === true && parsed && parsed.artifactValid);
+      buildEligibility[build] = finiteBoth && fullScale && voicesComplete && probesCreated && probeMetricsComplete &&
+        isolationComplete && pageClean && timingComplete && faultSensitivityComplete && artifactRetained;
     }
 
     const diagnostic = row && row.diagnosticRepeat;
@@ -1051,7 +1129,30 @@ function validateFullMixCase(engine, browserVersion, platform, currentBundle, re
         stableJson(builds.min.sourceMinPcmComparison) !== stableJson(sourceMin))
       problems.push(where + " source/min first-attempt PCM differs beyond the measured same-engine tolerance or report");
   }
-  const derivedStatus = fullMixSpec.deriveFullMixStatus(builds, !!(sourceMin && sourceMin.ok));
+  const derivedBuilds = {};
+  for (const build of ["source", "min"]) {
+    const row = builds[build], at = where + " " + build;
+    const eligible = buildEligibility[build] === true && !!(sourceMin && sourceMin.ok);
+    const selectedReference = selectedReferences[build];
+    const metrics = parsedBuilds[build] && parsedBuilds[build].metrics;
+    const comparisonProblems = selectedReference.status === "measured" && metrics
+      ? fullMixSpec.compareBuildToReference(metrics, selectedReference.reference.metrics, refTolerances)
+      : selectedReference.problems;
+    const expectedResult = !eligible ? "fail"
+      : selectedReference.status !== "measured" ? "incomplete"
+        : comparisonProblems.length ? "fail" : "pass";
+    if (!row || row.preBaselineEligible !== eligible)
+      problems.push(at + " producer eligibility differs from independently validated first-attempt evidence");
+    if (!row || row.result !== expectedResult)
+      problems.push(at + " producer first-attempt result differs from aggregate derivation (expected " + expectedResult + ")");
+    if (row && row.result !== "pass") problems.push(at + " first-attempt result is " + row.result);
+    if (row && stableJson(row.comparisonProblems) !== stableJson(comparisonProblems))
+      problems.push(at + " producer comparison diagnostics differ from aggregate reference selection/recomputation");
+    if (row) derivedBuilds[build] = { ...row, preBaselineEligible: eligible, result: expectedResult };
+  }
+  if (builds.source && stableJson(obs.faultSensitivity) !== stableJson(builds.source.faultSensitivity))
+    problems.push(where + " aggregate fault-sensitivity summary differs from the independently validated source build row");
+  const derivedStatus = fullMixSpec.deriveFullMixStatus(derivedBuilds, !!(sourceMin && sourceMin.ok));
   if (obs.captureEligiblePreBaseline !== derivedStatus.captureEligiblePreBaseline || obs.status !== derivedStatus.status)
     problems.push(where + " producer fullMix status/eligibility differs from aggregate first-attempt derivation");
   if (!builds.source || !builds.min || !obs.rawArtifacts ||
@@ -1209,7 +1310,9 @@ function merge(o) {
     let currentBundle = null;
     if (expectedBrowserToolchain) {
       try { currentBundle = browserBundle(expectedBrowserToolchain, reportEngine); } catch (e) { problems.push(rel + ": " + e.message); }
-      if (!currentBundle || stableJson(r.browserBundle) !== stableJson(currentBundle))
+      const pinned = currentBundle && currentBundle.engine === reportEngine &&
+        browserToolchainSpec.isPinnedBrowserBundle(currentBundle, process.env, ROOT);
+      if (!pinned || stableJson(r.browserBundle) !== stableJson(currentBundle))
         problems.push(rel + ": " + reportEngine + " Playwright/browser revision bundle differs from the aggregate checkout");
     }
     const expectedSpecs = expectedPath ? expectedPath.specs : [];
@@ -1218,7 +1321,7 @@ function merge(o) {
     if (Array.isArray(r.cases)) for (const c of r.cases) if (c && c.spec === "full-mix" && typeof c.id === "string")
       validateFullMixCase(reportEngine, r.version, r.platform, currentBundle, rel, file, c, FULL_MIX_CASES.get(c.id), problems);
     if (typeof r.version !== "string" || !r.version) problems.push(rel + ": " + reportEngine + " did not launch: " + String(r.launchError || "no browser version").split("\n")[0]);
-    if (currentBundle && r.version && r.version !== currentBundle.browserVersion)
+    if (currentBundle && r.version && !browserToolchainSpec.matchesBrowserVersion(currentBundle, r.version))
       problems.push(rel + ": " + reportEngine + " reported browser version differs from its pinned revision bundle");
     if (r.failure) problems.push(rel + ": " + reportEngine + " worker failed: " + String(r.failure).split("\n")[0]);
     if (r.fatal) problems.push(rel + ": " + reportEngine + " stopped early: " + String(r.fatal).split("\n")[0]);
@@ -1350,6 +1453,7 @@ if (require.main === module) {
 
 module.exports = {
   parseArgs,
+  worker,
   shardLayout,
   selectedSpecs,
   expectedResultPaths,
@@ -1361,6 +1465,7 @@ module.exports = {
   buildSha256,
   readFloatStereoWav,
   readArtifactUnderShard,
+  validateFullMixCase,
   crossEngine,
   renderBufferShaProblems,
   generatedBufferArtifactProblems,

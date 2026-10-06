@@ -56,7 +56,7 @@ function probeSignal(freq, { noise = false, duration = 1, sampleRate = 48000 } =
   return { channels, probe, sampleRate };
 }
 
-function resolveBrowserToolchainFixture(webkitPath, revisionOverrides = { mac14: "2251", "mac14-arm64": "2251" }) {
+function createBrowserToolchainFixture(webkitPath, revisionOverrides = { mac14: "2251", "mac14-arm64": "2251" }) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "tinysynth-browser-toolchain-"));
   const packageDir = path.join(root, "node_modules", "playwright-core");
   fs.mkdirSync(packageDir, { recursive: true });
@@ -78,10 +78,22 @@ function resolveBrowserToolchainFixture(webkitPath, revisionOverrides = { mac14:
     'function executablePath(engine) { return JSON.parse(fs.readFileSync(path.join(__dirname, "paths.json"), "utf8"))[engine]; }',
     'module.exports = Object.fromEntries(["chromium", "firefox", "webkit"].map((engine) => [engine, { executablePath: () => executablePath(engine) }]));',
   ].join("\n"));
+  const env = { PLAYWRIGHT_CORE: path.join(packageDir, "index.js") };
+  return {
+    root,
+    packageDir,
+    env,
+    resolve: () => browserToolchain.resolveBrowserToolchain(env, root),
+    close: () => fs.rmSync(root, { recursive: true, force: true }),
+  };
+}
+
+function resolveBrowserToolchainFixture(webkitPath, revisionOverrides) {
+  const fixture = createBrowserToolchainFixture(webkitPath, revisionOverrides);
   try {
-    return browserToolchain.resolveBrowserToolchain({ PLAYWRIGHT_CORE: path.join(packageDir, "index.js") }, root);
+    return fixture.resolve();
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    fixture.close();
   }
 }
 
@@ -93,15 +105,15 @@ test("browser toolchain follows pinned macOS WebKit override bundles and retains
   const linux = resolveBrowserToolchainFixture("/cache/webkit-2359/pw_run.sh");
   const mac14 = resolveBrowserToolchainFixture("/cache/webkit_mac14_special-2251/pw_run.sh");
   const mac14Arm64 = resolveBrowserToolchainFixture("/cache/webkit_mac14_arm64_special-2251/pw_run.sh");
-  for (const [toolchain, revision, bundleId] of [
-    [linux, "2359", "webkit-2359"],
-    [mac14, "2251", "webkit_mac14_special-2251"],
-    [mac14Arm64, "2251", "webkit_mac14_arm64_special-2251"],
+  for (const [toolchain, revision, bundleId, browserVersion] of [
+    [linux, "2359", "webkit-2359", "26.6"],
+    [mac14, "2251", "webkit_mac14_special-2251", null],
+    [mac14Arm64, "2251", "webkit_mac14_arm64_special-2251", null],
   ]) {
     const webkit = browserToolchain.engineBundle(toolchain, "webkit");
     assert.equal(webkit.revision, revision);
     assert.equal(webkit.bundleId, bundleId);
-    assert.equal(webkit.browserVersion, "26.6");
+    assert.equal(webkit.browserVersion, browserVersion);
     const expectedIdentity = { ...webkit };
     delete expectedIdentity.identitySha256;
     assert.equal(webkit.identitySha256, sha256(Buffer.from(browserToolchain.canonical(expectedIdentity))));
@@ -116,6 +128,73 @@ test("browser toolchain follows pinned macOS WebKit override bundles and retains
   }
   assert.notEqual(linux.browsers.webkit.identitySha256, mac14.browsers.webkit.identitySha256);
   assert.notEqual(mac14.browsers.webkit.identitySha256, mac14Arm64.browsers.webkit.identitySha256);
+});
+
+test("browser version matching stays strict for pinned defaults and requires observed override versions", () => {
+  const linux = browserToolchain.engineBundle(resolveBrowserToolchainFixture("/cache/webkit-2359/pw_run.sh"), "webkit");
+  const mac14 = browserToolchain.engineBundle(resolveBrowserToolchainFixture("/cache/webkit_mac14_special-2251/pw_run.sh"), "webkit");
+  assert.equal(browserToolchain.matchesBrowserVersion(linux, "26.6"), true);
+  assert.equal(browserToolchain.matchesBrowserVersion(linux, "26.5"), false);
+  assert.equal(browserToolchain.matchesBrowserVersion(linux, ""), false);
+  assert.equal(browserToolchain.matchesBrowserVersion(linux, null), false);
+  assert.equal(browserToolchain.matchesBrowserVersion(mac14, "reported-platform-version"), true);
+  assert.equal(browserToolchain.matchesBrowserVersion(mac14, ""), false);
+  assert.equal(browserToolchain.matchesBrowserVersion(mac14, "   "), false);
+  assert.equal(browserToolchain.matchesBrowserVersion(mac14, null), false);
+  assert.equal(browserToolchain.matchesBrowserVersion({ ...mac14, browserVersion: undefined }, "26.6"), false);
+});
+
+test("pinned bundle validation accepts only exact default and declared override identities", () => {
+  const linuxFixture = createBrowserToolchainFixture("/cache/webkit-2359/pw_run.sh");
+  const macFixture = createBrowserToolchainFixture("/cache/webkit_mac14_special-2251/pw_run.sh");
+  try {
+    const linux = browserToolchain.engineBundle(linuxFixture.resolve(), "webkit");
+    const mac14 = browserToolchain.engineBundle(macFixture.resolve(), "webkit");
+    const pinned = (bundle, fixture = macFixture) =>
+      browserToolchain.isPinnedBrowserBundle(bundle, fixture.env, fixture.root);
+    assert.equal(pinned(linux, linuxFixture), true);
+    assert.equal(pinned(mac14), true);
+    assert.equal(pinned(mac14) && browserToolchain.matchesBrowserVersion(mac14, "observed-platform-version"), true);
+
+    function altered(bundle, changes) {
+      const claim = { ...bundle, ...changes };
+      delete claim.identitySha256;
+      claim.identitySha256 = sha256(Buffer.from(browserToolchain.canonical(claim)));
+      return claim;
+    }
+    const fabricatedMac = altered(mac14, { bundleId: "webkit_mac15_special-2251" });
+    for (const claim of [
+      fabricatedMac,
+      altered(mac14, { revision: "9999", bundleId: "webkit_mac14_special-9999" }),
+      altered(mac14, { browsersManifestSha256: "f".repeat(64) }),
+      altered(mac14, { playwrightCoreVersion: "1.62.0" }),
+      altered(linux, { browserVersion: null }),
+      altered(mac14, { revision: "2252", bundleId: "webkit_mac14_special-2252" }),
+      altered(mac14, { browserVersion: "26.6" }),
+    ]) assert.equal(pinned(claim), false, JSON.stringify(claim));
+    assert.equal(pinned(fabricatedMac) && browserToolchain.matchesBrowserVersion(fabricatedMac, "observed-platform-version"), false);
+
+    const missingVersion = { ...mac14 };
+    delete missingVersion.browserVersion;
+    assert.equal(pinned(missingVersion), false);
+    assert.equal(pinned({ ...mac14, identitySha256: "malformed" }), false);
+    assert.equal(pinned({ ...mac14, engine: "unknown" }), false);
+  } finally {
+    linuxFixture.close();
+    macFixture.close();
+  }
+});
+
+test("full-mix references bind the observed runtime version separately from override bundle identity", () => {
+  const fixture = fullMix.FIXTURE_BY_ID["tinychip-ws-mid"];
+  const metadata = fullMix.REFERENCE.engines.webkit[fixture.id][44100].metadata;
+  const mac14 = browserToolchain.engineBundle(resolveBrowserToolchainFixture("/cache/webkit_mac14_special-2251/pw_run.sh"), "webkit");
+  const selection = fullMix.selectReference(fullMix.REFERENCE, {
+    ...metadata, browserVersion: "observed-platform-version", browserBundle: mac14,
+  }, "source");
+  assert.equal(selection.reference, null);
+  assert.match(selection.problems.join(" "), /browserVersion/);
+  assert.match(selection.problems.join(" "), /browserBundle/);
 });
 
 test("browser toolchain rejects WebKit executable paths that do not match a manifest bundle", () => {

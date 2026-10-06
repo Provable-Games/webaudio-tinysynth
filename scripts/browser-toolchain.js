@@ -33,6 +33,33 @@ function packageRoot(entry) {
   throw new Error("resolved Playwright Core entry has no playwright-core package.json");
 }
 
+function browserBundleCandidates(engine, browser, manifestName, playwrightCoreVersion, browsersManifestSha256) {
+  const revision = String(browser.revision);
+  const prefix = manifestName.replace(/-/g, "_");
+  const candidates = [{ revision, bundleId: prefix + "-" + revision, browserVersion: browser.browserVersion }];
+  if (engine !== "chromium") {
+    for (const [platform, overrideRevision] of Object.entries(browser.revisionOverrides || {})) {
+      const override = String(overrideRevision);
+      if (!overrideRevision || !Number.isSafeInteger(Number(override)) || Number(override) <= 0)
+        throw new Error("resolved Playwright browsers.json has an invalid " + engine + " revision override for " + platform);
+      candidates.push({
+        revision: override,
+        bundleId: prefix + "_" + platform.replace(/-/g, "_") + "_special-" + override,
+        // Playwright's registry leaves browserVersion unset for revision overrides.
+        browserVersion: null,
+      });
+    }
+  }
+  return candidates.map((candidate) => {
+    const bundle = {
+      schemaVersion: 1, engine, playwrightCoreVersion, browsersManifestSha256,
+      revision: candidate.revision, bundleId: candidate.bundleId, browserVersion: candidate.browserVersion,
+    };
+    bundle.identitySha256 = sha256(Buffer.from(canonical(bundle)));
+    return bundle;
+  });
+}
+
 function resolveBrowserToolchain(env = process.env, root = path.resolve(__dirname, "..")) {
   const specifier = env.PLAYWRIGHT_CORE || "playwright-core";
   const entry = require.resolve(specifier, { paths: [root] });
@@ -52,35 +79,21 @@ function resolveBrowserToolchain(env = process.env, root = path.resolve(__dirnam
     const browser = (manifest.browsers || []).find((item) => item.name === manifestName);
     if (!browser || !Number.isSafeInteger(Number(browser.revision)) || !browser.browserVersion)
       throw new Error("resolved Playwright browsers.json has no valid " + manifestName + " revision/version");
-    const revision = String(browser.revision);
-    let selectedRevision = revision;
-    let bundleId = manifestName.replace(/-/g, "_") + "-" + revision;
+    const candidates = browserBundleCandidates(engine, browser, manifestName, resolved.pkg.version, browsersManifestSha256);
+    let selected = candidates[0];
     if (engine !== "chromium") {
       const executable = playwright[engine].executablePath();
       const parts = path.resolve(executable).split(path.sep);
-      const candidates = [{ revision, bundleId }];
-      for (const [platform, overrideRevision] of Object.entries(browser.revisionOverrides || {})) {
-        const override = String(overrideRevision);
-        if (!overrideRevision || !Number.isSafeInteger(Number(override)) || Number(override) <= 0)
-          throw new Error("resolved Playwright browsers.json has an invalid " + engine + " revision override for " + platform);
-        candidates.push({
-          revision: override,
-          bundleId: manifestName.replace(/-/g, "_") + "_" + platform.replace(/-/g, "_") + "_special-" + override,
-        });
-      }
       const matches = candidates.filter((candidate) => parts.includes(candidate.bundleId));
       if (matches.length !== 1)
         throw new Error("resolved Playwright " + engine + " executable path does not identify exactly one manifest bundle (" +
           candidates.map((candidate) => candidate.bundleId).join(", ") + ")");
-      selectedRevision = matches[0].revision;
-      bundleId = matches[0].bundleId;
+      selected = matches[0];
     }
-    const bundle = {
-      schemaVersion: 1, engine, playwrightCoreVersion: resolved.pkg.version,
-      browsersManifestSha256, revision: selectedRevision, bundleId, browserVersion: browser.browserVersion,
+    browsers[engine] = {
+      revision: selected.revision, bundleId: selected.bundleId,
+      browserVersion: selected.browserVersion, identitySha256: selected.identitySha256,
     };
-    bundle.identitySha256 = sha256(Buffer.from(canonical(bundle)));
-    browsers[engine] = { revision: selectedRevision, bundleId, browserVersion: browser.browserVersion, identitySha256: bundle.identitySha256 };
   }
   const identity = {
     schemaVersion: 1,
@@ -108,4 +121,31 @@ function engineBundle(toolchain, engine) {
   return identity;
 }
 
-module.exports = { ENGINES, resolveBrowserToolchain, engineBundle, canonical };
+function isPinnedBrowserBundle(bundle, env = process.env, root = path.resolve(__dirname, "..")) {
+  if (!bundle || typeof bundle !== "object" || Array.isArray(bundle) || !ENGINES.includes(bundle.engine)) return false;
+  try {
+    const specifier = env.PLAYWRIGHT_CORE || "playwright-core";
+    const entry = require.resolve(specifier, { paths: [root] });
+    const resolved = packageRoot(entry);
+    const manifestBytes = fs.readFileSync(path.join(resolved.dir, "browsers.json"));
+    const manifest = JSON.parse(manifestBytes.toString("utf8"));
+    const manifestName = bundle.engine === "chromium" ? "chromium-headless-shell" : bundle.engine;
+    const browser = (manifest.browsers || []).find((item) => item.name === manifestName);
+    if (!browser || !Number.isSafeInteger(Number(browser.revision)) || !browser.browserVersion) return false;
+    const candidates = browserBundleCandidates(bundle.engine, browser, manifestName, resolved.pkg.version, sha256(manifestBytes));
+    return candidates.some((candidate) => canonical(candidate) === canonical(bundle));
+  } catch {
+    return false;
+  }
+}
+
+/* Keep the observed version mandatory; compare it exactly when Playwright pins one.
+ * A null manifest version is meaningful only after isPinnedBrowserBundle succeeds. */
+function matchesBrowserVersion(bundle, reportedVersion) {
+  if (!bundle || typeof reportedVersion !== "string" || !reportedVersion.trim()) return false;
+  if (typeof bundle.browserVersion === "string") return reportedVersion === bundle.browserVersion;
+  return bundle.browserVersion === null && typeof bundle.identitySha256 === "string" &&
+    /^[a-f0-9]{64}$/i.test(bundle.identitySha256);
+}
+
+module.exports = { ENGINES, resolveBrowserToolchain, engineBundle, isPinnedBrowserBundle, matchesBrowserVersion, canonical };

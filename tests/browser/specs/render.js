@@ -196,6 +196,125 @@ const { maxDiff } = FA;
 
 /* Diagnostic re-renders a case may spend (the verdict never depends on them), first-attempt.js. */
 const MAX_DIAGNOSED = 6;
+/* Retention is separately counted and bounded: at most two PCM WAVs for six failed pairs per case. */
+const MAX_RETAINED_PCM_PAIRS = MAX_DIAGNOSED;
+const NATIVE_LITTLE_ENDIAN = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
+
+/* analysis.wav supplies the established Float32 WAV header; restore the sample bytes verbatim. */
+function exactFloat32Wav(channels, sampleRate) {
+  if (!Array.isArray(channels) || !channels.length ||
+      channels.some((channel) => !(channel instanceof Float32Array) || channel.length !== channels[0].length))
+    throw new TypeError("PCM WAV retention needs one or more equal-length Float32Array channels");
+  const wav = A.wav(channels, sampleRate);
+  const sourceBytes = channels.map((channel) => new Uint8Array(channel.buffer, channel.byteOffset, channel.byteLength));
+  let target = 44;
+  for (let frame = 0; frame < channels[0].length; ++frame) {
+    for (const bytes of sourceBytes) {
+      const source = frame * 4;
+      if (NATIVE_LITTLE_ENDIAN) {
+        wav[target++] = bytes[source];
+        wav[target++] = bytes[source + 1];
+        wav[target++] = bytes[source + 2];
+        wav[target++] = bytes[source + 3];
+      } else {
+        wav[target++] = bytes[source + 3];
+        wav[target++] = bytes[source + 2];
+        wav[target++] = bytes[source + 1];
+        wav[target++] = bytes[source];
+      }
+    }
+  }
+  return wav;
+}
+
+function planarFloat32Sha256(channels) {
+  if (NATIVE_LITTLE_ENDIAN) return A.sha256(...channels);
+  return A.sha256(...channels.map((channel) => {
+    const source = new Uint8Array(channel.buffer, channel.byteOffset, channel.byteLength);
+    const littleEndian = Buffer.alloc(channel.byteLength);
+    for (let i = 0; i < source.length; i += 4) {
+      littleEndian[i] = source[i + 3];
+      littleEndian[i + 1] = source[i + 2];
+      littleEndian[i + 2] = source[i + 1];
+      littleEndian[i + 3] = source[i];
+    }
+    return littleEndian;
+  }));
+}
+
+function pcmSideShape(render, role, rel, sampleRate) {
+  const channels = render && Array.isArray(render.channels) ? render.channels : [];
+  const channelFrames = channels.map((channel) => channel instanceof Float32Array ? channel.length : null);
+  const sameFrames = channelFrames.length > 0 && channelFrames.every((frames) => frames === channelFrames[0]);
+  const pcmBytes = channelFrames.every(Number.isSafeInteger) ? channelFrames.reduce((n, frames) => n + frames * 4, 0) : null;
+  return {
+    role,
+    path: rel,
+    channels: channels.length,
+    frames: sameFrames ? channelFrames[0] : null,
+    channelFrames,
+    sampleRate,
+    pcmBytes,
+    wavSha256: null,
+    wavBytes: null,
+    planarPcmSha256: null,
+    saved: false,
+  };
+}
+
+function createFirstPcmRetainer(t, { quality, sampleRate }, maxPairs = MAX_RETAINED_PCM_PAIRS) {
+  let pairIndex = 0, retainedPairs = 0;
+  return ({ a, b, label, roles }) => {
+    const index = ++pairIndex;
+    const prefix = "first-attempt-pcm/q" + quality + "-" + sampleRate + "/pair-" + String(index).padStart(3, "0");
+    const pair = {
+      schemaVersion: 1,
+      pairIndex: index,
+      label,
+      planarPcmEncoding: "IEEE-754 binary32 little-endian; planar channel order",
+      roles: { a: roles.a, b: roles.b },
+      saved: false,
+      status: "not-saved",
+      a: pcmSideShape(a, roles.a, prefix + "-first-a.wav", sampleRate),
+      b: pcmSideShape(b, roles.b, prefix + "-first-b.wav", sampleRate),
+    };
+    if (!t.out) {
+      pair.status = "output-disabled";
+      pair.reason = "no output directory";
+      return pair;
+    }
+    if (retainedPairs >= maxPairs) {
+      pair.reason = "PCM retention budget exhausted";
+      pair.status = "budget-exhausted";
+      return pair;
+    }
+    ++retainedPairs;
+    const renders = [a, b];
+    if (renders.some((render) => !render || !Array.isArray(render.channels) || !render.channels.length ||
+        render.channels.some((channel) => !(channel instanceof Float32Array) || channel.length !== render.channels[0].length))) {
+      pair.status = "unsupported-channel-shape";
+      pair.reason = "one or both first renders have non-rectangular Float32 channels";
+      return pair;
+    }
+    for (const [side, render] of [[pair.a, a], [pair.b, b]]) {
+      let wav;
+      try {
+        wav = exactFloat32Wav(render.channels, sampleRate);
+        side.wavBytes = wav.length;
+        side.wavSha256 = A.sha256(wav);
+        side.planarPcmSha256 = planarFloat32Sha256(render.channels);
+        side.saved = !!t.save(side.path, wav);
+        if (!side.saved) side.reason = "save returned no file";
+      } catch (error) {
+        side.reason = error && typeof error.message === "string" ? error.message : "WAV save failed";
+      }
+    }
+    pair.saved = pair.a.saved && pair.b.saved;
+    pair.status = pair.saved ? "saved" : pair.a.saved || pair.b.saved ? "partial" : "save-failed";
+    if (!pair.saved) pair.reason = "one or both first PCM WAVs were not saved";
+    return pair;
+  };
+}
 
 function cases(shared) {
   const { matrix, options, engine } = shared;
@@ -257,9 +376,12 @@ function cases(shared) {
            */
           const budget = FA.makeBudget(MAX_DIAGNOSED);
           const diag = FA.createLog(budget);
+          const retainPcm = createFirstPcmRetainer(t, { quality, sampleRate: sr });
           // A part pair that must agree, rerendered by rerenderA/rerenderB (null: that side keeps its render).
-          const judgePair = async (label, a, b, rerenderA, rerenderB) => {
-            const res = await FA.comparePair({ a, b, rerenderA, rerenderB, tolerance: tol.sameEngineSample, budget, onDiagnostic: (r) => audit(r, label + " diagnostic re-render", true) });
+          const judgePair = async (label, a, b, rerenderA, rerenderB, roles) => {
+            const res = await FA.comparePair({ a, b, rerenderA, rerenderB, tolerance: tol.sameEngineSample, budget,
+              onFirstFailure: (first) => retainPcm({ ...first, label, roles }),
+              onDiagnostic: (r) => audit(r, label + " diagnostic re-render", true) });
             diag.add(label, res);
             return res;
           };
@@ -289,7 +411,8 @@ function cases(shared) {
                 const label = s.name + (s.items ? " " + s.items[k].label : "") + (vi ? " variant " + vi : "") + " source/min";
                 const r = await judgePair(label, a, b,
                   () => renderPart(pg.source, s, { seed, sr, quality }, allVariants[vi], k),
-                  () => renderPart(pg.min, s, { seed, sr, quality }, allVariants[vi], k));
+                  () => renderPart(pg.min, s, { seed, sr, quality }, allVariants[vi], k),
+                  { a: "source", b: "min" });
                 if (!r.ok) persistent.push(label + ": " + r.reasons[0] + " (first attempt; " + FA.SHORT[r.outcome] + ")");
               }
             }
@@ -401,7 +524,8 @@ function cases(shared) {
             for (let k = 0; k < ps.length; ++k) {
               const label = name + (s.items ? " " + s.items[k].label : "") + " repeat";
               // Both sides are re-rendered as diagnostics: the kept first render may be the odd one.
-              const r = await judgePair(label, ps[k], kept[name].parts[k], () => renderPart(again, s, { seed, sr, quality }, {}, k), () => renderPart(pg.source, s, { seed, sr, quality }, {}, k));
+              const r = await judgePair(label, ps[k], kept[name].parts[k], () => renderPart(again, s, { seed, sr, quality }, {}, k), () => renderPart(pg.source, s, { seed, sr, quality }, {}, k),
+                { a: "repeat", b: "kept source" });
               if (!r.ok) persistent.push(label + ": " + r.reasons[0] + " (first attempt; " + FA.SHORT[r.outcome] + ")");
             }
             const r = combine(s, ps);
@@ -437,4 +561,4 @@ function cases(shared) {
 }
 
 module.exports = { cases, renderSpec, bufferCaptureSettings, renderScenario, renderParts, combine, saveGeneratedBufferCaptures,
-  openRenderPage, render, decode, maxDiff };
+  openRenderPage, render, decode, maxDiff, createFirstPcmRetainer };
