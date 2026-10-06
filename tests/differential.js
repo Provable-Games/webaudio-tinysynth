@@ -3,7 +3,9 @@
  * Differential test: this fork vs. upstream webaudio-tinysynth.
  *
  * The reference is upstream (g200kg/webaudio-tinysynth at UPSTREAM_COMMIT)
- * with exactly the documented FORK_PATCHES from harness.js applied. It is
+ * with the documented FORK_PATCHES from harness.js and a test-local #68
+ * scheduler-horizon patch applied. This aligns only the submission window;
+ * every MIDI note request and complete WebAudio trace remain compared. It is
  * loaded, together with this repo's webaudio-tinysynth.js and
  * webaudio-tinysynth.min.js, into separate `vm` contexts backed by a mock
  * WebAudio implementation. Every MIDI file in the repo is played through
@@ -54,7 +56,15 @@ function firstDiff(a, b) {
 
 const upstreamName = "upstream@" + H.UPSTREAM_COMMIT.slice(0, 7);
 const rawUpstream = { name: upstreamName, source: H.upstreamSource() };
-const variants = [{ name: upstreamName + "+patches", source: H.referenceSource() }].concat(H.forkVariants());
+const matchedHorizonReference = {
+  name: upstreamName + "+patches+#68 horizon",
+  source: H.applyPatches(H.referenceSource(), [{
+    name: "#68 differential baseline: align the fixed scheduler horizon to 0.5 s",
+    from: "this.preroll=0.2;",
+    to: "this.preroll=0.5;",
+  }]),
+};
+const variants = [matchedHorizonReference].concat(H.forkVariants());
 
 /* Fixtures present at the T0 baseline. Each must still exist; new .mid files in test-midi/ are compared too. */
 const REQUIRED_FIXTURES = [
@@ -73,6 +83,7 @@ let totalNotes = 0;
 const changedByPatches = [];
 console.log("reference: upstream " + H.UPSTREAM_COMMIT + " (sha256 verified) with patches:");
 for (const p of H.FORK_PATCHES) console.log("  - " + p.name);
+console.log("  - #68 differential baseline: align the fixed scheduler horizon to 0.5 s");
 for (const file of midiFiles) {
   const bytes = fs.readFileSync(path.join(H.ROOT, file));
   const results = variants.map((v) => run(v.source, v.name, bytes));

@@ -45,9 +45,10 @@ function playPass(s, tailMs = 0) {
   const from = s.notes.length;
   const start = s.synth.getAudioContext().currentTime + 0.1;
   s.synth.playMIDI();
+  const initialStartTime = s.synth.getPlayStatus().initialStartTime;
   if (!H.runUntil(s.env, () => s.synth.getPlayStatus().play === 0, 10 * 60 * 1000)) throw new Error("the pass did not end");
   H.runUntil(s.env, () => false, tailMs);
-  return { start, times: s.notes.slice(from).map((n) => n[0] - start), notes: s.notes.slice(from) };
+  return { start, initialStartTime, times: s.notes.slice(from).map((n) => n[0] - start), notes: s.notes.slice(from) };
 }
 
 /* ---------- #10: replaying a completed song ---------- */
@@ -83,7 +84,7 @@ describe.each(variants)("$name: replaying a completed song (#10)", (variant) => 
       const p = playPass(s, pass * 700);
       expect(p.times, "pass " + pass).toHaveLength(expected.length);
       p.times.forEach((t, i) => close(t, expected[i]));
-      expect(s.synth.getPlayStatus()).toEqual(H.playStatus(0, Math.max(...fx.ev.map((e) => e.tick)), Math.max(...fx.ev.map((e) => e.tick))));
+      expect(s.synth.getPlayStatus()).toEqual(H.playStatus(0, Math.max(...fx.ev.map((e) => e.tick)), Math.max(...fx.ev.map((e) => e.tick)), null, p.initialStartTime));
     }
   });
 
@@ -179,7 +180,9 @@ describe.each(variants)("$name: replaying a completed song (#10)", (variant) => 
     s.synth.loadMIDI(H.toArrayBuffer(H.makeMidi(PPQ, ISSUE10.ev)));
     s.synth.setLoop(0);
     s.synth.playMIDI();
-    H.runUntil(s.env, () => s.notes.length === 1, 10000);
+    // The 0.5 s startup pass has already submitted the tick-0 and tick-240
+    // notes; stop cancels them and resumes at the first unsubmitted tick.
+    expect(s.synth.getPlayStatus().curTick).toBe(480);
     s.synth.stopMIDI();
     s.synth.setProgram(0, 40);
     const resumed = playPass(s);
@@ -529,13 +532,14 @@ describe.each(MODES)("$name: seeking (#21)", ({ variant, quality }) => {
     s.synth.loadMIDI(H.toArrayBuffer(RICH_BYTES));
     s.synth.setLoop(0);
     s.synth.playMIDI();
-    H.runUntil(s.env, () => false, 2200); // past the tuning, rhythm-part, sustain-off and reset events (1680 to 2160)
-    expect(s.synth.getPlayStatus().curTick).toBe(2400);
+    H.runUntil(s.env, () => false, 2200); // the .5 s horizon reaches through tick 2400
+    expect(s.synth.getPlayStatus().curTick).toBe(2640); // next unscheduled event at currentTime + .5 s
     const recs = recordNotes(s);
     const start = s.synth.getAudioContext().currentTime + 0.1;
     s.synth.locateMIDI(1440);
     // startTime: tick 0 of this pass, 1440 ticks before the next event, which plays at `start` (D-023).
-    expect(s.synth.getPlayStatus()).toEqual(H.playStatus(1, 2640, 1440, expect.closeTo(start - at(RICH_TEMPOS, 1440), 9)));
+    const resumedOrigin = expect.closeTo(start - at(RICH_TEMPOS, 1440), 9);
+    expect(s.synth.getPlayStatus()).toEqual(H.playStatus(1, 2640, 1920, resumedOrigin, resumedOrigin));
     H.runUntil(s.env, () => s.synth.getPlayStatus().play === 0, 60000);
     H.runUntil(s.env, () => false, 6000);
     const entries = s.trace.map((l) => JSON.parse(l));
@@ -646,22 +650,22 @@ describe.each(MODES)("$name: seeking (#21)", ({ variant, quality }) => {
   });
 
   test("an immediate replay after the end is not overridden by changes the last pass queued", () => {
-    // The last event, volume 0 at tick 480, is queued for 0.6 s; the song reports its end at 0.42 s.
+    // The last event, volume 0 at tick 480, is queued for 0.6 s; with a 0.5 s horizon the song reports its end at 0.12 s.
     const s = make();
     s.synth.loadMIDI(H.toArrayBuffer(H.makeMidi(PPQ, [noteOn(0, 0, 60, 100), noteOff(240, 0, 60), cc(480, 0, 7, 0)])));
     s.synth.setLoop(0);
     const vol = timeline(s.synth.chvol[0].gain, s.env.clock);
     s.synth.playMIDI();
     H.runUntil(s.env, () => s.synth.getPlayStatus().play === 0, 2000);
-    expect(s.env.clock.ms).toBe(420);
+    expect(s.env.clock.ms).toBe(120);
     expect(vol.at(0.6)).toBe(0);
     const notesFrom = s.notes.length;
-    s.synth.playMIDI(); // replay: starts at 0.52 s, its volume 0 now comes at 1.02 s
+    s.synth.playMIDI(); // replay starts at 0.22 s; its tick-480 volume event is at 0.72 s
     H.runUntil(s.env, () => s.synth.getPlayStatus().play === 0, 2000);
-    close(s.notes[notesFrom][0], 0.52);
+    close(s.notes[notesFrom][0], 0.22);
     const full = ROUND(3 * 100 * 100 / (127 * 127)); // volume 100, expression 127: as at the start of the first play
-    for (const t of [0.52, 0.6, 1.0]) expect(ROUND(vol.at(t)), "at " + t + " s").toBe(full);
-    expect(vol.at(1.03)).toBe(0);
+    for (const t of [0.22, 0.3, 0.7]) expect(ROUND(vol.at(t)), "at " + t + " s").toBe(full);
+    expect(vol.at(0.73)).toBe(0);
   });
 
   test("a stop, an immediate resume and then a seek still cancel changes queued before the stop", () => {
@@ -753,7 +757,8 @@ describe.each(variants)("$name: seek positions, overrides and edge cases (#21)",
     s.synth.loadMIDI(H.toArrayBuffer(H.makeMidi(PPQ, [sysex(0, [0x7f, 0x7f, 0x04, 0x04, 0x00, 0x42, 0xf7]), gs(960, 0x11, 0x40, 0x50)])));
     s.synth.setLoop(0);
     s.synth.playMIDI();
-    expect(s.synth.getPlayStatus()).toEqual(H.playStatus(1, 960, 0, s.synth.getAudioContext().currentTime + 0.1));
+    const origin = s.synth.getAudioContext().currentTime + 0.1;
+    expect(s.synth.getPlayStatus()).toEqual(H.playStatus(1, 960, 960, origin, origin));
     expect(H.runUntil(s.env, () => s.synth.getPlayStatus().play === 0, 5000)).toBe(true);
     expect([s.synth.masterTuningC, s.synth.scaleTuning[0][0], s.notes.length]).toEqual([2, 0.16, 0]);
   });
@@ -763,7 +768,8 @@ describe.each(variants)("$name: seek positions, overrides and edge cases (#21)",
     s.synth.loadMIDI(H.toArrayBuffer(H.makeMidi(PPQ, [program(0, 0, 5), cc(960, 0, 7, 50)])));
     s.synth.setLoop(0);
     s.synth.playMIDI();
-    expect(s.synth.getPlayStatus()).toEqual(H.playStatus(1, 960, 0, s.synth.getAudioContext().currentTime + 0.1));
+    const origin = s.synth.getAudioContext().currentTime + 0.1;
+    expect(s.synth.getPlayStatus()).toEqual(H.playStatus(1, 960, 960, origin, origin));
     const from = s.trace.length;
     expect(H.runUntil(s.env, () => s.synth.getPlayStatus().play === 0, 5000)).toBe(true);
     // The volume change is scheduled 960 ticks (1 s at 120 BPM) after the start, 0.1 s after playMIDI.

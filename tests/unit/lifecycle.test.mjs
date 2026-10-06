@@ -131,12 +131,15 @@ const MIXED = song([
   noteOn(960, 2, 67, 100), noteOff(3840, 2, 67),
 ]);
 
-/* Play MIXED until its crash cymbal (1.5 s into the song) is scheduled ahead, in the 0.2 s lookahead. */
+/* Play MIXED until its crash cymbal (1.5 s into the song) is scheduled ahead and another hit is sounding. */
 function playUntilDrumAhead(s) {
   const start = s.env.clock.ms / 1000 + 0.1;
   s.synth.loadMIDI(MIXED);
   s.synth.playMIDI();
-  const ahead = () => s.synth._src.some((v) => v.ch === 9 && v.t > s.env.clock.ms / 1000 && v.t >= start + 1.5);
+  const ahead = () => {
+    const now = s.env.clock.ms / 1000, hits = s.synth._src.filter((v) => v.ch === 9);
+    return hits.some((v) => v.t > now && v.t >= start + 1.5) && hits.some((v) => v.t <= now && now < v.e);
+  };
   if (!H.runUntil(s.env, ahead, 10000)) throw new Error("no drum hit was scheduled ahead");
 }
 
@@ -733,10 +736,18 @@ describe.each(variants)("$name: scheduled percussion (D-019)", (variant) => {
     const from = s.trace.length;
     act(s.synth);
     const after = calls(s.trace, from);
-    for (const id of [...ahead, ...sounding].filter((x) => /^(osc|src)#/.test(x))) expect(after).toContainEqual(["stop", id, null]);
+    const oldIds = [...ahead, ...sounding].filter((x) => /^(osc|src)#/.test(x));
+    for (const id of oldIds) expect(after).toContainEqual(["stop", id, null]);
     s.ended(); // each stopped source is disconnected when it ends
-    expect(liveEdges(s.trace).filter(([f]) => ahead.includes(f) || sounding.includes(f))).toEqual([]);
-    expect(s.synth._src.filter((v) => v.ch === 9)).toEqual([]);
+    expect(liveEdges(s.trace).filter(([f]) => oldIds.includes(f))).toEqual([]);
+    const remaining = s.synth._src.filter((v) => v.ch === 9);
+    if (name === "a seek") {
+      // locateMIDI(0) restarts synchronously; its fresh tick-zero drum survives.
+      expect(remaining.length).toBeGreaterThan(0);
+      expect(remaining.flatMap(ids).some((id) => oldIds.includes(id))).toBe(false);
+    } else {
+      expect(remaining).toEqual([]);
+    }
   });
 
   test.each([["allSoundOff(9)", (y) => y.allSoundOff(9)], ["CC 120 on channel 10", (y) => y.send([0xb9, 120, 0])], ["allSoundOff(0)", (y) => y.allSoundOff(0)]])(

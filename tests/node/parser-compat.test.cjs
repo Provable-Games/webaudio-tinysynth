@@ -5,7 +5,9 @@
  * (running status, SysEx and F7 packets, text and copyright metas, metas the
  * engine ignores, long lengths, longer headers, bytes after End-of-Track),
  * the song, maxTick, play status and the WebAudio calls made by loadMIDI must
- * be identical, also when the load replaces a playing song.
+ * be identical, also when the load replaces a playing song. The replacement
+ * probe alone aligns upstream's horizon to #68's 0.5 s cutoff so its exact
+ * cleanup trace compares the same queued event set.
  *
  * The documented differences (tasks/T2.md, ledger L-01 to L-03) are pinned
  * against the same reference. Reference loads run under a vm timeout; none of
@@ -20,6 +22,14 @@ const vm = require("node:vm");
 const H = require("../harness");
 
 const REFERENCE = { name: "upstream@" + H.UPSTREAM_COMMIT.slice(0, 7) + "+patches", source: H.referenceSource() };
+const REPLACEMENT_REFERENCE = {
+  name: REFERENCE.name + "+#68 replacement horizon",
+  source: H.applyPatches(REFERENCE.source, [{
+    name: "#68 replacement trace: use the candidate's 0.5 s scheduler horizon",
+    from: "this.preroll=0.2;",
+    to: "this.preroll=0.5;",
+  }]),
+};
 const { noteOn, noteOff } = H.midi;
 const meta = (tick, type, data) => ({ tick, bytes: [0xff, type, ...H.vlq(data.length), ...data] });
 const ascii = (str) => [...Buffer.from(str, "latin1")];
@@ -109,9 +119,9 @@ test.describe("valid files parse exactly as the baseline parser", () => {
     });
   }
 
-  test("replacing a playing song makes the same WebAudio calls and state", () => {
+  test("replacing a playing song makes the same WebAudio calls and state at a matched horizon", () => {
     for (const file of [parityFiles[0], parityFiles.find((f) => f.name.startsWith("consumer"))]) {
-      const [ref, ...forks] = all.map((v) => {
+      const [ref, ...forks] = [REPLACEMENT_REFERENCE, ...builds].map((v) => {
         const s = playing(v);
         const r = { load: load(s, file.bytes), state: H.playbackState(s.synth) };
         delete r.state.loopEnd; // a fork property (setLoopEnd) that upstream lacks
