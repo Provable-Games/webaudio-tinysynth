@@ -1,6 +1,6 @@
 # Improvement status
 
-Supervisor-owned. After a context reset, read this file, then [contracts.md](contracts.md), then the newest entries of [decisions.md](decisions.md).
+Supervisor-owned. **On 2026-10-06 supervision passed to a GPT-6.1 Sol supervisor: start with [HANDOVER.md](HANDOVER.md).** After a context reset, read this file, then [contracts.md](contracts.md), then the newest entries of [decisions.md](decisions.md).
 
 ## After every merge into improve/integration (supervisor checklist, D-040)
 
