@@ -106,6 +106,7 @@ jobs:
           name: browser-results-${{ matrix.engine }}-${{ matrix.shard }}
           path: |
             ${{ runner.temp }}/browser-matrix/results.json
+            ${{ runner.temp }}/browser-matrix/full-mix/*.wav
             ${{ runner.temp }}/browser-observe/results.json
           if-no-files-found: warn
           retention-days: 7
@@ -167,6 +168,11 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - name: Build the aggregate checkout's source and minified identities
+        run: node scripts/test-build.js
       # A shard that uploaded nothing is reported by the next step.
       - name: Download the shards' results
         continue-on-error: true
@@ -175,7 +181,7 @@ jobs:
           pattern: browser-results-*
           path: ${{ runner.temp }}/results
       - name: Every engine ran every declared spec once, and every case passed
-        run: node scripts/browser-matrix.js --merge="$RUNNER_TEMP/results"
+        run: node scripts/browser-matrix.js --merge="$RUNNER_TEMP/results" --expected-context=github
       - name: Every shard and demos job passed
         if: ${{ !cancelled() }}
         env:

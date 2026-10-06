@@ -46,15 +46,214 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const crypto = require("crypto");
 const { runWithDeadline, describeFailure } = require("./run-with-deadline");
+const browserToolchainSpec = require("./browser-toolchain");
 const { MATRIX } = require("../tests/browser/matrix");
 const analysis = require("../tests/browser/lib/analysis");
+const { SEED_EXPECTED } = require("../tests/browser/specs/seed-expected");
+const fullMixSpec = require("../tests/browser/specs/full-mix");
+const FULL_MIX_CASES = new Map(fullMixSpec.expectedCases().map((c) => [c.id, c]));
 
 const ROOT = path.resolve(__dirname, "..");
 const SPEC_DIR = path.join(ROOT, "tests", "browser", "specs");
+const PROVENANCE_SCHEMA = 2;
+const PROVENANCE_CONTEXT_FIELDS = ["repository", "workflowRef", "eventName", "runId", "runAttempt", "testedSha"];
+const RENDER_BUFFER_SHA_OBSERVATION = "generated buffer SHA-256 (first reverb-enabled attempt)";
+const RENDER_BUFFER_SHA_METHOD = "sha256-f32le-planar-channel-order-v1";
+const RENDER_BUFFER_SHA_PRODUCER = "node-crypto-after-browser-byte-transfer";
+const RENDER_BUFFER_SHA_ENCODING = "IEEE-754 binary32 little-endian; planar channel-index order; sample bytes only";
+const REVERB_CAPTURE_TIMBRES = [[0, 0, [{ w: "sine", t: 0, f: 300, v: 0.5, a: 0, h: 0.01, d: 0, s: 1, r: 0.01, p: 1, q: 1, k: 0 }]]];
+const REVERB_CAPTURE_STEPS = [
+  { call: "noteOn", args: [0, 69, 100, 0.5] },
+  { call: "noteOff", args: [0, 69, 0.8] },
+];
+
+function sha256(data) {
+  return crypto.createHash("sha256").update(data).digest("hex");
+}
+
+function sha256File(file) {
+  return sha256(fs.readFileSync(file));
+}
+
+function resolveBrowserToolchain(env = process.env) {
+  return browserToolchainSpec.resolveBrowserToolchain(env, ROOT);
+}
+
+function browserBundle(toolchain, engine) {
+  return browserToolchainSpec.engineBundle(toolchain, engine);
+}
+
+/* A run identity comes from GitHub's protected runner environment, or an explicit local context file. */
+function githubContext(env = process.env) {
+  return {
+    repository: env.GITHUB_REPOSITORY || "",
+    workflowRef: env.GITHUB_WORKFLOW_REF || "",
+    eventName: env.GITHUB_EVENT_NAME || "",
+    runId: env.GITHUB_RUN_ID || "",
+    runAttempt: env.GITHUB_RUN_ATTEMPT || "",
+    testedSha: env.GITHUB_SHA || "",
+  };
+}
+
+function validateContext(context, label) {
+  const missing = PROVENANCE_CONTEXT_FIELDS.filter((key) => typeof context[key] !== "string" || !context[key].trim());
+  if (missing.length) throw new Error(label + " is missing " + missing.join(", "));
+  if (!/^[a-f0-9]{40,64}$/i.test(context.testedSha)) throw new Error(label + " testedSha must be a full Git object ID");
+  if (!/^\d+$/.test(context.runAttempt) || Number(context.runAttempt) < 1) throw new Error(label + " runAttempt must be a positive integer");
+  return Object.fromEntries(PROVENANCE_CONTEXT_FIELDS.map((key) => [key, context[key]]));
+}
+
+function readContextFile(file, label) {
+  let value;
+  try { value = JSON.parse(fs.readFileSync(file, "utf8")); } catch (e) { throw new Error(label + " is unreadable: " + e.message, { cause: e }); }
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(label + " must be a JSON object");
+  return validateContext(value, label);
+}
+
+/* Fingerprint the executable browser test surface and its pinned toolchain. */
+function matrixConfigSha256() {
+  const files = [
+    ".github/workflows/browser-matrix.yml",
+    "package.json",
+    "package-lock.json",
+    "scripts/browser-matrix.js",
+    "scripts/browser-toolchain.js",
+    "scripts/reanalyze-fullmix-v6.js",
+    "scripts/test-build.js",
+  ];
+  const collect = (dir) => {
+    for (const entry of fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true })) {
+      const rel = path.posix.join(dir, entry.name);
+      if (entry.isDirectory()) collect(rel);
+      else if (entry.isFile()) files.push(rel);
+    }
+  };
+  collect("tests/browser");
+  collect("tests/fixtures/consumer");
+  files.push("ws.mid");
+  const unique = [...new Set(files)].sort();
+  const h = crypto.createHash("sha256");
+  for (const rel of unique) {
+    h.update(rel);
+    h.update("\0");
+    h.update(fs.readFileSync(path.join(ROOT, rel)));
+    h.update("\0");
+  }
+  const declaredReference = path.join(SPEC_DIR, "full-mix-reference.json");
+  const activeReference = path.resolve(fullMixSpec.REFERENCE_FILE);
+  if (activeReference !== declaredReference) {
+    h.update("external full-mix reference\0");
+    h.update(fs.readFileSync(activeReference));
+    h.update("\0");
+  }
+  return h.digest("hex");
+}
+
+function buildSha256(overrides = {}) {
+  const testBuild = require("./test-build");
+  const source = overrides.source || path.join(ROOT, "webaudio-tinysynth.js");
+  const min = overrides.min || testBuild.existingMinPath();
+  return { source: sha256File(source), min: sha256File(min) };
+}
+
+function reportProvenance(o, engines, context = null) {
+  const selection = selectedSpecs(o);
+  const kinds = [...new Set(selection.map((spec) => MATRIX.specs[spec].kind))];
+  const identity = context ? validateContext(context, "run context") : githubContext();
+  return {
+    schemaVersion: PROVENANCE_SCHEMA,
+    ...identity,
+    matrixConfigSha256: matrixConfigSha256(),
+    engine: engines.length === 1 ? engines[0] : null,
+    shard: o.shard ? { index: o.shard.k, total: o.shard.n } : null,
+    selection: { kind: kinds.length === 1 ? kinds[0] : "mixed", seed: o.seed, specs: selection },
+    buildSha256: buildSha256(o.overrides),
+    browserToolchain: resolveBrowserToolchain(),
+  };
+}
+
+function caseManifest(engine, specs) {
+  const shared = { matrix: MATRIX, engine, version: "manifest", options: { seed: MATRIX.seed, overrides: {} } };
+  const out = [];
+  for (const spec of specs) {
+    const mod = require(path.join(SPEC_DIR, spec + ".js"));
+    const cases = mod.cases(shared);
+    if (!Array.isArray(cases) || !cases.length) throw new Error("spec " + spec + " produced no declared cases");
+    for (const c of cases) out.push({ id: c.id, spec, kind: c.kind || MATRIX.specs[spec].kind, dims: c.dims || {} });
+  }
+  return out;
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) return "[" + value.map(stableJson).join(",") + "]";
+  if (value && typeof value === "object") {
+    return "{" + Object.keys(value).sort().map((key) => JSON.stringify(key) + ":" + stableJson(value[key])).join(",") + "}";
+  }
+  return JSON.stringify(value);
+}
+
+function isRecord(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+/* Validate the exact first-attempt probe that creates all three buffers. */
+function renderBufferShaProblems(c, observation, where) {
+  const problems = [];
+  const add = (message) => problems.push(where + " " + message);
+  if (!isRecord(observation)) return [where + " is missing generated-buffer SHA-256 evidence"];
+  if (observation.schemaVersion !== 1 || observation.method !== RENDER_BUFFER_SHA_METHOD ||
+      observation.producer !== RENDER_BUFFER_SHA_PRODUCER ||
+      observation.encoding !== RENDER_BUFFER_SHA_ENCODING || observation.scenarioId !== "reverb" ||
+      observation.attempt !== 1 || observation.firstAttempt !== true)
+    add("has malformed generated-buffer SHA-256 method or first-attempt metadata");
+  const rate = c.dims && c.dims.sampleRate;
+  const quality = c.dims && c.dims.quality;
+  const expectedSettings = {
+    seed: MATRIX.seed, sampleRate: rate, quality, options: { quality, useReverb: 1 },
+    masterVol: 0.05, reverbLev: null, durationSec: 1.6,
+    timbres: REVERB_CAPTURE_TIMBRES,
+    steps: REVERB_CAPTURE_STEPS,
+    activeProbe: {
+      channel: 0, program: 0, pitch: 69, velocity: 100, onsetSec: 0.5,
+      offChannel: 0, offPitch: 69, offSec: 0.8, timbre: REVERB_CAPTURE_TIMBRES[0][2],
+    },
+  };
+  if (!isRecord(observation.settings) || stableJson(Object.keys(observation.settings).sort()) !== stableJson(["min", "source"]) ||
+      stableJson(observation.settings.source) !== stableJson(expectedSettings) ||
+      stableJson(observation.settings.min) !== stableJson(expectedSettings))
+    add("has missing, stale or mismatched active reverb-probe settings");
+  if (!isRecord(observation.builds) || stableJson(Object.keys(observation.builds).sort()) !== stableJson(["min", "source"])) {
+    add("is missing source/min generated-buffer SHA-256 results");
+    return problems;
+  }
+  const frames = Number.isSafeInteger(rate) ? Math.floor(rate * 0.5) : -1;
+  const validBufferSet = (build) => isRecord(build) &&
+    stableJson(Object.keys(build).sort()) === stableJson(["convBuf", "n0", "n1"]) &&
+    [["convBuf", 2], ["n0", 1], ["n1", 1]].every(([name, channels]) => {
+      const row = build[name];
+      return isRecord(row) && stableJson(Object.keys(row).sort()) === stableJson(["channels", "frames", "sha256"]) &&
+        typeof row.sha256 === "string" && /^[a-f0-9]{64}$/.test(row.sha256) &&
+        row.channels === channels && row.frames === frames;
+    });
+  if (!validBufferSet(observation.builds.source)) add("source build has missing, null or malformed Float32 buffer SHA-256 data");
+  if (!validBufferSet(observation.builds.min)) add("fresh-min build has missing, null or malformed Float32 buffer SHA-256 data");
+  if (validBufferSet(observation.builds.source) && validBufferSet(observation.builds.min) &&
+      stableJson(observation.builds.source) !== stableJson(observation.builds.min))
+    add("source/min generated-buffer SHA-256 measurements disagree");
+  const expected = Number.isSafeInteger(rate) && SEED_EXPECTED.hashes[rate] && SEED_EXPECTED.hashes[rate][MATRIX.seed];
+  if (expected && validBufferSet(observation.builds.source)) {
+    for (const name of ["convBuf", "n0", "n1"]) {
+      if (observation.builds.source[name].sha256 !== expected[name])
+        add("source generated-buffer SHA-256 differs from the independent seeded expectation for " + name);
+    }
+  }
+  return problems;
+}
 
 function parseArgs(argv) {
-  const o = { engines: null, specs: null, observe: false, seed: MATRIX.seed, overrides: {}, out: null, list: false, engine: null, results: null, orchestrator: false, shard: null, merge: null };
+  const o = { engines: null, specs: null, observe: false, seed: MATRIX.seed, overrides: {}, out: null, list: false, engine: null, results: null, orchestrator: false, shard: null, merge: null, runContext: null, expectedContext: null };
   // A list option must name at least one entry: "--engines=," or "--specs=" would
   // otherwise select nothing and pass without running a browser.
   const list = (name, value) => {
@@ -80,6 +279,8 @@ function parseArgs(argv) {
       if (!(o.shard.n >= 1 && o.shard.k >= 1 && o.shard.k <= o.shard.n)) throw new Error("--shard=K/N needs 1 <= K <= N");
     }
     else if ((m = /^--merge=(.+)$/.exec(a))) o.merge = path.resolve(m[1]);
+    else if ((m = /^--run-context=(.+)$/.exec(a))) o.runContext = path.resolve(m[1]);
+    else if ((m = /^--expected-context=(.+)$/.exec(a))) o.expectedContext = m[1] === "github" ? "github" : path.resolve(m[1]);
     else if ((m = /^--engine=(.+)$/.exec(a))) o.engine = m[1];
     else if ((m = /^--results=(.+)$/.exec(a))) o.results = path.resolve(m[1]);
     else if (a === "--orchestrator") o.orchestrator = true;
@@ -87,6 +288,7 @@ function parseArgs(argv) {
   }
   for (const e of [...(o.engines || []), ...(o.engine ? [o.engine] : [])]) if (!MATRIX.engines.includes(e)) throw new Error("engine " + e + " is not declared in tests/browser/matrix.js");
   for (const s of o.specs || []) if (!MATRIX.specs[s]) throw new Error("spec " + s + " is not declared in tests/browser/matrix.js");
+  if (o.merge && !o.expectedContext) throw new Error("--merge requires --expected-context=github or an explicit JSON context file");
   return o;
 }
 
@@ -145,7 +347,9 @@ async function worker(o) {
   const engine = o.engine;
   const out = o.out ? path.join(o.out, engine) : null;
   if (out) fs.mkdirSync(out, { recursive: true });
-  const results = { engine, version: null, launchError: null, cases: [], relaunches: 0, seed: o.seed, overrides: o.overrides, platform: process.platform + "-" + process.arch };
+  const toolchain = resolveBrowserToolchain();
+  const results = { engine, version: null, launchError: null, cases: [], relaunches: 0, seed: o.seed, overrides: o.overrides,
+    platform: process.platform + "-" + process.arch, browserBundle: browserBundle(toolchain, engine) };
   const save = () => { if (o.results) fs.writeFileSync(o.results, JSON.stringify(results, null, 1)); };
   const session = new EngineSession({ engine, playwright, out });
   try {
@@ -157,6 +361,14 @@ async function worker(o) {
     return 1;
   }
   results.version = session.version;
+  if (session.version !== results.browserBundle.browserVersion) {
+    results.launchError = "reported browser version " + session.version + " differs from pinned " + results.browserBundle.bundleId +
+      " version " + results.browserBundle.browserVersion;
+    save();
+    console.log("FAIL: " + engine + " " + results.launchError);
+    await session.closeBrowser();
+    return 1;
+  }
   console.log("== " + engine + " " + session.version + " (" + results.platform + ")");
   const server = await startServer({ overrides: o.overrides });
   const shared = { options: o, server, matrix: MATRIX, engine, version: session.version, out };
@@ -213,7 +425,7 @@ function summarize(all, o) {
   for (const [engine, r] of Object.entries(all)) {
     let line = "  " + (engine + " " + (r.version || "")).padEnd(30);
     if (!r.version) {
-      console.log(line + "NOT LAUNCHED: " + (r.launchError || r.failure || "no results").split("\n")[0]);
+      console.log(line + "NOT LAUNCHED: " + String(r.launchError || r.failure || "no results").split("\n")[0]);
       continue;
     }
     for (const s of specs) {
@@ -236,29 +448,66 @@ function summarize(all, o) {
  */
 function crossEngine(all) {
   const { DEFAULT } = require("../tests/browser/tolerances");
-  const engines = Object.keys(all).filter((e) => all[e].version && all[e].cases.some((c) => c.spec === "render"));
+  const engines = MATRIX.engines.filter((e) => all[e] && all[e].version && all[e].cases.some((c) => c.spec === "render"));
   const checks = [];
   if (engines.length < 2) return checks;
-  const ids = all[engines[0]].cases.filter((c) => c.spec === "render").map((c) => c.id);
+  const ids = [...new Set(engines.flatMap((e) => all[e].cases.filter((c) => c.spec === "render").map((c) => c.id)))].sort();
   for (const id of ids) {
-    const cs = engines.map((e) => all[e].cases.find((c) => c.id === id)).filter(Boolean);
-    if (cs.length !== engines.length) continue;
-    const ms = cs.map((c) => c.observations.measurements || {});
-    const bufs = cs.map((c) => JSON.stringify(c.observations["generated buffer hashes (convBuf, n0, n1)"]));
-    checks.push({ name: id + ": generated buffers identical across engines", ok: new Set(bufs).size === 1, detail: bufs[0] });
-    let worst = 0, where = "";
-    for (const k of Object.keys(ms[0]).filter((k) => k.startsWith("gm-") && ms.every((m) => m[k] && m[k].rms))) {
-      ms[0][k].rms.forEach((_, i) => {
-        const v = ms.map((m) => 20 * Math.log10(Number(m[k].rms[i])));
+    const cs = engines.map((e) => all[e].cases.find((c) => c.id === id));
+    if (cs.some((c) => !c)) {
+      checks.push({ name: id + ": render case present in every engine", ok: false, detail: engines.filter((e, i) => !cs[i]).join(", ") + " missing" });
+      continue;
+    }
+    const ms = cs.map((c) => c.observations && c.observations.measurements);
+    const bufferValues = cs.map((c) => c.observations && c.observations[RENDER_BUFFER_SHA_OBSERVATION]);
+    const bufferProblems = cs.flatMap((c, i) => renderBufferShaProblems(c, bufferValues[i], engines[i] + " " + id));
+    const hashLists = bufferValues.map((b) => isRecord(b) ? stableJson(b) : null);
+    const hashesMatch = hashLists.every(Boolean) && new Set(hashLists).size === 1;
+    checks.push({ name: id + ": actual generated-buffer SHA-256 matches across builds and engines",
+      ok: !bufferProblems.length && hashesMatch,
+      detail: bufferProblems.length ? bufferProblems.slice(0, 5).join("; ") : hashesMatch ? stableJson(bufferValues[0]) : "source/min/generated-buffer SHA-256 metadata differs across engines" });
+    const groups = ["gm-programs-0-31", "gm-programs-32-63", "gm-programs-64-95", "gm-programs-96-127", "gm-drums"];
+    let worst = 0, where = "", complete = ms.every(isRecord);
+    const malformed = [];
+    const overFullScale = [];
+    const slots = [32, 32, 32, 32, 47];
+    for (let gi = 0; gi < groups.length; ++gi) {
+      const group = groups[gi];
+      const arrays = ms.map((m) => m && m[group] && m[group].rms);
+      const peaks = ms.map((m) => m && m[group] && m[group].peaks);
+      const validRms = (xs) => Array.isArray(xs) && xs.length === slots[gi] &&
+        xs.every((v) => typeof v === "number" && Number.isFinite(v) && v > 0 && v <= 1);
+      const validPeaks = (xs) => Array.isArray(xs) && xs.length === slots[gi] &&
+        xs.every((v) => typeof v === "number" && Number.isFinite(v) && v > 0);
+      if (!arrays.every(validRms) || !peaks.every(validPeaks)) {
+        complete = false;
+        if (!arrays.every(validRms)) malformed.push(group + " RMS");
+        if (!peaks.every(validPeaks)) malformed.push(group + " peak");
+        continue;
+      }
+      peaks.forEach((values, engineIndex) => values.forEach((value, slot) => {
+        if (value > 1) overFullScale.push(engines[engineIndex] + " " + id + " " + group + " slot " + slot + " = " + value);
+      }));
+      arrays[0].forEach((_, i) => {
+        const v = arrays.map((a) => 20 * Math.log10(Number(a[i])));
         const d = Math.max(...v) - Math.min(...v);
-        if (d > worst) { worst = d; where = k + " slot " + i; }
+        if (!Number.isFinite(d)) complete = false;
+        if (d > worst) { worst = d; where = group + " slot " + i; }
       });
     }
-    checks.push({ name: id + ": GM per-slot energy spread <= " + DEFAULT.crossEngineDb.compressed + " dB (default level)", ok: worst <= DEFAULT.crossEngineDb.compressed, detail: worst.toFixed(3) + " dB at " + where });
-    const mk = ms.map((m) => m.linearity && m.linearity.makeup).filter(Number.isFinite);
-    if (mk.length === ms.length) {
+    checks.push({ name: id + ": GM per-slot energy spread <= " + DEFAULT.crossEngineDb.compressed + " dB (default level)",
+      ok: complete && !overFullScale.length && worst <= DEFAULT.crossEngineDb.compressed,
+      detail: !complete ? "missing, null or malformed GM measurements: " + malformed.join(", ")
+        : overFullScale.length ? "over-full-scale render peak " + overFullScale.slice(0, 5).join("; ")
+          : worst.toFixed(3) + " dB at " + where });
+    const mk = ms.map((m) => m && m.linearity && m.linearity.makeup);
+    const ratios = ms.map((m) => m && m.linearity && m.linearity.ratio);
+    if (!mk.every((v) => typeof v === "number" && Number.isFinite(v) && v > 0) ||
+        !ratios.every((v) => typeof v === "number" && Number.isFinite(v) && v > 0)) {
+      checks.push({ name: id + ": linear-level gain observation present", ok: false, detail: "missing, null or non-positive makeup gain" });
+    } else {
       const d = 20 * Math.log10(Math.max(...mk) / Math.min(...mk));
-      checks.push({ name: id + ": linear-level gain spread <= " + DEFAULT.crossEngineDb.linear + " dB", ok: d <= DEFAULT.crossEngineDb.linear, detail: d.toFixed(4) + " dB" });
+      checks.push({ name: id + ": linear-level gain spread <= " + DEFAULT.crossEngineDb.linear + " dB", ok: Number.isFinite(d) && d <= DEFAULT.crossEngineDb.linear, detail: d.toFixed(4) + " dB" });
     }
   }
   return checks;
@@ -288,6 +537,11 @@ function stepSummary(all, cross, o, status) {
 
 async function orchestrate(o) {
   if (o.merge) return merge(o);
+  let runContext = null;
+  if (o.runContext) {
+    try { runContext = readContextFile(o.runContext, "--run-context"); }
+    catch (e) { console.log("FAIL: " + e.message); return 1; }
+  }
   printMatrix(o);
   if (o.list) return 0;
   if (o.shard && !selectedSpecs(o).length) {
@@ -329,9 +583,10 @@ async function orchestrate(o) {
     all[engine] = res;
   }
   const cross = crossEngine(all);
-  all.crossEngine = cross;
-  if (o.out) fs.writeFileSync(path.join(o.out, "results.json"), JSON.stringify(all, null, 1));
-  delete all.crossEngine;
+  if (o.out) {
+    const report = Object.assign({ matrixRun: reportProvenance(o, engines, runContext) }, all, { crossEngine: cross });
+    fs.writeFileSync(path.join(o.out, "results.json"), JSON.stringify(report, null, 1));
+  }
   fs.rmSync(tmp, { recursive: true, force: true });
   summarize(all, o);
   if (cross.length) {
@@ -356,50 +611,486 @@ async function orchestrate(o) {
 
 /* ---------------- merge: the shards of a CI run, checked together ---------------- */
 
+function expectedContextForMerge(o) {
+  if (o.expectedContext === "github") return validateContext(githubContext(), "GitHub expected context");
+  return readContextFile(o.expectedContext, "--expected-context");
+}
+
+function expectedShardSteps(index) {
+  const specs = shardLayout(MATRIX.shards)[index - 1].specs;
+  return {
+    "browser-matrix": specs.filter((s) => MATRIX.specs[s].kind === "assert"),
+    "browser-observe": specs.filter((s) => MATRIX.specs[s].kind === "observe"),
+  };
+}
+
+function expectedResultPaths() {
+  const paths = new Map();
+  for (const engine of MATRIX.engines) for (let index = 1; index <= MATRIX.shards; ++index) {
+    for (const [step, specs] of Object.entries(expectedShardSteps(index))) {
+      if (!specs.length) continue;
+      const rel = path.posix.join("browser-results-" + engine + "-" + index, step, "results.json");
+      paths.set(rel, { engine, index, step, specs });
+    }
+  }
+  return paths;
+}
+
+function validateFiniteNumbers(value, where, problems) {
+  if (typeof value === "number" && !Number.isFinite(value)) problems.push(where + " contains a non-finite number");
+  else if (Array.isArray(value)) value.forEach((x, i) => validateFiniteNumbers(x, where + "[" + i + "]", problems));
+  else if (value && typeof value === "object")
+    for (const [key, x] of Object.entries(value)) validateFiniteNumbers(x, where + "." + key, problems);
+}
+
+function finiteNumber(value) { return typeof value === "number" && Number.isFinite(value); }
+
+function readFloatStereoWav(file, expectedSampleRate, expectedFrames) {
+  const stat = fs.lstatSync(file);
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("raw WAV must be a regular file");
+  if (!Number.isSafeInteger(expectedFrames) || expectedFrames < 1 || stat.size !== 44 + expectedFrames * 8)
+    throw new Error("raw WAV byte length does not match the exact expected frame count");
+  const bytes = fs.readFileSync(file);
+  if (bytes.length < 52 || bytes.toString("ascii", 0, 4) !== "RIFF" || bytes.toString("ascii", 8, 12) !== "WAVE" ||
+      bytes.readUInt32LE(4) !== bytes.length - 8 || bytes.toString("ascii", 12, 16) !== "fmt " ||
+      bytes.readUInt32LE(16) !== 16 || bytes.readUInt16LE(20) !== 3 || bytes.readUInt16LE(22) !== 2 ||
+      bytes.readUInt32LE(24) !== expectedSampleRate || bytes.readUInt32LE(28) !== expectedSampleRate * 8 ||
+      bytes.readUInt16LE(32) !== 8 ||
+      bytes.readUInt16LE(34) !== 32 || bytes.toString("ascii", 36, 40) !== "data" ||
+      bytes.readUInt32LE(40) !== bytes.length - 44 || (bytes.length - 44) % 8 !== 0 ||
+      (bytes.length - 44) / 8 !== expectedFrames)
+    throw new Error("raw artifact is not a complete IEEE-float stereo WAV at the required sample rate");
+  const frames = (bytes.length - 44) / 8;
+  const channels = [new Float32Array(frames), new Float32Array(frames)];
+  for (let i = 0; i < frames; ++i) {
+    channels[0][i] = bytes.readFloatLE(44 + i * 8);
+    channels[1][i] = bytes.readFloatLE(48 + i * 8);
+  }
+  return { bytes, channels };
+}
+
+function validateFullMixCase(engine, browserVersion, platform, currentBundle, rel, resultFile, c, expected, problems) {
+  const where = rel + ": " + engine + " / " + (c && c.id || "<malformed full-mix case>");
+  const obs = c && c.observations && c.observations.fullMix;
+  if (!obs || typeof obs !== "object" || Array.isArray(obs)) { problems.push(where + " is missing fullMix evidence"); return; }
+  if (!expected) { problems.push(where + " is not in the declared full-mix manifest"); return; }
+  const fixture = fullMixSpec.FIXTURE_BY_ID[expected.fixtureId];
+  const expectedTop = {
+    schemaVersion: 2, scope: "fixture", qualification: "fixture-only-no-production-approval",
+    fixtureId: expected.fixtureId, profileKind: expected.profileKind, sampleRate: expected.sampleRate,
+    quality: 1, engine, browserVersion, midiSha256: expected.midiSha256,
+    setupSha256: expected.setupSha256, settingsSha256: expected.settingsSha256,
+    probePlanSha256: expected.probePlanSha256, methodSha256: expected.methodSha256,
+    toleranceSha256: expected.toleranceSha256, playbackOriginSec: fullMixSpec.ORIGIN,
+    firstAttempt: true, captureEligiblePreBaseline: true, status: "pass",
+  };
+  for (const [key, value] of Object.entries(expectedTop))
+    if (obs[key] !== value) problems.push(where + " fullMix " + key + " is missing or mismatched");
+  if (!fixture) { problems.push(where + " has an unknown full-mix fixture"); return; }
+  if (c.status !== "pass") problems.push(where + " full-mix case status is not pass");
+  if (!obs.noteTiming || obs.noteTiming.complete !== fixture.timingComplete ||
+      obs.noteTiming.unmatchedNoteOffs !== fixture.unmatchedNoteOffs ||
+      obs.noteTiming.unpitchedOneShotCount !== fixture.unpitchedOneShotCount ||
+      obs.noteTiming.ambiguousPairings !== fixture.notes.filter((n) => n.pairingAmbiguous).length ||
+      obs.noteTiming.durationUnknown !== fixture.notes.filter((n) => n.durationSec === null).length)
+    problems.push(where + " note timing provenance differs from independent MIDI decoding");
+  const demand = obs.voiceDemand;
+  if (!demand || demand.noteOnCount !== fixture.notes.length || demand.maxKnownSimultaneousNotes !== fixture.maxKnownSimultaneous ||
+      demand.liveBudget !== fixture.liveVoices || demand.offlineCeiling !== fixture.offlineVoices ||
+      demand.offlineCeilingDerivation !== "all independently parsed fixture note-ons (including drums) + two appended probe note-ons + one spare; not the live/realtime budget")
+    problems.push(where + " offline/live voice demand does not match independent fixture demand");
+  const builds = obs.builds;
+  if (!builds || typeof builds !== "object" || Array.isArray(builds) || stableJson(Object.keys(builds).sort()) !== stableJson(["min", "source"])) {
+    problems.push(where + " fullMix must contain source and min first-attempt subresults");
+    return;
+  }
+  const referenceForCase = fullMixSpec.REFERENCE && fullMixSpec.REFERENCE.engines && fullMixSpec.REFERENCE.engines[engine] &&
+    fullMixSpec.REFERENCE.engines[engine][expected.fixtureId] && fullMixSpec.REFERENCE.engines[engine][expected.fixtureId][expected.sampleRate];
+  const refTolerances = fullMixSpec.REFERENCE && fullMixSpec.REFERENCE.tolerances;
+  if (!referenceForCase || !refTolerances) problems.push(where + " has no measured engine-specific reference/tolerance policy");
+  if (referenceForCase && referenceForCase.metadata) {
+    const metadata = referenceForCase.metadata;
+    const expectedReferenceMetadata = {
+      scope: "fixture", fixtureId: expected.fixtureId, profileKind: expected.profileKind, quality: 1,
+      engine, browserVersion, platform, sampleRate: expected.sampleRate,
+      browserBundle: currentBundle,
+      midiSha256: expected.midiSha256, setupSha256: expected.setupSha256,
+      settingsSha256: expected.settingsSha256, probePlanSha256: expected.probePlanSha256,
+      methodSha256: expected.methodSha256, toleranceSha256: expected.toleranceSha256,
+      playbackOriginSec: fullMixSpec.ORIGIN,
+    };
+    for (const [key, value] of Object.entries(expectedReferenceMetadata)) {
+      const same = value && typeof value === "object"
+        ? stableJson(metadata[key]) === stableJson(value)
+        : metadata[key] === value;
+      if (!same) problems.push(where + " measured reference " + key + " is stale or mismatched");
+    }
+  }
+  const expectedNotes = new Map(fixture.notes.map((n) => [n.id, n]));
+  const parsedBuilds = {};
+
+  const readArtifact = (artifact, build, attempt, row, label, diagnosticOnly = false) => {
+    const at = where + " " + build + " " + label;
+    const suffix = attempt === 1 ? "first" : "diagnostic-repeat";
+    const expectedRel = path.posix.join("full-mix", expected.fixtureId + "-q1-" + expected.sampleRate + "-" + build + "-" + suffix + ".wav");
+    if (!artifact || artifact.path !== expectedRel || artifact.saved !== true ||
+        typeof artifact.sha256 !== "string" || !/^[a-f0-9]{64}$/i.test(artifact.sha256) ||
+        typeof artifact.pcmSha256 !== "string" || !/^[a-f0-9]{64}$/i.test(artifact.pcmSha256) ||
+        !Number.isSafeInteger(artifact.bytes) || artifact.bytes < 52 || artifact.sampleRate !== expected.sampleRate ||
+        artifact.channels !== 2 || artifact.encoding !== "WAVE_FORMAT_IEEE_FLOAT") {
+      problems.push(at + " raw float32 stereo artifact reference is missing or mismatched");
+      return null;
+    }
+    const base = path.dirname(resultFile), rawFile = path.resolve(base, artifact.path);
+    if (!rawFile.startsWith(base + path.sep)) { problems.push(at + " raw artifact path escapes its shard artifact"); return null; }
+    let raw;
+    try {
+      const expectedFrames = Math.ceil(fixture.renderDurationSec * expected.sampleRate);
+      raw = readFloatStereoWav(rawFile, expected.sampleRate, expectedFrames);
+    }
+    catch (e) { problems.push(at + " raw audio artifact is missing or invalid: " + e.message); return null; }
+    if (raw.bytes.length !== artifact.bytes || sha256(raw.bytes) !== artifact.sha256)
+      problems.push(at + " raw audio artifact byte count/hash differs");
+    const pcmSha256 = sha256(Buffer.concat(raw.channels.map((x) => Buffer.from(x.buffer, x.byteOffset, x.byteLength))));
+    if (pcmSha256 !== artifact.pcmSha256) problems.push(at + " raw planar-channel PCM hash does not match the recorded float samples");
+    const pcmChannelsSha256 = raw.channels.map((x) => sha256(Buffer.from(x.buffer, x.byteOffset, x.byteLength)));
+    if (Array.isArray(row.pcmSha256) && stableJson(row.pcmSha256) !== stableJson(pcmChannelsSha256))
+      problems.push(at + " per-channel PCM hashes do not match the raw WAV");
+    const finite = raw.channels.map((x) => analysis.nonFinite(x));
+    if (!diagnosticOnly && finite.some((x) => x.nan || x.inf)) problems.push(at + " raw Float32 PCM contains a non-finite sample");
+    if (!diagnosticOnly && raw.channels.some((x) => analysis.peak(x) > 1)) problems.push(at + " raw Float32 PCM contains an over-full-scale sample");
+    let recomputed;
+    try { recomputed = fullMixSpec.analyzeChannels(raw.channels, expected.sampleRate, fixture); }
+    catch (e) { problems.push(at + " native measurement recomputation failed: " + e.message); return { channels: raw.channels, metrics: null }; }
+    if (!row.metrics || stableJson(row.metrics) !== stableJson(recomputed))
+      problems.push(at + " report measurements differ from analysis recomputed from the raw artifact");
+    return { channels: raw.channels, metrics: recomputed };
+  };
+
+  for (const build of ["source", "min"]) {
+    const row = builds[build], at = where + " " + build;
+    if (!row || typeof row !== "object" || Array.isArray(row) || row.firstAttempt !== true || row.attempt !== 1 ||
+        row.result !== "pass" || row.preBaselineEligible !== true)
+      problems.push(at + " does not preserve an eligible passing first attempt");
+    const artifact = row && row.artifact;
+    const parsed = readArtifact(artifact, build, 1, row || {}, "first attempt");
+    if (parsed) parsedBuilds[build] = parsed;
+    if (!row || !row.metrics || typeof row.metrics !== "object" || Array.isArray(row.metrics)) {
+      problems.push(at + " metrics are missing");
+      continue;
+    }
+    if (parsed && parsed.metrics) {
+      const metrics = parsed.metrics;
+      for (const side of ["left", "right"]) {
+        const ch = metrics.channels[side];
+        if (ch.finite !== true || ch.nan !== 0 || ch.inf !== 0 || !finiteNumber(ch.fullRenderPeak) || ch.fullRenderPeak <= 0 ||
+            !finiteNumber(ch.fullRenderRms) || ch.fullRenderRms <= 0 || !finiteNumber(ch.songPeak) || ch.songPeak <= 0 ||
+            !finiteNumber(ch.songRms) || ch.songRms <= 0 || !Array.isArray(ch.windowLevels) || !ch.windowLevels.length)
+          problems.push(at + " has missing, non-finite, or silent " + side + " channel data");
+        for (const [i, w] of (ch.windowLevels || []).entries())
+          if (!w || !finiteNumber(w.startSec) || !finiteNumber(w.durationSec) || !finiteNumber(w.rms) || w.rms < 0 || !finiteNumber(w.levelDb))
+            problems.push(at + " " + side + " window " + i + " is malformed");
+      }
+      const overall = metrics.overall;
+      if (!overall || !finiteNumber(overall.rms) || overall.rms <= 0 || !finiteNumber(overall.rawRenderRms) || overall.rawRenderRms <= 0 ||
+          !finiteNumber(overall.peak) || overall.peak <= 0 || !Number.isSafeInteger(overall.overFullScaleSamples) || overall.overFullScaleSamples < 0 ||
+          !finiteNumber(overall.channelBalanceDb) || !finiteNumber(overall.rawRenderBalanceDb))
+        problems.push(at + " has missing, null, or malformed full-mix metrics");
+      else if (overall.overFullScaleSamples !== 0 || overall.peak > 1) problems.push(at + " contains an over-full-scale sample");
+
+      if (!Array.isArray(metrics.notes) || metrics.notes.length !== expected.expectedNoteIds.length ||
+          stableJson(metrics.notes.map((n) => n && n.id)) !== stableJson(expected.expectedNoteIds)) {
+        problems.push(at + " local mixed-bus feature rows differ from the independent MIDI manifest");
+      } else for (const note of metrics.notes) {
+        const want = note && expectedNotes.get(note.id);
+        if (!note || !want || note.channel !== want.channel || note.pitch !== want.pitch || note.program !== want.program ||
+            note.onsetSec !== want.onsetSec || note.durationSec !== want.durationSec || note.unpitched !== want.unpitched ||
+            note.overlapFeatureOnly !== true || !finiteNumber(note.windowRms) || note.windowRms < 0 || !finiteNumber(note.localPeak) || note.localPeak < 0 ||
+            !finiteNumber(note.windowStartSec) || !finiteNumber(note.windowDurationSec) || note.windowDurationSec <= 0)
+          problems.push(at + " local note-window feature is missing or mismatched: " + String(note && note.id));
+      }
+      const voiceRows = row.noteInstances;
+      if (!voiceRows || voiceRows.complete !== true || voiceRows.expectedCount !== expected.expectedNoteIds.length ||
+          voiceRows.createdCount !== expected.expectedNoteIds.length || !Array.isArray(voiceRows.rows) ||
+          voiceRows.rows.length !== expected.expectedNoteIds.length || !Array.isArray(voiceRows.extras) || voiceRows.extras.length !== 0 ||
+          !Array.isArray(voiceRows.prunedInstances) || voiceRows.prunedInstances.length !== 0 ||
+          stableJson(voiceRows.rows.map((x) => x && x.id)) !== stableJson(expected.expectedNoteIds) ||
+          voiceRows.rows.some((x) => !x || x.status !== "created" || x.sourceCount <= 0 || !Number.isSafeInteger(x.sourceCount)))
+        problems.push(at + " actual native voice/source creation, prune, or event mapping is incomplete");
+      const probeRows = row.probeInstances;
+      if (!probeRows || probeRows.complete !== true || probeRows.expectedCount !== expected.expectedPitchProbeIds.length ||
+          probeRows.createdCount !== expected.expectedPitchProbeIds.length || !Array.isArray(probeRows.rows) ||
+          probeRows.rows.length !== expected.expectedPitchProbeIds.length || !Array.isArray(probeRows.prunedInstances) ||
+          probeRows.prunedInstances.length !== 0 ||
+          stableJson(probeRows.rows.map((x) => x && x.id)) !== stableJson(expected.expectedPitchProbeIds) ||
+          probeRows.rows.some((x) => !x || x.status !== "created" || !Number.isSafeInteger(x.sourceCount) || x.sourceCount <= 0))
+        problems.push(at + " actual isolated-probe voice/source creation or prune evidence is incomplete");
+
+      const downbeat = metrics.downbeat;
+      if (!downbeat || downbeat.status !== "measured" || downbeat.noteId !== expected.downbeatNoteId ||
+          downbeat.expectedPitch !== expected.downbeatExpectedPitch || !finiteNumber(downbeat.targetHz) || downbeat.targetHz <= 0 ||
+          !finiteNumber(downbeat.bandRms) || downbeat.bandRms <= 0 || !finiteNumber(downbeat.leftBandRms) || downbeat.leftBandRms <= 0 ||
+          !finiteNumber(downbeat.rightBandRms) || downbeat.rightBandRms <= 0 || downbeat.channel !== "stereo")
+        problems.push(at + " fixed-target mixed-bus downbeat frequency-projection observation is missing or malformed");
+      const probes = metrics.probes;
+      if (!Array.isArray(probes) || probes.length !== expected.expectedPitchProbeIds.length ||
+          stableJson(probes.map((x) => x && x.id)) !== stableJson(expected.expectedPitchProbeIds))
+        problems.push(at + " isolated fixture-timbre probe list is incomplete or reordered");
+      else for (const probe of probes) {
+        if (!probe || probe.status !== "measured" || !finiteNumber(probe.expectedPitch) || !finiteNumber(probe.pitchCents) ||
+            Math.abs(probe.pitchCents) > fullMixSpec.PROBE_PITCH_LIMIT_CENTS ||
+            !finiteNumber(probe.spectralPeakToGlobalDb) || probe.spectralPeakToGlobalDb < -36 ||
+            !finiteNumber(probe.toneFractionDb) || probe.toneFractionDb < -12 || !finiteNumber(probe.onsetMs) ||
+            !finiteNumber(probe.levelRms) || probe.levelRms <= 0 || !Array.isArray(probe.envelope) || probe.envelope.length !== 40 ||
+            probe.envelope.some((x) => !finiteNumber(x) || x < 0))
+          problems.push(at + " isolated pitch/envelope probe is incomplete: " + String(probe && probe.id));
+      }
+      if (!finiteNumber(metrics.relativeProbeLevelDb) || !Array.isArray(metrics.isolation) ||
+          metrics.isolation.length !== expected.expectedPitchProbeIds.length ||
+          metrics.isolation.some((x) => !x || !finiteNumber(x.preProbeRms) || x.preProbeRms > 1e-5))
+        problems.push(at + " relative-level or post-song quiet-separation evidence is incomplete");
+      if (!metrics.transient || metrics.transient.noteId !== fixture.notes[0].id ||
+          !Array.isArray(metrics.transient.left) || !Array.isArray(metrics.transient.right) ||
+          metrics.transient.left.length !== metrics.transient.right.length ||
+          metrics.transient.left.some((x) => !finiteNumber(x) || x < 0) || metrics.transient.right.some((x) => !finiteNumber(x) || x < 0))
+        problems.push(at + " first-downbeat 1 ms onset/envelope evidence is missing");
+      if (referenceForCase && refTolerances) {
+        const drift = fullMixSpec.compareBuildToReference(metrics, referenceForCase[build].metrics, refTolerances);
+        if (drift.length) problems.push(at + " differs from the measured engine/build reference: " + drift.slice(0, 4).join(", "));
+      }
+    }
+
+    const diagnostic = row && row.diagnosticRepeat;
+    if (!diagnostic || diagnostic.attempt !== 2 || diagnostic.role !== "diagnostic-only" ||
+        diagnostic.neverPromotesFirstAttempt !== true || diagnostic.firstVerdict !== row.result ||
+        !["captured", "incomplete"].includes(diagnostic.result)) {
+      problems.push(at + " diagnostic repeat record is malformed or could promote/replace the first attempt");
+    } else if (diagnostic.result === "incomplete") {
+      if (typeof diagnostic.error !== "string" || !diagnostic.error)
+        problems.push(at + " incomplete diagnostic repeat must retain its error separately");
+    } else if (!diagnostic.sameEnginePcm || typeof diagnostic.sameEnginePcm !== "object" || Array.isArray(diagnostic.sameEnginePcm) ||
+        typeof diagnostic.sameEnginePcm.ok !== "boolean" ||
+        !["identical", "summation", "mismatch"].includes(diagnostic.sameEnginePcm.category) ||
+        !(finiteNumber(diagnostic.sameEnginePcm.maxDiff) || diagnostic.sameEnginePcm.maxDiff === null) ||
+        !finiteNumber(diagnostic.sameEnginePcm.tolerance) ||
+        !Number.isSafeInteger(diagnostic.sameEnginePcm.firstDifferingSample) || !Array.isArray(diagnostic.sameEnginePcm.reasons) ||
+        diagnostic.sameEnginePcm.reasons.some((x) => typeof x !== "string") || !diagnostic.metrics) {
+      problems.push(at + " captured diagnostic repeat evidence is malformed");
+    } else {
+      const diagnosticParsed = readArtifact(diagnostic.artifact, build, 2, diagnostic, "diagnostic repeat", true);
+      if (diagnosticParsed && diagnosticParsed.metrics && parsed && parsed.metrics) {
+        if (stableJson(diagnostic.metrics) !== stableJson(diagnosticParsed.metrics))
+          problems.push(at + " diagnostic metrics differ from raw diagnostic PCM");
+        const repeatDiff = fullMixSpec.sameEnginePcm(parsed.channels, diagnosticParsed.channels, engine);
+        if (stableJson(diagnostic.sameEnginePcm) !== stableJson(repeatDiff))
+          problems.push(at + " diagnostic PCM comparison differs from raw first/repeat samples");
+      }
+    }
+  }
+
+  if (parsedBuilds.source && parsedBuilds.min && builds.source && builds.min) {
+    const sourceMin = fullMixSpec.sameEnginePcm(parsedBuilds.source.channels, parsedBuilds.min.channels, engine);
+    if (!sourceMin.ok || stableJson(obs.sourceMinPcmComparison) !== stableJson(sourceMin) ||
+        stableJson(builds.source.sourceMinPcmComparison) !== stableJson(sourceMin) ||
+        stableJson(builds.min.sourceMinPcmComparison) !== stableJson(sourceMin))
+      problems.push(where + " source/min first-attempt PCM differs beyond the measured same-engine tolerance or report");
+  }
+  if (!builds.source || !builds.min || !obs.rawArtifacts ||
+      stableJson(obs.rawArtifacts) !== stableJson({ source: builds.source.artifact, min: builds.min.artifact }))
+    problems.push(where + " raw first-attempt artifact references do not match the build subresults");
+  if (!obs.setupProvenance || stableJson(obs.setupProvenance) !== stableJson(expected.setupProvenance))
+    problems.push(where + " fixture setup provenance is missing or mismatched");
+}
+
+function validateCases(engine, rel, actual, expected, problems) {
+  if (!Array.isArray(actual)) {
+    problems.push(rel + ": " + engine + " cases must be an array");
+    return;
+  }
+  const expectedById = new Map(expected.map((c) => [c.id, c]));
+  const seen = new Set();
+  for (const c of actual) {
+    if (!c || typeof c !== "object" || typeof c.id !== "string" || !c.id) {
+      problems.push(rel + ": " + engine + " contains a malformed case record");
+      continue;
+    }
+    const where = rel + ": " + engine + " / " + c.id;
+    if (seen.has(c.id)) problems.push(where + " is duplicated");
+    seen.add(c.id);
+    const want = expectedById.get(c.id);
+    if (!want) {
+      problems.push(where + " is not declared by the current spec");
+      continue;
+    }
+    if (c.spec !== want.spec || c.kind !== want.kind || stableJson(c.dims || {}) !== stableJson(want.dims))
+      problems.push(where + " has a spec, kind or dimension mismatch");
+    if (!c.dims || typeof c.dims !== "object" || Array.isArray(c.dims))
+      problems.push(where + " dimensions must be an object");
+    if (typeof c.seconds !== "number" || !Number.isFinite(c.seconds) || c.seconds < 0)
+      problems.push(where + " seconds must be a finite non-negative number");
+    const statuses = want.kind === "assert" ? ["pass"] : ["pass", "observed"];
+    if (!statuses.includes(c.status)) problems.push(where + " has invalid status " + String(c.status));
+    if (!Array.isArray(c.checks)) problems.push(where + " checks must be an array");
+    else {
+      if (want.kind === "assert" && !c.checks.length) problems.push(where + " has no asserted checks");
+      for (const [i, check] of c.checks.entries()) {
+        if (!check || typeof check.name !== "string" || typeof check.ok !== "boolean" || typeof check.detail !== "string")
+          problems.push(where + " check " + i + " is malformed");
+        else if (!check.ok) problems.push(where + " failed check: " + check.name);
+      }
+    }
+    if (!c.observations || typeof c.observations !== "object" || Array.isArray(c.observations))
+      problems.push(where + " observations must be an object");
+    if (want.spec === "render") {
+      const observations = c.observations && typeof c.observations === "object" ? c.observations : {};
+      problems.push(...renderBufferShaProblems(c, observations[RENDER_BUFFER_SHA_OBSERVATION], engine + " " + c.id));
+      const m = observations.measurements;
+      const groups = ["gm-programs-0-31", "gm-programs-32-63", "gm-programs-64-95", "gm-programs-96-127", "gm-drums"];
+      if (!m || typeof m !== "object" || Array.isArray(m)) problems.push(where + " is missing render measurements");
+      else {
+        for (const [i, group] of groups.entries()) {
+          const row = m[group];
+          const count = i === groups.length - 1 ? 47 : 32;
+          const validRms = (xs) => Array.isArray(xs) && xs.length === count &&
+            xs.every((v) => typeof v === "number" && Number.isFinite(v) && v > 0 && v <= 1);
+          const validPeaks = (xs) => Array.isArray(xs) && xs.length === count &&
+            xs.every((v) => typeof v === "number" && Number.isFinite(v) && v > 0);
+          if (!row || !validRms(row.rms)) problems.push(where + " has missing, null or malformed " + group + " RMS observations");
+          if (!row || !validPeaks(row.peaks)) problems.push(where + " has missing, null or malformed " + group + " peak observations");
+          else row.peaks.forEach((value, slot) => {
+            if (value > 1) problems.push(engine + " " + c.id + " has over-full-scale peak for " + group + " slot " + slot + " = " + value);
+          });
+        }
+        const linearity = m.linearity;
+        if (!linearity || typeof linearity !== "object" || ![linearity.ratio, linearity.makeup].every((v) => typeof v === "number" && Number.isFinite(v) && v > 0))
+          problems.push(where + " has missing, null or malformed linearity observations");
+      }
+    }
+    validateFiniteNumbers(c, where, problems);
+  }
+  for (const want of expected) if (!seen.has(want.id)) problems.push(rel + ": " + engine + " is missing case " + want.id);
+}
+
 function merge(o) {
   const files = [];
   const walk = (dir) => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       const p = path.join(dir, entry.name);
       if (entry.isDirectory()) walk(p);
-      else if (entry.name === "results.json") files.push(p);
+      else if (entry.isFile() && entry.name === "results.json") files.push(p);
     }
   };
   if (fs.existsSync(o.merge)) walk(o.merge);
   files.sort();
   const problems = [];
+  let expectedContext = null, expectedConfig = null, expectedBuilds = null, expectedBrowserToolchain = null;
+  for (const issue of fullMixSpec.referenceCoverageProblems())
+    problems.push("full-mix reference: " + issue);
+  try { expectedContext = expectedContextForMerge(o); } catch (e) { problems.push(e.message); }
+  try { expectedConfig = matrixConfigSha256(); } catch (e) { problems.push("cannot fingerprint current browser configuration: " + e.message); }
+  try { expectedBuilds = buildSha256(); } catch (e) { problems.push("cannot identify current source/min builds: " + e.message); }
+  try { expectedBrowserToolchain = resolveBrowserToolchain(); } catch (e) { problems.push("cannot independently resolve current browser toolchain: " + e.message); }
   const all = {};
-  const ran = {}; // engine -> spec -> file
-  const shards = [];
+  const shards = [], expectedPaths = expectedResultPaths(), foundPaths = new Map(), seenCases = new Map();
+  const versions = {}, platforms = {};
   for (const file of files) {
     const rel = path.relative(o.merge, file);
+    const parts = rel.split(path.sep);
+    const rootMatch = /^browser-results-(chromium|firefox|webkit)-(\d+)$/.exec(parts[0] || "");
+    const index = rootMatch ? Number(rootMatch[2]) : NaN;
+    const artifactEngine = rootMatch && rootMatch[1];
+    const expectedPath = expectedPaths.get(rel.split(path.sep).join(path.posix.sep));
+    if (!rootMatch || parts.length !== 3 || !expectedPath || !["browser-matrix", "browser-observe"].includes(parts[1])) {
+      problems.push(rel + ": unexpected result path");
+    } else {
+      const key = artifactEngine + "/" + index + "/" + parts[1];
+      if (foundPaths.has(key)) problems.push(rel + ": duplicate result for " + key + " also in " + foundPaths.get(key));
+      foundPaths.set(key, rel);
+    }
     let data;
     try { data = JSON.parse(fs.readFileSync(file, "utf8")); } catch (e) { problems.push(rel + ": unreadable (" + e.message + ")"); continue; }
-    for (const [engine, r] of Object.entries(data)) {
-      if (engine === "crossEngine") continue;
-      if (!MATRIX.engines.includes(engine)) { problems.push(rel + ": undeclared engine " + engine); continue; }
-      if (!r || !r.version) problems.push(rel + ": " + engine + " did not launch: " + String((r && (r.launchError || r.failure)) || "no version").split("\n")[0]);
-      if (r && r.failure) problems.push(rel + ": " + engine + " worker " + r.failure);
-      if (r && r.fatal) problems.push(rel + ": " + engine + " stopped early: " + r.fatal);
-      const cases = (r && Array.isArray(r.cases)) ? r.cases : [];
-      const entry = all[engine] || (all[engine] = { engine, version: r && r.version, platform: r && r.platform, cases: [] });
-      if (r && r.version && entry.version !== r.version) problems.push(rel + ": " + engine + " " + r.version + " differs from " + entry.version + " in another shard");
-      const specs = [...new Set(cases.map((c) => c.spec))];
-      for (const spec of specs) {
-        ran[engine] = ran[engine] || {};
-        if (ran[engine][spec]) problems.push(engine + " ran " + spec + " in two shards (" + ran[engine][spec] + ", " + rel + ")");
-        ran[engine][spec] = rel;
+    if (!data || typeof data !== "object" || Array.isArray(data)) { problems.push(rel + ": result must be a JSON object"); continue; }
+    const meta = data.matrixRun;
+    if (!meta || typeof meta !== "object" || Array.isArray(meta)) problems.push(rel + ": missing matrixRun provenance");
+    else {
+      if (meta.schemaVersion !== PROVENANCE_SCHEMA) problems.push(rel + ": unsupported provenance schema " + String(meta.schemaVersion));
+      if (expectedContext) for (const key of PROVENANCE_CONTEXT_FIELDS)
+        if (meta[key] !== expectedContext[key]) problems.push(rel + ": stale or forged " + key + " (expected " + expectedContext[key] + ")");
+      if (expectedConfig && meta.matrixConfigSha256 !== expectedConfig) problems.push(rel + ": browser configuration fingerprint differs from the aggregate checkout");
+      if (expectedBuilds && stableJson(meta.buildSha256) !== stableJson(expectedBuilds)) problems.push(rel + ": source/min build hashes differ from the aggregate checkout");
+      if (expectedBrowserToolchain && stableJson(meta.browserToolchain) !== stableJson(expectedBrowserToolchain))
+        problems.push(rel + ": Playwright/browser bundle identity differs from the aggregate checkout");
+      if (rootMatch) {
+        if (meta.engine !== artifactEngine) problems.push(rel + ": provenance engine does not match artifact identity");
+        if (!meta.shard || meta.shard.index !== index || meta.shard.total !== MATRIX.shards)
+          problems.push(rel + ": provenance shard does not match artifact identity");
+        if (!expectedPath || !meta.selection || meta.selection.kind !== (parts[1] === "browser-matrix" ? "assert" : "observe") ||
+            stableJson(meta.selection.specs) !== stableJson(expectedPath.specs) || meta.selection.seed !== MATRIX.seed)
+          problems.push(rel + ": declared selection does not match the required shard configuration");
       }
-      entry.cases.push(...cases);
-      shards.push({ engine, shard: (r && r.shard) || "?", file: rel, specs, seconds: cases.reduce((a, c) => a + (c.seconds || 0), 0) });
     }
+    const engineKeys = Object.keys(data).filter((key) => key !== "matrixRun" && key !== "crossEngine");
+    if (engineKeys.length !== 1) {
+      problems.push(rel + ": expected exactly one engine result, found " + engineKeys.join(", "));
+      continue;
+    }
+    const reportEngine = engineKeys[0];
+    if (!MATRIX.engines.includes(reportEngine)) { problems.push(rel + ": undeclared engine " + reportEngine); continue; }
+    if (artifactEngine && reportEngine !== artifactEngine) problems.push(rel + ": result engine does not match artifact identity");
+    const r = data[reportEngine];
+    if (!r || typeof r !== "object" || Array.isArray(r)) { problems.push(rel + ": " + reportEngine + " result must be an object"); continue; }
+    if (r.engine !== reportEngine) problems.push(rel + ": " + reportEngine + " result engine identity is missing or mismatched");
+    let currentBundle = null;
+    if (expectedBrowserToolchain) {
+      try { currentBundle = browserBundle(expectedBrowserToolchain, reportEngine); } catch (e) { problems.push(rel + ": " + e.message); }
+      if (!currentBundle || stableJson(r.browserBundle) !== stableJson(currentBundle))
+        problems.push(rel + ": " + reportEngine + " Playwright/browser revision bundle differs from the aggregate checkout");
+    }
+    const expectedSpecs = expectedPath ? expectedPath.specs : [];
+    const manifest = caseManifest(reportEngine, expectedSpecs);
+    validateCases(reportEngine, rel, r && r.cases, manifest, problems);
+    if (Array.isArray(r.cases)) for (const c of r.cases) if (c && c.spec === "full-mix" && typeof c.id === "string")
+      validateFullMixCase(reportEngine, r.version, r.platform, currentBundle, rel, file, c, FULL_MIX_CASES.get(c.id), problems);
+    if (typeof r.version !== "string" || !r.version) problems.push(rel + ": " + reportEngine + " did not launch: " + String(r.launchError || "no browser version").split("\n")[0]);
+    if (currentBundle && r.version && r.version !== currentBundle.browserVersion)
+      problems.push(rel + ": " + reportEngine + " reported browser version differs from its pinned revision bundle");
+    if (r.failure) problems.push(rel + ": " + reportEngine + " worker failed: " + String(r.failure).split("\n")[0]);
+    if (r.fatal) problems.push(rel + ": " + reportEngine + " stopped early: " + String(r.fatal).split("\n")[0]);
+    if (r.launchError) problems.push(rel + ": " + reportEngine + " launch failed: " + String(r.launchError).split("\n")[0]);
+    if (typeof r.platform !== "string" || !r.platform) problems.push(rel + ": " + reportEngine + " is missing its platform identity");
+    if (r.version && versions[reportEngine] && versions[reportEngine] !== r.version)
+      problems.push(rel + ": " + reportEngine + " browser version differs from another shard");
+    if (r.version) versions[reportEngine] = r.version;
+    if (r.platform && platforms[reportEngine] && platforms[reportEngine] !== r.platform)
+      problems.push(rel + ": " + reportEngine + " platform differs from another shard");
+    if (r.platform) platforms[reportEngine] = r.platform;
+    const resultVersion = typeof r.version === "string" && r.version ? r.version : null;
+    const resultPlatform = typeof r.platform === "string" && r.platform ? r.platform : null;
+    const entry = all[reportEngine] || (all[reportEngine] = { engine: reportEngine, version: resultVersion, platform: resultPlatform, cases: [] });
+    const safeCases = Array.isArray(r.cases) ? r.cases.filter((c) => c && typeof c === "object" && typeof c.id === "string" &&
+      typeof c.seconds === "number" && Number.isFinite(c.seconds) && c.seconds >= 0 && Array.isArray(c.checks) &&
+      c.checks.every((k) => k && typeof k === "object" && typeof k.ok === "boolean" && typeof k.name === "string" && typeof k.detail === "string")) : [];
+    entry.cases.push(...safeCases);
+    for (const c of safeCases) {
+      if (c && typeof c.id === "string") {
+        const key = reportEngine + "/" + c.id;
+        if (seenCases.has(key)) problems.push(key + " appears in more than one result (" + seenCases.get(key) + ", " + rel + ")");
+        else seenCases.set(key, rel);
+      }
+    }
+    const specs = [...new Set(safeCases.map((c) => c.spec).filter((s) => typeof s === "string"))];
+    shards.push({ engine: reportEngine, shard: index ? index + "/" + MATRIX.shards : "?", file: rel, specs,
+      seconds: safeCases.reduce((a, c) => a + c.seconds, 0) });
   }
-  const declared = Object.keys(MATRIX.specs);
+  for (const [rel] of expectedPaths) if (!files.some((file) => path.relative(o.merge, file).split(path.sep).join(path.posix.sep) === rel))
+    problems.push(rel + ": required shard result is missing");
   for (const engine of MATRIX.engines) {
-    const missing = declared.filter((s) => !(ran[engine] && ran[engine][s]));
-    if (missing.length) problems.push(engine + ": no results for " + missing.join(", "));
+    if (!all[engine]) problems.push(engine + ": no valid shard results");
+    else if (!all[engine].cases.length) problems.push(engine + ": no cases were reported");
   }
-  for (const r of Object.values(all)) for (const c of r.cases) if (c.status === "fail") problems.push(r.engine + " / " + c.id + ": failed");
+  const cross = crossEngine(all);
+  for (const c of cross) if (!c.ok) problems.push("cross-engine: " + c.name + " (" + c.detail + ")");
+  const declared = Object.keys(MATRIX.specs);
   const view = { specs: declared, engines: null, overrides: {}, seed: MATRIX.seed };
   summarize(all, view);
   console.log("\n== Shards (case time; each job also spends ~1 min on setup and launches)");
@@ -411,8 +1102,10 @@ function merge(o) {
     timeRows.push("| " + spec + " | " + MATRIX.specs[spec].seconds + " | " + per.map((v) => v.toFixed(0)).join(" | ") + " |");
     console.log("  " + spec.padEnd(12) + String(MATRIX.specs[spec].seconds).padStart(5) + " declared  " + MATRIX.engines.map((e, i) => e + " " + per[i].toFixed(0)).join(", "));
   }
+  console.log("\n== Cross-engine comparison (merged shards)");
+  for (const c of cross) console.log("  " + (c.ok ? "ok  " : "FAIL") + " " + c.name + " (" + c.detail + ")");
   const status = problems.length ? "FAIL (" + problems.length + " problems)" : "PASS (" + Object.values(all).reduce((a, r) => a + r.cases.length, 0) + " cases, " + files.length + " result files)";
-  stepSummary(all, [], view, status);
+  stepSummary(all, cross, view, status);
   if (process.env.GITHUB_STEP_SUMMARY) {
     const lines = ["", "| engine | shard | case seconds | specs |", "| --- | --- | ---: | --- |",
       ...shards.map((x) => "| " + x.engine + " | " + x.shard + " | " + Math.round(x.seconds) + " | " + x.specs.join(", ") + " |"),
@@ -489,4 +1182,19 @@ if (require.main === module) {
   }
 }
 
-module.exports = { parseArgs, shardLayout, selectedSpecs };
+module.exports = {
+  parseArgs,
+  shardLayout,
+  selectedSpecs,
+  expectedResultPaths,
+  caseManifest,
+  reportProvenance,
+  resolveBrowserToolchain,
+  browserBundle,
+  matrixConfigSha256,
+  buildSha256,
+  readFloatStereoWav,
+  crossEngine,
+  renderBufferShaProblems,
+  merge,
+};

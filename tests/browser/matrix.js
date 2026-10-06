@@ -13,6 +13,7 @@ const MATRIX = {
   builds: ["source", "min"],
   qualities: [0, 1],
   sampleRates: [44100, 48000],
+  shards: 3,
   // Math.random seed for the test pages (tests/browser/page/prelude.js); --seed overrides it.
   seed: 0x5eed0001,
   // Seconds. A case still running at its deadline fails and its page is closed;
@@ -46,6 +47,7 @@ const MATRIX = {
     hang: { seconds: 7, kind: "observe", dims: ["build"], about: "external deadlines on real hangs (#4 truncated file, #8 zero-duration loop)" },
     variation: { seconds: 282, kind: "observe", dims: [], about: "source build: run-to-run variation across launches and seeds, scheduler effect, generated buffer hashes (tolerance evidence)" },
     filters: { seconds: 21, kind: "assert", dims: ["build", "sampleRate"], about: "T12 (#27): fixed operator filters: getFrequencyResponse and rendered tone probes against an independent RBJ biquad (Q in dB and linear, key tracking, the 0.45 x SR clamp, drums), the consumer fixture's band energies, and release of every filter connection on the instrumented graph (steals, drums, stopMIDI, all-sound-off, replacement, dispose)" },
+    "full-mix": { seconds: 50, kind: "assert", dims: ["build", "sampleRate"], about: "#79: first-attempt cold full-song fixtures, independently matched native voice creation, raw stereo Float32/headroom, fixed-target mixed-bus downbeat band and isolated patch-aware pitch/envelope, engine-specific measured references, no-alignment source/min tolerance; fixture-only evidence" },
   },
 };
 

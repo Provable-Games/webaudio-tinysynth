@@ -80,7 +80,7 @@
       first: first < 0 ? null : first / sr, last: last < 0 ? null : last / sr };
   }
 
-  /* Hashes of the generated buffers (#7). These are internal properties; absent ones are reported as null. */
+  /* Legacy short hashes of generated buffers (#7); absent buffers are null. */
   function bufferHashes(synth) {
     function h(buf) {
       if (!buf || !buf.getChannelData) return null;
@@ -93,6 +93,27 @@
       n0: synth.noiseBuf ? h(synth.noiseBuf.n0) : null,
       n1: synth.noiseBuf ? h(synth.noiseBuf.n1) : null,
     };
+  }
+
+  /* Canonical sample bytes for Node-side SHA-256; absent buffers are null. */
+  function bufferBytes(synth) {
+    var named = {
+      convBuf: synth.convBuf,
+      n0: synth.noiseBuf ? synth.noiseBuf.n0 : null,
+      n1: synth.noiseBuf ? synth.noiseBuf.n1 : null,
+    };
+    return Object.keys(named).reduce(function (result, name) {
+      var buffer = named[name];
+      if (!buffer || !buffer.getChannelData) {
+        result[name] = null;
+        return result;
+      }
+      var channels = [];
+      for (var c = 0; c < buffer.numberOfChannels; ++c) channels.push(buffer.getChannelData(c));
+      result[name] = { bytesBase64: window.__t6BufferDigest.base64Planar(channels),
+        channels: buffer.numberOfChannels, frames: buffer.length };
+      return result;
+    }, {});
   }
 
   t6.render = function (spec) {
@@ -125,6 +146,7 @@
     synth.setAudioContext(off);
     var randomCalls = t6.randomCalls;
     var buffers = bufferHashes(synth);
+    var generatedBufferBytes = spec.captureBufferSha256 ? bufferBytes(synth) : null;
     var closing = internal && internal.close ? internal.close().catch(function () {}) : null;
     if (spec.masterVol !== undefined) synth.setMasterVol(spec.masterVol);
     if (spec.reverbLev !== undefined) synth.setReverbLev(spec.reverbLev);
@@ -150,6 +172,7 @@
           schedulerStopped: !spec.keepScheduler,
           internalContext: internal ? (internal instanceof OfflineAudioContext ? "offline" : "realtime") : null,
           buffers: buffers,
+          bufferBytes: generatedBufferBytes,
           hash: hash(chs),
           rejections: t6.rejections.slice(rejectionsBefore),
           pcm: spec.pcm === "L" ? [b64(chs[0])] : spec.pcm ? chs.map(b64) : null,

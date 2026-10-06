@@ -20,6 +20,8 @@
 const pages = require("../lib/pages");
 const A = require("../lib/analysis");
 const { SCENARIOS } = require("../lib/scenarios");
+const float32Digest = require("../lib/float32-digest");
+const { SEED_EXPECTED } = require("./seed-expected");
 const { classifyRejections } = require("../lib/known");
 const { tolerances } = require("../tolerances");
 const FA = require("../lib/first-attempt");
@@ -37,9 +39,33 @@ function renderSpec(s, { seed, sr, quality }, variant = {}) {
   return spec;
 }
 
+function bufferCaptureSettings(spec) {
+  const steps = spec.steps || [];
+  const noteOn = steps.find((step) => step.call === "noteOn" && Array.isArray(step.args) && step.args.length >= 4);
+  const noteOff = steps.find((step) => step.call === "noteOff" && Array.isArray(step.args) && step.args.length >= 3);
+  const patch = noteOn && (spec.timbres || []).find((row) => Array.isArray(row) && row[0] === noteOn.args[0]);
+  return {
+    seed: spec.seed,
+    sampleRate: spec.sr,
+    quality: spec.options && spec.options.quality,
+    options: { quality: spec.options && spec.options.quality, useReverb: spec.options && spec.options.useReverb },
+    masterVol: spec.masterVol,
+    reverbLev: spec.reverbLev === undefined ? null : spec.reverbLev,
+    durationSec: spec.duration,
+    timbres: spec.timbres || [],
+    steps,
+    activeProbe: noteOn && noteOff ? {
+      channel: noteOn.args[0], program: patch ? patch[1] : null, pitch: noteOn.args[1], velocity: noteOn.args[2],
+      onsetSec: noteOn.args[3], offChannel: noteOff.args[0], offPitch: noteOff.args[1], offSec: noteOff.args[2],
+      timbre: patch ? patch[2] : null,
+    } : null,
+  };
+}
+
 async function openRenderPage(t, build, seed, browser = null) {
   const p = await t.newPage({ offline: true, browser });
-  await p.page.setContent(pages.inlinePage({ library: pages.readLibrary(build, t.shared.options.overrides), seed, after: [pages.pageScript("render.js")] }));
+  await p.page.setContent(pages.inlinePage({ library: pages.readLibrary(build, t.shared.options.overrides), seed,
+    after: [pages.pageScript("../lib/float32-digest.js"), pages.pageScript("render.js")] }));
   return p;
 }
 
@@ -47,6 +73,28 @@ async function render(p, spec) {
   const r = await p.page.evaluate((s) => window.__t6.render(s), spec); // eslint-disable-line no-undef -- runs in the page
   r.channels = r.pcm ? r.pcm.map(decode) : null;
   delete r.pcm;
+  if (r.bufferBytes) {
+    const digests = {};
+    for (const name of ["convBuf", "n0", "n1"]) {
+      const capture = r.bufferBytes[name];
+      if (capture === null) {
+        digests[name] = null;
+        continue;
+      }
+      if (!capture || typeof capture.bytesBase64 !== "string" ||
+          !Number.isSafeInteger(capture.channels) || capture.channels < 1 ||
+          !Number.isSafeInteger(capture.frames) || capture.frames < 0)
+        throw new Error("malformed generated Float32 buffer byte capture for " + name);
+      try {
+        digests[name] = float32Digest.sha256Base64Planar(capture.bytesBase64, capture.channels, capture.frames);
+      } catch (error) {
+        throw new Error("invalid generated Float32 buffer bytes for " + name + ": " + error.message, { cause: error });
+      }
+    }
+    r.bufferSha256 = digests;
+    r.bufferCaptureSettings = bufferCaptureSettings(spec);
+    delete r.bufferBytes;
+  }
   return r;
 }
 
@@ -89,7 +137,8 @@ function combine(s, parts) {
   }
   const sr = parts[0].sr;
   return {
-    sr, channels, buffers: parts[0].buffers, randomCalls: parts[0].randomCalls,
+    sr, channels, buffers: parts[0].buffers, bufferSha256: parts[0].bufferSha256,
+    bufferCaptureSettings: parts[0].bufferCaptureSettings, randomCalls: parts[0].randomCalls,
     internalContext: [...new Set(parts.map((r) => r.internalContext))].join(","),
     hash: parts.map((r) => r.hash).join("+"),
     rejections: parts.flatMap((r) => r.rejections),
@@ -138,6 +187,7 @@ function cases(shared) {
           const measurements = {};
           const hashes = {};
           const buffers = {};
+          let generatedBufferSha256 = null;
           const sameEngine = { bitIdentical: [], differing: {} };
           const kept = {};
           // Every first-attempt render, and the repeat and alternate-seed renders, is checked for
@@ -186,7 +236,9 @@ function cases(shared) {
             for (const build of matrix.builds) {
               parts[build] = [];
               for (const v of [{}, ...variants]) {
-                const ps = await renderParts(pg[build], s, { seed, sr, quality }, v);
+                const captureBufferSha256 = s.name === "reverb" && parts[build].length === 0;
+                const renderVariant = captureBufferSha256 ? Object.assign({}, v, { captureBufferSha256: true }) : v;
+                const ps = await renderParts(pg[build], s, { seed, sr, quality }, renderVariant);
                 // Fault injection (lib/first-attempt.js): the first part of the min build's first render.
                 const fault = build === "min" && !parts.min.length ? injectRender.take() : null;
                 if (fault) ps[0] = FA.corruptRender(fault, ps[0]);
@@ -215,6 +267,39 @@ function cases(shared) {
             const parity = !persistent.length;
             t.check(s.name + ": min renders the same PCM as source (max |diff| <= " + tol.sameEngineSample + ")", parity,
               parity ? (identical ? "bit-identical" : "max |diff| " + diff.toExponential(3)) : persistent.slice(0, 2).join(" | "));
+            if (s.name === "reverb") {
+              const expectedFrames = Math.floor(sr * 0.5);
+              const sourceBuffers = res.source[0].bufferSha256;
+              const minBuffers = res.min[0].bufferSha256;
+              const validBuffers = (value) => value && ["convBuf", "n0", "n1"].every((name) => {
+                const row = value[name];
+                const channels = name === "convBuf" ? 2 : 1;
+                return row && /^[a-f0-9]{64}$/.test(row.sha256) && row.channels === channels && row.frames === expectedFrames;
+              });
+              const sourceMinMatch = validBuffers(sourceBuffers) && validBuffers(minBuffers) &&
+                JSON.stringify(sourceBuffers) === JSON.stringify(minBuffers);
+              t.check("reverb-enabled first-attempt generated Float32 buffers have complete source/min SHA-256 measurements",
+                sourceMinMatch,
+                sourceMinMatch ? JSON.stringify(sourceBuffers) : "missing, malformed or different source/min SHA-256 descriptors");
+              const expectedBuffers = SEED_EXPECTED.hashes[sr] && SEED_EXPECTED.hashes[sr][seed];
+              if (expectedBuffers) {
+                const expectedMatch = sourceMinMatch && ["convBuf", "n0", "n1"].every((name) => sourceBuffers[name].sha256 === expectedBuffers[name]);
+                t.check("source/min generated-buffer SHA-256 matches the independent seeded Float32 reference",
+                  expectedMatch,
+                  expectedMatch ? "all three buffers match at seed " + seed + " and " + sr + " Hz" : "generated-buffer SHA-256 differs from the independent seeded reference");
+              }
+            generatedBufferSha256 = {
+                schemaVersion: 1,
+                method: "sha256-f32le-planar-channel-order-v1",
+                producer: "node-crypto-after-browser-byte-transfer",
+                encoding: "IEEE-754 binary32 little-endian; planar channel-index order; sample bytes only",
+                scenarioId: "reverb",
+                attempt: 1,
+                firstAttempt: true,
+                settings: { source: res.source[0].bufferCaptureSettings, min: res.min[0].bufferCaptureSettings },
+                builds: { source: sourceBuffers, min: minBuffers },
+              };
+            }
             for (const build of parity ? ["source"] : matrix.builds) {
               const prefix = s.name + (parity ? "" : " [" + build + "]") + ": ";
               const check = (name, ok, detail) => t.check(prefix + name, ok, detail);
@@ -272,7 +357,8 @@ function cases(shared) {
           t.observe("first-attempt same-engine failures and their diagnostic re-renders (the verdict is the first attempt's; a clean re-render does not clear it)", Object.assign({ firstAttemptRenders: renders, diagnosticRenders: diagRenders }, diag.summary()));
           t.observe("measurements", measurements);
           t.observe("render hashes (source build)", hashes);
-          t.observe("generated buffer hashes (convBuf, n0, n1)", buffers[SCENARIOS[0].name]);
+          t.observe("legacy generated buffer hashes (16-hex cyrb53, pitch-sine with useReverb 0)", buffers[SCENARIOS[0].name]);
+          t.observe("generated buffer SHA-256 (first reverb-enabled attempt)", generatedBufferSha256);
         },
       });
     }
@@ -280,4 +366,4 @@ function cases(shared) {
   return out;
 }
 
-module.exports = { cases, renderSpec, renderScenario, renderParts, combine, openRenderPage, render, decode, maxDiff };
+module.exports = { cases, renderSpec, bufferCaptureSettings, renderScenario, renderParts, combine, openRenderPage, render, decode, maxDiff };
