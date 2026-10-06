@@ -39,6 +39,8 @@ const stableSha256 = (bytes) => crypto.createHash("sha256").update(bytes).digest
 const stableCanonical = (value) => Array.isArray(value) ? "[" + value.map(stableCanonical).join(",") + "]"
   : value && typeof value === "object" ? "{" + Object.keys(value).sort().map((key) => JSON.stringify(key) + ":" + stableCanonical(value[key])).join(",") + "}"
     : JSON.stringify(value);
+let seedReference;
+test.before(async () => { seedReference = (await import("../unit/seed-reference.mjs")).reference; });
 
 test("generated-buffer SHA-256 uses known Float32LE planar channel bytes", async () => {
   const channels = [new Float32Array([0, 1, -1]), new Float32Array([0.5, -0.5, 2])];
@@ -49,7 +51,7 @@ test("generated-buffer SHA-256 uses known Float32LE planar channel bytes", async
   assert.equal(Buffer.from(encoded, "base64").toString("hex"), expectedBytes);
   assert.equal(await float32Digest.sha256Planar(channels), "bb0c06c2c79f00aaf570ef2cba7813d41a60ab3093bf17becaf11ff10a779fe0");
   assert.deepEqual(float32Digest.sha256Base64Planar(encoded, 2, 3), {
-    sha256: "bb0c06c2c79f00aaf570ef2cba7813d41a60ab3093bf17becaf11ff10a779fe0", channels: 2, frames: 3,
+    sha256: "bb0c06c2c79f00aaf570ef2cba7813d41a60ab3093bf17becaf11ff10a779fe0", channels: 2, frames: 3, byteLength: 24,
   });
   assert.notEqual(await float32Digest.sha256Planar(channels), await float32Digest.sha256Planar(channels.slice().reverse()));
   assert.throws(() => float32Digest.sha256Base64Planar(encoded, 2, 2), /length or base64/);
@@ -57,21 +59,36 @@ test("generated-buffer SHA-256 uses known Float32LE planar channel bytes", async
   assert.throws(() => float32Digest.planarFloat32Bytes([new Float32Array([1]), new Float32Array([1, 2])]), /equal frame counts/);
   assert.throws(() => float32Digest.planarFloat32Bytes([[1, 2]]), /Float32Array/);
 
-  const seedReference = await import("../unit/seed-reference.mjs");
   const scenario = SCENARIOS.find((item) => item.name === "reverb");
   const sampleRate = 44100, quality = 1;
   const generated = {
-    convBuf: seedReference.reference.convBuf(MATRIX.seed, sampleRate),
-    n0: seedReference.reference.n0(MATRIX.seed, sampleRate),
-    n1: seedReference.reference.n1(MATRIX.seed, sampleRate),
+    convBuf: seedReference.convBuf(MATRIX.seed, sampleRate),
+    n0: seedReference.n0(MATRIX.seed, sampleRate),
+    n1: seedReference.n1(MATRIX.seed, sampleRate),
   };
-  const descriptors = Object.fromEntries(Object.entries(generated).map(([name, bufferChannels]) => [name,
-    float32Digest.sha256Base64Planar(float32Digest.base64Planar(bufferChannels), bufferChannels.length, bufferChannels[0].length)]));
   const captures = {};
   for (const build of ["source", "min"]) {
     const actualSpec = renderSpec.renderSpec(scenario, { seed: MATRIX.seed, sr: sampleRate, quality }, { captureBufferSha256: true });
-    const part = { bufferCaptureSettings: renderSpec.bufferCaptureSettings(actualSpec), bufferSha256: descriptors };
-    captures[build] = renderSpec.combine(scenario, [part]);
+    const bufferBytes = Object.fromEntries(Object.entries(generated).map(([name, channels]) => [name, {
+      bytesBase64: float32Digest.base64Planar(channels), channels: channels.length, frames: channels[0].length,
+      byteLength: channels.length * channels[0].length * 4,
+    }]));
+    const captured = await renderSpec.render({ page: { evaluate: async () => ({ bufferBytes }) } }, actualSpec);
+    captures[build] = renderSpec.combine(scenario, [captured]);
+  }
+  const persisted = [];
+  const artifactRoot = fs.mkdtempSync(path.join(os.tmpdir(), "matrix-buffer-producer-"));
+  const resultFile = path.join(artifactRoot, "browser-results-chromium-1", "browser-matrix", "results.json");
+  for (const build of ["source", "min"]) {
+    renderSpec.saveGeneratedBufferCaptures(captures[build], quality, sampleRate, build, {
+      save: (rel, bytes) => {
+        const target = path.join(path.dirname(resultFile), "chromium", rel);
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.writeFileSync(target, bytes);
+        persisted.push([build, rel, bytes]);
+        return target;
+      },
+    });
   }
   const observation = JSON.parse(JSON.stringify({
     schemaVersion: 1, method: "sha256-f32le-planar-channel-order-v1",
@@ -83,7 +100,30 @@ test("generated-buffer SHA-256 uses known Float32LE planar channel bytes", async
   }));
   const dimensions = { dims: { sampleRate, quality } };
   assert.deepEqual(renderBufferShaProblems(dimensions, observation, "producer control"), [],
-    "first reverb source/min settings and independently generated buffers survive combine and JSON serialization");
+    "actual render/decode/hash/combine/save producer output retains both first reverb builds through JSON serialization");
+  const resultRel = "browser-results-chromium-1/browser-matrix/results.json";
+  const producerCase = { id: "render-reverb-q1-44100", dims: dimensions.dims,
+    observations: { "generated buffer SHA-256 (first reverb-enabled attempt)": observation } };
+  const artifactProblems = [];
+  generatedBufferArtifactProblems("chromium", resultRel, resultFile, producerCase, dimensions, artifactProblems);
+  assert.deepEqual(artifactProblems, [], "aggregate reopens the producer's retained files from the engine/browser-matrix artifact layout");
+  assert.equal(persisted.length, 6);
+  for (const [build, rel, bytes] of persisted) {
+    const name = path.basename(rel).split("-").at(-1).replace(".f32le", "");
+    assert.equal(bytes.length, observation.builds[build][name].byteLength);
+    assert.equal(stableSha256(bytes), observation.builds[build][name].sha256);
+  }
+  const changedSidecar = path.join(path.dirname(resultFile), "chromium", persisted.find(([build, rel]) => build === "source" && rel.endsWith("-n1.f32le"))[1]);
+  const originalSidecar = fs.readFileSync(changedSidecar);
+  const alteredSidecar = Buffer.from(originalSidecar);
+  alteredSidecar[0] ^= 1;
+  fs.writeFileSync(changedSidecar, alteredSidecar);
+  const alteredProblems = [];
+  generatedBufferArtifactProblems("chromium", resultRel, resultFile, producerCase, dimensions, alteredProblems);
+  assert.ok(alteredProblems.some((problem) => /source n1 raw byte SHA-256 is/.test(problem)),
+    "aggregate rejects actual producer sidecar bytes changed after report serialization");
+  assert.ok(alteredProblems.some((problem) => /source\/min n1 raw Float32 bytes differ/.test(problem)));
+  fs.rmSync(artifactRoot, { recursive: true, force: true });
   const wrongProbe = structuredClone(observation);
   wrongProbe.settings.source.activeProbe.pitch = 70;
   assert.ok(renderBufferShaProblems(dimensions, wrongProbe, "producer control").some((problem) => /active reverb-probe settings/.test(problem)));
@@ -197,7 +237,7 @@ const MATRIX = require("../browser/matrix").MATRIX;
 const FULL_MIX = require("../browser/specs/full-mix");
 const {
   shardLayout, selectedSpecs, parseArgs, expectedResultPaths, caseManifest, reportProvenance, readFloatStereoWav,
-  renderBufferShaProblems,
+  renderBufferShaProblems, generatedBufferArtifactProblems,
 } = require("../../scripts/browser-matrix");
 const SCRIPT = path.join(H.ROOT, "scripts", "browser-matrix.js");
 const SPECS = Object.keys(MATRIX.specs);
@@ -250,13 +290,19 @@ test("--shard selects the spec part of both the assert and observe selection", (
   }
   const union = Array.from({ length: MATRIX.shards }, (_, i) => i + 1)
     .flatMap((k) => selectedSpecs(parseArgs(["--observe", "--shard=" + k + "/" + MATRIX.shards])));
-  assert.deepEqual([...union].sort(), [...SPECS].sort());
+  assert.deepEqual([...union].sort(), SPECS.filter((s) => s !== "full-mix").sort());
+  assert.deepEqual(selectedSpecs(parseArgs([])), SPECS.filter((s) => s !== "full-mix" && MATRIX.specs[s].kind === "assert"));
+  assert.deepEqual(selectedSpecs(parseArgs(["--mode=full-mix-qualification", "--shard=1/1"])), ["render", "full-mix"]);
 });
 
 test("bad --shard values and a merge without explicit expected context are refused", () => {
   for (const bad of ["0/3", "4/3", "1/0", "x"]) assert.throws(() => parseArgs(["--shard=" + bad]), undefined, bad);
   assert.throws(() => shardLayout(SPECS.length + 1), /empty/);
   assert.throws(() => parseArgs(["--merge=/tmp/results"]), /--expected-context/);
+  assert.throws(() => parseArgs(["--mode=core", "--specs=full-mix"]), /requires --mode=full-mix-qualification/);
+  assert.throws(() => parseArgs(["--mode=full-mix-qualification", "--specs=render"]), /selects only the render and full-mix assert specs/);
+  assert.throws(() => parseArgs(["--mode=full-mix-qualification", "--observe"]), /selects only the render and full-mix assert specs/);
+  assert.throws(() => parseArgs(["--mode=qualification"]), /--mode must be core or full-mix-qualification/);
 });
 
 test("--list --shard prints the declared layout without launching a browser", () => {
@@ -272,15 +318,14 @@ function measurements() {
 }
 
 function artifactReference(engine, index, step, fixture, sampleRate, build, attempt, channels) {
-  const suffix = attempt === 1 ? "first" : "diagnostic-repeat";
-  const rel = "full-mix/" + fixture.id + "-q1-" + sampleRate + "-" + build + "-" + suffix + ".wav";
   const wav = testAnalysis.wav(channels, sampleRate);
-  const pcm = Buffer.concat(channels.map((x) => Buffer.from(x.buffer, x.byteOffset, x.byteLength)));
-  ATTACHMENTS.set(path.posix.join("browser-results-" + engine + "-" + index, step, rel), wav);
-  return {
-    path: rel, saved: true, sha256: stableSha256(wav), pcmSha256: stableSha256(pcm),
-    bytes: wav.length, sampleRate, channels: 2, encoding: "WAVE_FORMAT_IEEE_FLOAT",
-  };
+  const artifactRoot = path.posix.join("browser-results-" + engine + "-" + index, step, engine);
+  const fakeWorker = { save: (rel, data) => {
+    ATTACHMENTS.set(path.posix.join(artifactRoot, rel), data);
+    return path.posix.join(artifactRoot, rel);
+  } };
+  return FULL_MIX.caseRecord({ build, rawWav: wav, channels }, attempt === 1 ? "first" : "diagnostic-repeat",
+    fakeWorker, fixture, sampleRate);
 }
 
 function fakeFullMixCase(def, engine, index, step) {
@@ -310,6 +355,7 @@ function fakeFullMixCase(def, engine, index, step) {
       noteInstances, probeInstances, artifact, pcmSha256: pcmHashes,
       midiMessagesSent: fixture.notes.length, parsedEventCount: fixture.notes.length,
       intervalCount: 0, rejections: [], sourceMinPcmComparison: sourceMin,
+      referenceStatus: "measured", comparisonProblems: [],
       diagnosticRepeat: { attempt: 2, role: "diagnostic-only", result: "captured", firstVerdict: "pass",
         neverPromotesFirstAttempt: true, artifact: diagnosticArtifact, metrics, noteInstances,
         sameEnginePcm: sameEngine },
@@ -321,7 +367,7 @@ function fakeFullMixCase(def, engine, index, step) {
     schemaVersion: 2, scope: "fixture", qualification: "fixture-only-no-production-approval",
     fixtureId: fixture.id, profileKind: fixture.profileKind, label: fixture.label,
     sampleRate: expected.sampleRate, quality: 1, engine,
-    browserVersion: testBrowserVersion(engine),
+    browserVersion: testBrowserVersion(engine), platform: "linux-x64", browserBundle: testBrowserBundle(engine),
     midiSha256: fixture.midiSha256, setupSha256: fixture.setupSha256, settingsSha256: fixture.settingsSha256,
     probePlanSha256: fixture.probePlanSha256, methodSha256: fixture.methodSha256, toleranceSha256: fixture.toleranceSha256,
     masterVol: fixture.settings.masterVol, reverbLev: fixture.settings.reverbLev, playbackOriginSec: FULL_MIX.ORIGIN,
@@ -357,8 +403,16 @@ function fakeCase(def, engine, index, step) {
   if (def.spec === "render") {
     c.observations.measurements = measurements();
     const expected = SEED_EXPECTED.hashes[def.dims.sampleRate][MATRIX.seed];
-    const descriptor = (name) => ({ sha256: expected[name], channels: name === "convBuf" ? 2 : 1, frames: Math.floor(def.dims.sampleRate * 0.5) });
-    const buffers = () => ({ convBuf: descriptor("convBuf"), n0: descriptor("n0"), n1: descriptor("n1") });
+    const artifactRoot = path.posix.join("browser-results-" + engine + "-" + index, step, engine);
+    const buffers = (build) => Object.fromEntries(["convBuf", "n0", "n1"].map((name) => {
+      const channels = seedReference[name](MATRIX.seed, def.dims.sampleRate);
+      const bytes = Buffer.from(float32Digest.planarFloat32Bytes(channels));
+      const rel = "generated-buffers/q" + def.dims.quality + "-" + def.dims.sampleRate + "-reverb-" + build + "-" + name + ".f32le";
+      ATTACHMENTS.set(path.posix.join(artifactRoot, rel), bytes);
+      const measurement = float32Digest.sha256Base64Planar(bytes.toString("base64"), channels.length, channels[0].length);
+      assert.equal(measurement.sha256, expected[name]);
+      return [name, { ...measurement, artifact: { path: rel, saved: true } }];
+    }));
     const reverb = SCENARIOS.find((scenario) => scenario.name === "reverb");
     const probeSettings = renderSpec.bufferCaptureSettings(renderSpec.renderSpec(reverb,
       { seed: MATRIX.seed, sr: def.dims.sampleRate, quality: def.dims.quality }));
@@ -371,15 +425,16 @@ function fakeCase(def, engine, index, step) {
       attempt: 1,
       firstAttempt: true,
       settings: { source: probeSettings, min: probeSettings },
-      builds: { source: buffers(), min: buffers() },
+      builds: { source: buffers("source"), min: buffers("min") },
     };
   }
   if (def.spec === "full-mix") c.observations.fullMix = fakeFullMixCase(def, engine, index, step);
   return c;
 }
 
-function result(engine, index, step, specs) {
-  const opts = { shard: { k: index, n: MATRIX.shards }, specs, seed: MATRIX.seed, overrides: {} };
+function result(engine, index, step, specs, mode = "core") {
+  const total = mode === "full-mix-qualification" ? 1 : MATRIX.shards;
+  const opts = { mode, shard: { k: index, n: total }, specs, seed: MATRIX.seed, overrides: {} };
   const cases = caseManifest(engine, specs).map((def) => fakeCase(def, engine, index, step));
   return {
     matrixRun: reportProvenance(opts, [engine], CONTEXT),
@@ -388,15 +443,24 @@ function result(engine, index, step, specs) {
 }
 
 /* Results directory laid out exactly as actions/download-artifact produces it. */
-function merged(change, expectedReferenceBytes = TEST_REFERENCE_BYTES) {
+function merged(change, expectedReferenceBytes = TEST_REFERENCE_BYTES, afterWrite = null, reportMode = "core", mergeMode = reportMode) {
   ATTACHMENTS.clear();
   fs.writeFileSync(TEST_REFERENCE_FILE, expectedReferenceBytes);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "browser-matrix-merge-"));
   const contextFile = path.join(dir, "expected-context.json");
   fs.writeFileSync(contextFile, JSON.stringify(CONTEXT));
   const files = {};
-  for (const [rel, expected] of expectedResultPaths())
-    files[rel] = result(expected.engine, expected.index, expected.step, expected.specs);
+  for (const [rel, expected] of expectedResultPaths(reportMode))
+    files[rel] = result(expected.engine, expected.index, expected.step, expected.specs, reportMode);
+  if (reportMode === "full-mix-qualification") {
+    const remapped = new Map();
+    for (const [rel, data] of ATTACHMENTS) {
+      const match = /^browser-results-(chromium|firefox|webkit)-\d+\/browser-matrix\/(.+)$/.exec(rel);
+      remapped.set(match ? path.posix.join("full-mix-qualification-" + match[1], "browser-matrix", match[2]) : rel, data);
+    }
+    ATTACHMENTS.clear();
+    for (const [rel, data] of remapped) ATTACHMENTS.set(rel, data);
+  }
   if (change) change(files);
   for (const [rel, data] of Object.entries(files)) {
     const file = path.join(dir, rel);
@@ -408,22 +472,165 @@ function merged(change, expectedReferenceBytes = TEST_REFERENCE_BYTES) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, data);
   }
-  const r = node(["--merge=" + dir, "--expected-context=" + contextFile]);
+  if (afterWrite) afterWrite(dir);
+  const r = node(["--mode=" + mergeMode, "--merge=" + dir, "--expected-context=" + contextFile]);
   fs.rmSync(dir, { recursive: true, force: true });
   return r;
 }
 
+function qualificationMerged(change, referenceBytes = TEST_REFERENCE_BYTES, afterWrite = null, mergeMode = "full-mix-qualification") {
+  return merged(change, referenceBytes, afterWrite, "full-mix-qualification", mergeMode);
+}
+
 const first = (files, engine, spec) => Object.entries(files).find(([, data]) => data[engine] && data[engine].cases.some((c) => c.spec === spec));
 
-test("merge passes only with current provenance, exact cases and real cross-engine comparisons", () => {
-  const r = merged();
+test("core merge preserves the existing assert matrix without requiring unfinished full-mix references", () => {
+  const partial = JSON.parse(TEST_REFERENCE_BYTES.toString("utf8"));
+  delete partial.engines.webkit["ws-mid-default"][48000];
+  partial.status = "incomplete";
+  partial.coverage.measuredCases = partial.coverage.measuredCases.filter((x) => x !== "webkit/ws-mid-default/48000");
+  partial.coverage.incompleteCases = [{ id: "webkit/ws-mid-default/48000", firstAttemptStatus: "fail", reason: "retained first attempt" }];
+  const r = merged(undefined, Buffer.from(JSON.stringify(partial)));
   assert.equal(r.status, 0, r.out);
   assert.match(r.out, /Cross-engine comparison \(merged shards\)/);
   assert.match(r.out, /GM per-slot energy spread/);
   assert.match(r.out, /PASS: browser matrix shards/);
+  assert.equal([...ATTACHMENTS.keys()].some((key) => key.includes("chromium/full-mix/")), false);
 });
 
-test("merge rejects an explicit partial reference even when all downloaded shards are complete", () => {
+test("core and qualification artifacts cannot satisfy each other's independently expected mode", () => {
+  const coreAsQualification = merged(null, TEST_REFERENCE_BYTES, null, "core", "full-mix-qualification");
+  assert.equal(coreAsQualification.status, 1, coreAsQualification.out);
+  assert.match(coreAsQualification.out, /required shard result is missing|unexpected result path/);
+  const qualificationAsCore = merged(null, TEST_REFERENCE_BYTES, null, "full-mix-qualification", "core");
+  assert.equal(qualificationAsCore.status, 1, qualificationAsCore.out);
+  assert.match(qualificationAsCore.out, /required shard result is missing|unexpected result path/);
+  const forgedMode = qualificationMerged((files) => {
+    const [rel, report] = first(files, "chromium", "render");
+    report.matrixRun.selection.mode = "core";
+    files[rel] = report;
+  });
+  assert.equal(forgedMode.status, 1, forgedMode.out);
+  assert.match(forgedMode.out, /declared selection does not match the required shard configuration/);
+});
+
+test("qualification merge uses the same strict aggregate for render headroom and full-mix evidence", () => {
+  const r = qualificationMerged();
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /PASS: browser matrix shards/);
+  assert.match(r.out, /render q1 44100/);
+  assert.match(r.out, /spec full-mix\s+assert\s+\[build x sampleRate\]\s+run/);
+  assert.ok([...ATTACHMENTS.keys()].some((key) => key.includes("chromium/full-mix/")));
+});
+
+test("qualification merge rejects full-mix WAVs uploaded to the old sibling directory", () => {
+  const r = qualificationMerged((files) => {
+    const [resultPath, report] = first(files, "firefox", "full-mix");
+    const observation = report.firefox.cases.find((c) => c.spec === "full-mix").observations.fullMix;
+    const row = observation.builds.source;
+    const enginePath = path.posix.join(path.posix.dirname(resultPath), "firefox", row.artifact.path);
+    const oldSiblingPath = path.posix.join(path.posix.dirname(resultPath), row.artifact.path);
+    ATTACHMENTS.set(oldSiblingPath, ATTACHMENTS.get(enginePath));
+    ATTACHMENTS.delete(enginePath);
+    files[resultPath] = report;
+  });
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /raw audio artifact is missing or invalid/);
+});
+
+test("qualification merge rejects WAVs reached through a parent symlink", () => {
+  let relativeArtifact;
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "matrix-wav-symlink-"));
+  try {
+    const r = qualificationMerged((files) => {
+      const [resultPath, report] = first(files, "webkit", "full-mix");
+      const row = report.webkit.cases.find((c) => c.spec === "full-mix").observations.fullMix.builds.source;
+      relativeArtifact = path.posix.join(path.posix.dirname(resultPath), "webkit", row.artifact.path);
+      files[resultPath] = report;
+    }, TEST_REFERENCE_BYTES, (dir) => {
+      const wavDir = path.join(dir, ...relativeArtifact.split("/").slice(0, -1));
+      const relocated = path.join(outside, "full-mix");
+      fs.renameSync(wavDir, relocated);
+      fs.symlinkSync(relocated, wavDir, "dir");
+    });
+    assert.equal(r.status, 1, r.out);
+    assert.match(r.out, /raw audio artifact is missing or invalid: artifact path contains a symbolic link/);
+  } finally { fs.rmSync(outside, { recursive: true, force: true }); }
+});
+
+test("merge verifies retained generated-buffer bytes, descriptors and source/min payloads", () => {
+  const mutate = (kind) => merged((files) => {
+    const [resultPath, report] = first(files, "chromium", "render");
+    const c = report.chromium.cases.find((row) => row.spec === "render");
+    const obs = c.observations["generated buffer SHA-256 (first reverb-enabled attempt)"];
+    const row = obs.builds.source.convBuf;
+    const attachmentPath = path.posix.join(path.posix.dirname(resultPath), "chromium", row.artifact.path);
+    if (kind === "missing") ATTACHMENTS.delete(attachmentPath);
+    else if (kind === "altered") {
+      const bytes = Buffer.from(ATTACHMENTS.get(attachmentPath));
+      bytes[0] ^= 1;
+      ATTACHMENTS.set(attachmentPath, bytes);
+    } else if (kind === "extra") {
+      ATTACHMENTS.set(attachmentPath, Buffer.concat([ATTACHMENTS.get(attachmentPath), Buffer.alloc(4)]));
+    } else if (kind === "truncated") {
+      ATTACHMENTS.set(attachmentPath, ATTACHMENTS.get(attachmentPath).subarray(0, -4));
+    } else if (kind === "unaligned") {
+      ATTACHMENTS.set(attachmentPath, ATTACHMENTS.get(attachmentPath).subarray(0, -1));
+    } else if (kind === "nonfinite") {
+      const bytes = Buffer.from(ATTACHMENTS.get(attachmentPath));
+      bytes.writeFloatLE(Infinity, 0);
+      ATTACHMENTS.set(attachmentPath, bytes);
+      row.sha256 = stableSha256(bytes);
+    } else if (kind === "channels") row.channels = 1;
+    else if (kind === "dimension") c.dims.sampleRate = 1000000;
+    else if (kind === "source-min") {
+      const min = obs.builds.min.convBuf;
+      const minPath = path.posix.join(path.posix.dirname(resultPath), "chromium", min.artifact.path);
+      const bytes = Buffer.from(ATTACHMENTS.get(minPath));
+      bytes[0] ^= 1;
+      ATTACHMENTS.set(minPath, bytes);
+    }
+    files[resultPath] = report;
+  });
+  for (const [kind, expected] of [
+    ["missing", /raw Float32 buffer bytes are missing or invalid/],
+    ["altered", /raw byte SHA-256 is/],
+    ["extra", /raw Float32 buffer bytes are missing or invalid: artifact byte length is .* expected .* artifact was not read/],
+    ["truncated", /raw Float32 buffer bytes are missing or invalid: artifact byte length is .* expected .* artifact was not read/],
+    ["unaligned", /raw Float32 buffer bytes are missing or invalid: artifact byte length is .* expected .* artifact was not read/],
+    ["dimension", /generated-buffer artifacts were not read because downloaded dimensions differ from the independent manifest/],
+    ["nonfinite", /raw Float32 bytes contain a non-finite sample/],
+    ["channels", /source convBuf channel count is 1, expected 2/],
+    ["source-min", /source\/min convBuf raw Float32 bytes differ/],
+  ]) {
+    const r = mutate(kind);
+    assert.equal(r.status, 1, kind + ": " + r.out);
+    assert.match(r.out, expected, kind);
+  }
+});
+
+test("merge refuses generated-buffer artifacts reached through a parent symlink", () => {
+  let relativeArtifact;
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "matrix-buffer-symlink-"));
+  try {
+    const r = merged((files) => {
+      const [resultPath, report] = first(files, "chromium", "render");
+      const c = report.chromium.cases.find((row) => row.spec === "render");
+      relativeArtifact = path.posix.join(path.posix.dirname(resultPath), "chromium",
+        c.observations["generated buffer SHA-256 (first reverb-enabled attempt)"].builds.source.convBuf.artifact.path);
+      files[resultPath] = report;
+    }, TEST_REFERENCE_BYTES, (dir) => {
+      const generatedDir = path.join(dir, ...relativeArtifact.split("/").slice(0, -1));
+      const relocated = path.join(outside, "generated-buffers");
+      fs.renameSync(generatedDir, relocated);
+      fs.symlinkSync(relocated, generatedDir, "dir");
+    });
+    assert.equal(r.status, 1, r.out);
+    assert.match(r.out, /raw Float32 buffer bytes are missing or invalid: artifact path contains a symbolic link/);
+  } finally { fs.rmSync(outside, { recursive: true, force: true }); }
+});
+
+test("qualification merge rejects an explicit partial reference even when all downloaded shards are complete", () => {
   const partial = JSON.parse(TEST_REFERENCE_BYTES.toString("utf8"));
   const missing = "webkit/ws-mid-default/48000";
   delete partial.engines.webkit["ws-mid-default"][48000];
@@ -431,10 +638,10 @@ test("merge rejects an explicit partial reference even when all downloaded shard
   partial.coverage.measuredCases = partial.coverage.measuredCases.filter((x) => x !== missing);
   partial.coverage.incompleteCases = [{ id: missing, firstAttemptStatus: "fail",
     reason: "first attempt has two over-full-scale channel samples at one frame" }];
-  const r = merged(undefined, Buffer.from(JSON.stringify(partial)));
+  const r = qualificationMerged(undefined, Buffer.from(JSON.stringify(partial)));
   assert.equal(r.status, 1, r.out);
   assert.match(r.out, /measured full-mix reference is incomplete \(11\/12 engine\/fixture\/rate cases\)/);
-  assert.match(r.out, /has no measured engine-specific reference\/tolerance policy/);
+  assert.match(r.out, /producer reference status differs from the aggregate's exact identity selection/);
 });
 
 test("merge fails when an expected engine/shard/step artifact is absent", () => {
@@ -505,7 +712,7 @@ test("merge rejects stale or forged run, config, artifact, and source/min proven
     (v) => { v.matrixRun.engine = "firefox"; },
     (v) => { v.matrixRun.buildSha256.source = "0".repeat(64); },
   ]) {
-    const r = merged((files) => {
+    const r = qualificationMerged((files) => {
       const k = Object.keys(files)[0];
       mutate(files[k]);
     });
@@ -515,7 +722,7 @@ test("merge rejects stale or forged run, config, artifact, and source/min proven
 });
 
 test("merge rejects a same-version shard reporting a different Playwright browser bundle", () => {
-  const r = merged((files) => {
+  const r = qualificationMerged((files) => {
     const [rel, report] = first(files, "webkit", "full-mix");
     const toolchain = report.matrixRun.browserToolchain;
     toolchain.browsers.webkit = {
@@ -543,14 +750,14 @@ test("merge rejects a same-version measured reference pinned to a different brow
     browserVersion: wrong.browserVersion, identitySha256: wrong.identitySha256 };
   delete capturedToolchain.identitySha256;
   capturedToolchain.identitySha256 = stableSha256(Buffer.from(stableCanonical(capturedToolchain)));
-  const r = merged(null, Buffer.from(JSON.stringify(reference)));
+  const r = qualificationMerged(null, Buffer.from(JSON.stringify(reference)));
   assert.equal(r.status, 1, r.out);
-  assert.match(r.out, /measured reference browserBundle is stale or mismatched/);
+  assert.match(r.out, /producer reference status differs from the aggregate's exact identity selection/);
   assert.match(r.out, /26\.6/);
 });
 
 test("merge rejects same-version Chromium full-browser metadata for the headless-shell launch", () => {
-  const r = merged((files) => {
+  const r = qualificationMerged((files) => {
     const [rel, report] = first(files, "chromium", "full-mix");
     const toolchain = report.matrixRun.browserToolchain;
     const wrong = bundleWithId(testBrowserBundle("chromium"), "chromium-" + TEST_TOOLCHAIN.browsers.chromium.revision);
@@ -581,15 +788,14 @@ test("merge rejects JSON-null metrics, missing or malformed generated-buffer dig
     files[k] = v;
   });
   assert.equal(r.status, 1, r.out);
-  assert.match(r.out, /source build has missing, null or malformed Float32 buffer SHA-256 data/);
-  assert.match(r.out, /source build has missing, null or malformed Float32 buffer SHA-256 data/);
+  assert.match(r.out, /source build must contain exactly convBuf, n0 and n1 descriptors/);
   r = merged((files) => {
     const [k, v] = first(files, "firefox", "render");
     v.firefox.cases[0].observations["generated buffer SHA-256 (first reverb-enabled attempt)"].builds.min.n0.sha256 = "b".repeat(16);
     files[k] = v;
   });
   assert.equal(r.status, 1, r.out);
-  assert.match(r.out, /fresh-min build has missing, null or malformed Float32 buffer SHA-256 data/);
+  assert.match(r.out, /min n0 SHA-256 must be 64 lowercase hexadecimal characters/);
   r = merged((files) => {
     const [k, v] = first(files, "firefox", "render");
     delete v.firefox.cases[0].observations["generated buffer SHA-256 (first reverb-enabled attempt)"].producer;
@@ -621,16 +827,19 @@ test("merge rejects JSON-null metrics, missing or malformed generated-buffer dig
   assert.match(r.out, /FAIL: browser matrix shards/);
 });
 
-test("merge reports actual over-full-scale render peaks with engine, case, group, slot and value", () => {
-  const r = merged((files) => {
+test("only strict qualification enforces the new aggregate GM peak ceiling", () => {
+  const change = (files) => {
     const [k, v] = first(files, "webkit", "render");
     const c = v.webkit.cases.find((item) => item.spec === "render" && item.dims.quality === 1 && item.dims.sampleRate === 44100);
     c.observations.measurements["gm-drums"].peaks[14] = 1.259;
     files[k] = v;
-  });
-  assert.equal(r.status, 1, r.out);
-  assert.match(r.out, /webkit render q1 44100 has over-full-scale peak for gm-drums slot 14 = 1\.259/);
-  assert.match(r.out, /over-full-scale render peak webkit render q1 44100 gm-drums slot 14 = 1\.259/);
+  };
+  const core = merged(change);
+  assert.equal(core.status, 0, core.out);
+  const qualification = qualificationMerged(change);
+  assert.equal(qualification.status, 1, qualification.out);
+  assert.match(qualification.out, /webkit render q1 44100 has over-full-scale peak for gm-drums slot 14 = 1\.259/);
+  assert.match(qualification.out, /over-full-scale render peak webkit render q1 44100 gm-drums slot 14 = 1\.259/);
 });
 
 test("merge normalizes malformed case timing and worker diagnostics instead of crashing", () => {
@@ -684,18 +893,40 @@ test("the workflow shard list, MATRIX.shards and job name agree", () => {
   assert.deepEqual(shards, Array.from({ length: n }, (_, i) => i + 1));
   assert.ok(yml.includes("SHARD: ${{ matrix.shard }}/" + n), "SHARD");
   assert.ok(yml.includes("name: browser (${{ matrix.engine }}, ${{ matrix.shard }}/" + n + ")"), "job name");
+  assert.ok(yml.includes("name: browser matrix"), "ordinary required check name");
+  assert.ok(yml.includes("name: full-mix qualification aggregate"), "separate strict qualification check name");
+  assert.ok(yml.includes("pattern: browser-results-*"), "core artifact selection");
+  assert.ok(yml.includes("pattern: full-mix-qualification-*"), "qualification artifact selection");
+  const qualificationJob = yml.split("  full-mix-qualification:\n")[1].split("\n  demos:")[0];
+  const output = /--out="\$RUNNER_TEMP\/([^"]+)"/.exec(qualificationJob);
+  const upload = /\n\x20{10}path: \$\{\{ runner\.temp \}\}\/([^\n]+)\n/.exec(qualificationJob);
+  assert.ok(output, "qualification producer output path");
+  assert.ok(upload, "qualification artifact upload path");
+  const runnerTemp = "/runner-temp";
+  const stagedResults = path.posix.join(runnerTemp, output[1], "results.json");
+  const uploadedRoot = path.posix.join(runnerTemp, upload[1]);
+  const artifactResult = path.posix.relative(uploadedRoot, stagedResults);
+  assert.equal(artifactResult, "browser-matrix/results.json",
+    "the workflow's real staging/upload paths preserve the browser-matrix directory under the uploaded artifact");
+  assert.ok(yml.includes('${{ runner.temp }}/full-mix-qualification/'), "qualification upload root preserves browser-matrix/ in the artifact");
   assert.ok(n <= SPECS.length);
+  const corePaths = [...expectedResultPaths().keys()];
+  assert.ok(corePaths.every((rel) => rel.startsWith("browser-results-") && !rel.includes("full-mix-qualification")));
+  const qualificationPaths = [...expectedResultPaths("full-mix-qualification").keys()];
+  assert.equal(qualificationPaths.length, MATRIX.engines.length);
+  assert.ok(qualificationPaths.every((rel) => rel.startsWith("full-mix-qualification-") && rel.endsWith("/browser-matrix/results.json")));
+  assert.ok(qualificationPaths.every((rel) => path.posix.basename(rel) === "results.json" && path.posix.dirname(rel).endsWith(artifactResult.slice(0, -"/results.json".length))));
 });
 
 test("merge keeps a non-finite diagnostic repeat separate from a valid first attempt", () => {
-  const r = merged((files) => {
+  const r = qualificationMerged((files) => {
     const [rel, report] = first(files, "chromium", "full-mix");
     const observation = report.chromium.cases.find((c) => c.spec === "full-mix").observations.fullMix;
     const row = observation.builds.source, diagnostic = row.diagnosticRepeat;
-    const artifactRel = path.posix.join(path.posix.dirname(rel), diagnostic.artifact.path);
+    const artifactRel = path.posix.join(path.posix.dirname(rel), "chromium", diagnostic.artifact.path);
     const wav = Buffer.from(ATTACHMENTS.get(artifactRel));
     const frames = (wav.length - 44) / 8;
-    const firstWav = Buffer.from(ATTACHMENTS.get(path.posix.join(path.posix.dirname(rel), row.artifact.path)));
+    const firstWav = Buffer.from(ATTACHMENTS.get(path.posix.join(path.posix.dirname(rel), "chromium", row.artifact.path)));
     const firstChannels = [new Float32Array(frames), new Float32Array(frames)];
     const repeatChannels = [new Float32Array(frames), new Float32Array(frames)];
     for (let i = 0; i < frames; ++i) {
@@ -743,12 +974,12 @@ test("raw WAV parser requires exact frames and validates RIFF, byte-rate and dat
 });
 
 test("merge fails closed on missing full-mix WAVs, JSON-null metrics and raw nonfinite/over-full-scale PCM", () => {
-  const r = merged((files) => {
+  const r = qualificationMerged((files) => {
     const [chromiumPath, chromiumReport] = first(files, "chromium", "full-mix");
     const chromiumCase = chromiumReport.chromium.cases.find((c) => c.spec === "full-mix");
     const source = chromiumCase.observations.fullMix.builds.source;
     source.metrics.overall.rawRenderRms = null;
-    const sourceRel = path.posix.join(path.posix.dirname(chromiumPath), source.artifact.path);
+    const sourceRel = path.posix.join(path.posix.dirname(chromiumPath), "chromium", source.artifact.path);
     const wav = Buffer.from(ATTACHMENTS.get(sourceRel));
     const frames = (wav.length - 44) / 8;
     const channels = [new Float32Array(frames), new Float32Array(frames)];
@@ -768,7 +999,7 @@ test("merge fails closed on missing full-mix WAVs, JSON-null metrics and raw non
 
     const [firefoxPath, firefoxReport] = first(files, "firefox", "full-mix");
     const firefoxSource = firefoxReport.firefox.cases.find((c) => c.spec === "full-mix").observations.fullMix.builds.source;
-    const missingRel = path.posix.join(path.posix.dirname(firefoxPath), firefoxSource.artifact.path);
+    const missingRel = path.posix.join(path.posix.dirname(firefoxPath), "firefox", firefoxSource.artifact.path);
     ATTACHMENTS.delete(missingRel);
     files[firefoxPath] = firefoxReport;
   });

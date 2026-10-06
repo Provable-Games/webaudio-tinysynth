@@ -5,6 +5,7 @@
  * matrix is declared in tests/browser/matrix.js and printed with the results.
  *
  * Usage: node scripts/browser-matrix.js [options]
+ *   --mode=core|full-mix-qualification  select the ordinary matrix or the strict fixture qualifier
  *   --engines=chromium,firefox,webkit   engines to run (default: all declared)
  *   --specs=embed,render,...            specs to run (default: every "assert" spec)
  *   --observe                           also run the observe-only specs (hang, variation)
@@ -16,7 +17,7 @@
  *   --out=DIR                           write results.json, renders (WAV) and logs there
  *   --shard=K/N                         run only the selected specs that belong to shard K
  *                                       of N (see shardLayout); with --list, print all N
- *   --merge=DIR                         run nothing: check the results.json files under DIR
+ *   --merge=DIR                         run nothing: check the mode-specific results.json files under DIR
  *                                       (one per shard and step, from CI) together, and
  *                                       print the combined table and the measured times
  *   --list                              print the matrix and exit
@@ -68,6 +69,7 @@ const REVERB_CAPTURE_STEPS = [
   { call: "noteOn", args: [0, 69, 100, 0.5] },
   { call: "noteOff", args: [0, 69, 0.8] },
 ];
+const QUALIFICATION_SPECS = ["render", "full-mix"];
 
 function sha256(data) {
   return crypto.createHash("sha256").update(data).digest("hex");
@@ -168,7 +170,7 @@ function reportProvenance(o, engines, context = null) {
     matrixConfigSha256: matrixConfigSha256(),
     engine: engines.length === 1 ? engines[0] : null,
     shard: o.shard ? { index: o.shard.k, total: o.shard.n } : null,
-    selection: { kind: kinds.length === 1 ? kinds[0] : "mixed", seed: o.seed, specs: selection },
+    selection: { mode: o.mode || "core", kind: kinds.length === 1 ? kinds[0] : "mixed", seed: o.seed, specs: selection },
     buildSha256: buildSha256(o.overrides),
     browserToolchain: resolveBrowserToolchain(),
   };
@@ -203,6 +205,9 @@ function renderBufferShaProblems(c, observation, where) {
   const problems = [];
   const add = (message) => problems.push(where + " " + message);
   if (!isRecord(observation)) return [where + " is missing generated-buffer SHA-256 evidence"];
+  const expectedObservationKeys = ["attempt", "builds", "encoding", "firstAttempt", "method", "producer", "scenarioId", "schemaVersion", "settings"];
+  if (stableJson(Object.keys(observation).sort()) !== stableJson(expectedObservationKeys))
+    add("generated-buffer observation has missing or unexpected top-level fields");
   if (observation.schemaVersion !== 1 || observation.method !== RENDER_BUFFER_SHA_METHOD ||
       observation.producer !== RENDER_BUFFER_SHA_PRODUCER ||
       observation.encoding !== RENDER_BUFFER_SHA_ENCODING || observation.scenarioId !== "reverb" ||
@@ -229,21 +234,44 @@ function renderBufferShaProblems(c, observation, where) {
     return problems;
   }
   const frames = Number.isSafeInteger(rate) ? Math.floor(rate * 0.5) : -1;
-  const validBufferSet = (build) => isRecord(build) &&
-    stableJson(Object.keys(build).sort()) === stableJson(["convBuf", "n0", "n1"]) &&
-    [["convBuf", 2], ["n0", 1], ["n1", 1]].every(([name, channels]) => {
-      const row = build[name];
-      return isRecord(row) && stableJson(Object.keys(row).sort()) === stableJson(["channels", "frames", "sha256"]) &&
-        typeof row.sha256 === "string" && /^[a-f0-9]{64}$/.test(row.sha256) &&
-        row.channels === channels && row.frames === frames;
-    });
-  if (!validBufferSet(observation.builds.source)) add("source build has missing, null or malformed Float32 buffer SHA-256 data");
-  if (!validBufferSet(observation.builds.min)) add("fresh-min build has missing, null or malformed Float32 buffer SHA-256 data");
-  if (validBufferSet(observation.builds.source) && validBufferSet(observation.builds.min) &&
-      stableJson(observation.builds.source) !== stableJson(observation.builds.min))
+  const validBufferSet = (build, buildName) => {
+    if (!isRecord(build)) { add(buildName + " build generated-buffer descriptors are missing"); return false; }
+    let valid = stableJson(Object.keys(build).sort()) === stableJson(["convBuf", "n0", "n1"]);
+    if (!valid)
+      add(buildName + " build must contain exactly convBuf, n0 and n1 descriptors");
+    for (const [name, channels] of [["convBuf", 2], ["n0", 1], ["n1", 1]]) {
+      const row = build[name], at = buildName + " " + name;
+      const artifactPath = "generated-buffers/q" + quality + "-" + rate + "-reverb-" + buildName + "-" + name + ".f32le";
+      if (!isRecord(row)) { add(at + " generated-buffer descriptor is missing or malformed"); valid = false; continue; }
+      if (stableJson(Object.keys(row).sort()) !== stableJson(["artifact", "byteLength", "channels", "frames", "sha256"])) {
+        add(at + " descriptor fields are incomplete or unexpected"); valid = false;
+      }
+      if (typeof row.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(row.sha256)) {
+        add(at + " SHA-256 must be 64 lowercase hexadecimal characters"); valid = false;
+      }
+      if (row.channels !== channels) { add(at + " channel count is " + String(row.channels) + ", expected " + channels); valid = false; }
+      if (row.frames !== frames) { add(at + " frame count is " + String(row.frames) + ", expected " + frames); valid = false; }
+      const byteLength = channels * frames * 4;
+      if (row.byteLength !== byteLength) { add(at + " byte length is " + String(row.byteLength) + ", expected " + byteLength); valid = false; }
+      if (!isRecord(row.artifact)) { add(at + " raw byte artifact reference is missing or malformed"); valid = false; }
+      else {
+        if (stableJson(Object.keys(row.artifact).sort()) !== stableJson(["path", "saved"])) {
+          add(at + " raw byte artifact fields are incomplete or unexpected"); valid = false;
+        }
+        if (row.artifact.path !== artifactPath) { add(at + " raw byte artifact path is mismatched"); valid = false; }
+        if (row.artifact.saved !== true) { add(at + " raw byte artifact is not retained (saved must be true)"); valid = false; }
+      }
+    }
+    return valid;
+  };
+  const sourceValid = validBufferSet(observation.builds.source, "source");
+  const minValid = validBufferSet(observation.builds.min, "min");
+  const measurementsOnly = (build) => Object.fromEntries(["convBuf", "n0", "n1"].map((name) => [name,
+    build[name] && { sha256: build[name].sha256, channels: build[name].channels, frames: build[name].frames, byteLength: build[name].byteLength }]));
+  if (sourceValid && minValid && stableJson(measurementsOnly(observation.builds.source)) !== stableJson(measurementsOnly(observation.builds.min)))
     add("source/min generated-buffer SHA-256 measurements disagree");
   const expected = Number.isSafeInteger(rate) && SEED_EXPECTED.hashes[rate] && SEED_EXPECTED.hashes[rate][MATRIX.seed];
-  if (expected && validBufferSet(observation.builds.source)) {
+  if (expected && sourceValid) {
     for (const name of ["convBuf", "n0", "n1"]) {
       if (observation.builds.source[name].sha256 !== expected[name])
         add("source generated-buffer SHA-256 differs from the independent seeded expectation for " + name);
@@ -252,8 +280,81 @@ function renderBufferShaProblems(c, observation, where) {
   return problems;
 }
 
+/* Read only regular artifacts below the downloaded shard root; never follow a symlink. */
+function readArtifactUnderShard(shardRoot, relativePath, expectedByteLength) {
+  if (typeof relativePath !== "string" || !relativePath || path.isAbsolute(relativePath))
+    throw new Error("artifact path must be relative to the shard");
+  if (!Number.isSafeInteger(expectedByteLength) || expectedByteLength < 1)
+    throw new Error("expected artifact byte length is invalid; artifact was not read");
+  const root = fs.realpathSync(shardRoot);
+  const target = path.resolve(root, relativePath);
+  if (target === root || !target.startsWith(root + path.sep)) throw new Error("artifact path escapes the shard directory");
+  let current = root;
+  const components = path.relative(root, target).split(path.sep);
+  for (let i = 0; i < components.length; ++i) {
+    current = path.join(current, components[i]);
+    const stat = fs.lstatSync(current);
+    if (stat.isSymbolicLink()) throw new Error("artifact path contains a symbolic link");
+    if (i < components.length - 1 && !stat.isDirectory()) throw new Error("artifact parent is not a directory");
+    if (i === components.length - 1) {
+      if (!stat.isFile()) throw new Error("artifact is not a regular file");
+      if (stat.size !== expectedByteLength)
+        throw new Error("artifact byte length is " + stat.size + ", expected " + expectedByteLength + "; artifact was not read");
+    }
+  }
+  const realTarget = fs.realpathSync(target);
+  if (!realTarget.startsWith(root + path.sep)) throw new Error("artifact path escapes the shard directory");
+  return fs.readFileSync(realTarget);
+}
+
+function generatedBufferArtifactProblems(engine, rel, resultFile, c, want, problems) {
+  const obs = c && c.observations && c.observations[RENDER_BUFFER_SHA_OBSERVATION];
+  if (!isRecord(obs) || !isRecord(obs.builds)) return;
+  if (!want || stableJson(c.dims) !== stableJson(want.dims)) {
+    problems.push(rel + ": " + engine + " / " + (c && c.id || "render case") + " generated-buffer artifacts were not read because downloaded dimensions differ from the independent manifest");
+    return;
+  }
+  const shardRoot = path.dirname(resultFile);
+  const captured = { source: {}, min: {} };
+  const sampleRate = want.dims && want.dims.sampleRate;
+  const frames = Number.isSafeInteger(sampleRate) && sampleRate > 0 ? Math.floor(sampleRate * 0.5) : -1;
+  for (const build of ["source", "min"]) for (const name of ["convBuf", "n0", "n1"]) {
+    const row = obs.builds[build] && obs.builds[build][name];
+    if (!isRecord(row) || !isRecord(row.artifact) || typeof row.artifact.path !== "string") continue;
+    const where = rel + ": " + engine + " / " + c.id + " " + build + " " + name;
+    if (row.artifact.saved !== true) problems.push(where + " raw Float32 buffer bytes are not marked as retained");
+    let bytes;
+    const channels = name === "convBuf" ? 2 : 1;
+    const expectedByteLength = channels * frames * 4;
+    if (!Number.isSafeInteger(expectedByteLength) || expectedByteLength < 4) {
+      problems.push(where + " expected Float32 byte length is invalid; artifact was not read");
+      continue;
+    }
+    try { bytes = readArtifactUnderShard(shardRoot, path.join(engine, row.artifact.path), expectedByteLength); }
+    catch (e) { problems.push(where + " raw Float32 buffer bytes are missing or invalid: " + e.message); continue; }
+    if (bytes.length !== row.byteLength) {
+      problems.push(where + " raw byte length is " + bytes.length + ", descriptor says " + String(row.byteLength));
+      continue;
+    }
+    const actualSha = sha256(bytes);
+    if (actualSha !== row.sha256)
+      problems.push(where + " raw byte SHA-256 is " + actualSha + ", descriptor says " + String(row.sha256));
+    let badOffset = -1;
+    for (let offset = 0; offset < bytes.length; offset += 4) {
+      if (!Number.isFinite(bytes.readFloatLE(offset))) { badOffset = offset; break; }
+    }
+    if (badOffset >= 0) problems.push(where + " raw Float32 bytes contain a non-finite sample at byte " + badOffset);
+    captured[build][name] = bytes;
+  }
+  for (const name of ["convBuf", "n0", "n1"]) {
+    const source = captured.source[name], min = captured.min[name];
+    if (source && min && !source.equals(min))
+      problems.push(rel + ": " + engine + " / " + c.id + " source/min " + name + " raw Float32 bytes differ");
+  }
+}
+
 function parseArgs(argv) {
-  const o = { engines: null, specs: null, observe: false, seed: MATRIX.seed, overrides: {}, out: null, list: false, engine: null, results: null, orchestrator: false, shard: null, merge: null, runContext: null, expectedContext: null };
+  const o = { mode: "core", engines: null, specs: null, observe: false, seed: MATRIX.seed, overrides: {}, out: null, list: false, engine: null, results: null, orchestrator: false, shard: null, merge: null, runContext: null, expectedContext: null };
   // A list option must name at least one entry: "--engines=," or "--specs=" would
   // otherwise select nothing and pass without running a browser.
   const list = (name, value) => {
@@ -263,7 +364,8 @@ function parseArgs(argv) {
   };
   for (const a of argv) {
     let m;
-    if ((m = /^--engines=(.*)$/.exec(a))) o.engines = list("engines", m[1]);
+    if ((m = /^--mode=(.*)$/.exec(a))) o.mode = m[1];
+    else if ((m = /^--engines=(.*)$/.exec(a))) o.engines = list("engines", m[1]);
     else if ((m = /^--specs=(.*)$/.exec(a))) o.specs = list("specs", m[1]);
     else if (a === "--observe") o.observe = true;
     else if ((m = /^--seed=(.*)$/.exec(a))) {
@@ -288,12 +390,19 @@ function parseArgs(argv) {
   }
   for (const e of [...(o.engines || []), ...(o.engine ? [o.engine] : [])]) if (!MATRIX.engines.includes(e)) throw new Error("engine " + e + " is not declared in tests/browser/matrix.js");
   for (const s of o.specs || []) if (!MATRIX.specs[s]) throw new Error("spec " + s + " is not declared in tests/browser/matrix.js");
+  if (!["core", "full-mix-qualification"].includes(o.mode)) throw new Error("--mode must be core or full-mix-qualification");
+  if (o.mode === "core" && o.specs && o.specs.includes("full-mix"))
+    throw new Error("full-mix requires --mode=full-mix-qualification");
+  if (o.mode === "full-mix-qualification" && (o.observe || (o.specs &&
+      stableJson([...o.specs].sort()) !== stableJson([...QUALIFICATION_SPECS].sort()))))
+    throw new Error("full-mix-qualification mode selects only the render and full-mix assert specs");
   if (o.merge && !o.expectedContext) throw new Error("--merge requires --expected-context=github or an explicit JSON context file");
   return o;
 }
 
 function selectedSpecs(o) {
-  const specs = o.specs || Object.keys(MATRIX.specs).filter((s) => MATRIX.specs[s].kind === "assert" || o.observe);
+  const specs = o.specs || (o.mode === "full-mix-qualification" ? QUALIFICATION_SPECS :
+    Object.keys(MATRIX.specs).filter((s) => s !== "full-mix" && (MATRIX.specs[s].kind === "assert" || o.observe)));
   if (!o.shard) return specs;
   const mine = new Set(shardLayout(o.shard.n)[o.shard.k - 1].specs);
   return specs.filter((s) => mine.has(s));
@@ -322,6 +431,7 @@ function shardLayout(n) {
 
 function printMatrix(o) {
   console.log("Declared matrix (tests/browser/matrix.js):");
+  console.log("  mode:         " + o.mode);
   console.log("  engines:      " + MATRIX.engines.join(", ") + (o.engines ? "   (this run: " + o.engines.join(", ") + ")" : ""));
   console.log("  builds:       " + MATRIX.builds.map((b) => b + (o.overrides[b] ? " = " + o.overrides[b] : "")).join(", "));
   console.log("  qualities:    " + MATRIX.qualities.join(", "));
@@ -371,7 +481,8 @@ async function worker(o) {
   }
   console.log("== " + engine + " " + session.version + " (" + results.platform + ")");
   const server = await startServer({ overrides: o.overrides });
-  const shared = { options: o, server, matrix: MATRIX, engine, version: session.version, out };
+  const shared = { options: o, server, matrix: MATRIX, engine, version: session.version, platform: results.platform,
+    browserBundle: results.browserBundle, out };
   let failed = 0;
   try {
     for (const spec of selectedSpecs(o)) {
@@ -446,7 +557,7 @@ function summarize(all, o) {
  * (deterministic data); GM per-slot energies at the default level and the
  * linear-level makeup gain must agree within tolerances.crossEngineDb.
  */
-function crossEngine(all) {
+function crossEngine(all, mode = "core") {
   const { DEFAULT } = require("../tests/browser/tolerances");
   const engines = MATRIX.engines.filter((e) => all[e] && all[e].version && all[e].cases.some((c) => c.spec === "render"));
   const checks = [];
@@ -495,10 +606,11 @@ function crossEngine(all) {
         if (d > worst) { worst = d; where = group + " slot " + i; }
       });
     }
+    const enforceHeadroom = mode === "full-mix-qualification";
     checks.push({ name: id + ": GM per-slot energy spread <= " + DEFAULT.crossEngineDb.compressed + " dB (default level)",
-      ok: complete && !overFullScale.length && worst <= DEFAULT.crossEngineDb.compressed,
+      ok: complete && (!enforceHeadroom || !overFullScale.length) && worst <= DEFAULT.crossEngineDb.compressed,
       detail: !complete ? "missing, null or malformed GM measurements: " + malformed.join(", ")
-        : overFullScale.length ? "over-full-scale render peak " + overFullScale.slice(0, 5).join("; ")
+        : enforceHeadroom && overFullScale.length ? "over-full-scale render peak " + overFullScale.slice(0, 5).join("; ")
           : worst.toFixed(3) + " dB at " + where });
     const mk = ms.map((m) => m && m.linearity && m.linearity.makeup);
     const ratios = ms.map((m) => m && m.linearity && m.linearity.ratio);
@@ -562,7 +674,7 @@ async function orchestrate(o) {
   if (o.out) fs.mkdirSync(o.out, { recursive: true });
   // Workers run with cwd = repository root, so pass them the values already
   // normalized here (absolute paths), never the caller's raw arguments.
-  const forward = ["--seed=" + o.seed];
+  const forward = ["--mode=" + o.mode, "--seed=" + o.seed];
   if (o.specs) forward.push("--specs=" + o.specs.join(","));
   if (o.shard) forward.push("--shard=" + o.shard.k + "/" + o.shard.n);
   if (o.observe) forward.push("--observe");
@@ -582,7 +694,7 @@ async function orchestrate(o) {
     if (o.shard) res.shard = o.shard.k + "/" + o.shard.n;
     all[engine] = res;
   }
-  const cross = crossEngine(all);
+  const cross = crossEngine(all, o.mode);
   if (o.out) {
     const report = Object.assign({ matrixRun: reportProvenance(o, engines, runContext) }, all, { crossEngine: cross });
     fs.writeFileSync(path.join(o.out, "results.json"), JSON.stringify(report, null, 1));
@@ -616,21 +728,26 @@ function expectedContextForMerge(o) {
   return readContextFile(o.expectedContext, "--expected-context");
 }
 
-function expectedShardSteps(index) {
-  const specs = shardLayout(MATRIX.shards)[index - 1].specs;
+function expectedShardSteps(index, mode = "core") {
+  if (mode === "full-mix-qualification")
+    return index === 1 ? { "browser-matrix": QUALIFICATION_SPECS, "browser-observe": [] }
+      : { "browser-matrix": [], "browser-observe": [] };
+  const specs = shardLayout(MATRIX.shards)[index - 1].specs.filter((spec) => spec !== "full-mix");
   return {
     "browser-matrix": specs.filter((s) => MATRIX.specs[s].kind === "assert"),
     "browser-observe": specs.filter((s) => MATRIX.specs[s].kind === "observe"),
   };
 }
 
-function expectedResultPaths() {
+function expectedResultPaths(mode = "core") {
   const paths = new Map();
-  for (const engine of MATRIX.engines) for (let index = 1; index <= MATRIX.shards; ++index) {
-    for (const [step, specs] of Object.entries(expectedShardSteps(index))) {
+  const shards = mode === "full-mix-qualification" ? 1 : MATRIX.shards;
+  for (const engine of MATRIX.engines) for (let index = 1; index <= shards; ++index) {
+    for (const [step, specs] of Object.entries(expectedShardSteps(index, mode))) {
       if (!specs.length) continue;
-      const rel = path.posix.join("browser-results-" + engine + "-" + index, step, "results.json");
-      paths.set(rel, { engine, index, step, specs });
+      const artifact = mode === "full-mix-qualification" ? "full-mix-qualification-" + engine : "browser-results-" + engine + "-" + index;
+      const rel = path.posix.join(artifact, step, "results.json");
+      paths.set(rel, { engine, index, total: shards, step, specs, mode });
     }
   }
   return paths;
@@ -645,12 +762,10 @@ function validateFiniteNumbers(value, where, problems) {
 
 function finiteNumber(value) { return typeof value === "number" && Number.isFinite(value); }
 
-function readFloatStereoWav(file, expectedSampleRate, expectedFrames) {
-  const stat = fs.lstatSync(file);
-  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("raw WAV must be a regular file");
-  if (!Number.isSafeInteger(expectedFrames) || expectedFrames < 1 || stat.size !== 44 + expectedFrames * 8)
+function parseFloatStereoWav(bytes, expectedSampleRate, expectedFrames) {
+  if (!Buffer.isBuffer(bytes)) throw new TypeError("raw WAV bytes must be a Buffer");
+  if (!Number.isSafeInteger(expectedFrames) || expectedFrames < 1 || bytes.length !== 44 + expectedFrames * 8)
     throw new Error("raw WAV byte length does not match the exact expected frame count");
-  const bytes = fs.readFileSync(file);
   if (bytes.length < 52 || bytes.toString("ascii", 0, 4) !== "RIFF" || bytes.toString("ascii", 8, 12) !== "WAVE" ||
       bytes.readUInt32LE(4) !== bytes.length - 8 || bytes.toString("ascii", 12, 16) !== "fmt " ||
       bytes.readUInt32LE(16) !== 16 || bytes.readUInt16LE(20) !== 3 || bytes.readUInt16LE(22) !== 2 ||
@@ -669,6 +784,14 @@ function readFloatStereoWav(file, expectedSampleRate, expectedFrames) {
   return { bytes, channels };
 }
 
+function readFloatStereoWav(file, expectedSampleRate, expectedFrames) {
+  const stat = fs.lstatSync(file);
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("raw WAV must be a regular file");
+  if (!Number.isSafeInteger(expectedFrames) || expectedFrames < 1 || stat.size !== 44 + expectedFrames * 8)
+    throw new Error("raw WAV byte length does not match the exact expected frame count");
+  return parseFloatStereoWav(fs.readFileSync(file), expectedSampleRate, expectedFrames);
+}
+
 function validateFullMixCase(engine, browserVersion, platform, currentBundle, rel, resultFile, c, expected, problems) {
   const where = rel + ": " + engine + " / " + (c && c.id || "<malformed full-mix case>");
   const obs = c && c.observations && c.observations.fullMix;
@@ -678,16 +801,19 @@ function validateFullMixCase(engine, browserVersion, platform, currentBundle, re
   const expectedTop = {
     schemaVersion: 2, scope: "fixture", qualification: "fixture-only-no-production-approval",
     fixtureId: expected.fixtureId, profileKind: expected.profileKind, sampleRate: expected.sampleRate,
-    quality: 1, engine, browserVersion, midiSha256: expected.midiSha256,
+    quality: 1, engine, browserVersion, platform, browserBundle: currentBundle, midiSha256: expected.midiSha256,
     setupSha256: expected.setupSha256, settingsSha256: expected.settingsSha256,
     probePlanSha256: expected.probePlanSha256, methodSha256: expected.methodSha256,
     toleranceSha256: expected.toleranceSha256, playbackOriginSec: fullMixSpec.ORIGIN,
-    firstAttempt: true, captureEligiblePreBaseline: true, status: "pass",
+    firstAttempt: true,
   };
   for (const [key, value] of Object.entries(expectedTop))
-    if (obs[key] !== value) problems.push(where + " fullMix " + key + " is missing or mismatched");
+    if (value && typeof value === "object" ? stableJson(obs[key]) !== stableJson(value) : obs[key] !== value)
+      problems.push(where + " fullMix " + key + " is missing or mismatched");
   if (!fixture) { problems.push(where + " has an unknown full-mix fixture"); return; }
   if (c.status !== "pass") problems.push(where + " full-mix case status is not pass");
+  if (typeof obs.captureEligiblePreBaseline !== "boolean" || !["pass", "fail", "incomplete"].includes(obs.status))
+    problems.push(where + " fullMix status/eligibility fields are malformed");
   if (!obs.noteTiming || obs.noteTiming.complete !== fixture.timingComplete ||
       obs.noteTiming.unmatchedNoteOffs !== fixture.unmatchedNoteOffs ||
       obs.noteTiming.unpitchedOneShotCount !== fixture.unpitchedOneShotCount ||
@@ -704,28 +830,17 @@ function validateFullMixCase(engine, browserVersion, platform, currentBundle, re
     problems.push(where + " fullMix must contain source and min first-attempt subresults");
     return;
   }
-  const referenceForCase = fullMixSpec.REFERENCE && fullMixSpec.REFERENCE.engines && fullMixSpec.REFERENCE.engines[engine] &&
-    fullMixSpec.REFERENCE.engines[engine][expected.fixtureId] && fullMixSpec.REFERENCE.engines[engine][expected.fixtureId][expected.sampleRate];
   const refTolerances = fullMixSpec.REFERENCE && fullMixSpec.REFERENCE.tolerances;
-  if (!referenceForCase || !refTolerances) problems.push(where + " has no measured engine-specific reference/tolerance policy");
-  if (referenceForCase && referenceForCase.metadata) {
-    const metadata = referenceForCase.metadata;
-    const expectedReferenceMetadata = {
-      scope: "fixture", fixtureId: expected.fixtureId, profileKind: expected.profileKind, quality: 1,
-      engine, browserVersion, platform, sampleRate: expected.sampleRate,
-      browserBundle: currentBundle,
-      midiSha256: expected.midiSha256, setupSha256: expected.setupSha256,
-      settingsSha256: expected.settingsSha256, probePlanSha256: expected.probePlanSha256,
-      methodSha256: expected.methodSha256, toleranceSha256: expected.toleranceSha256,
-      playbackOriginSec: fullMixSpec.ORIGIN,
-    };
-    for (const [key, value] of Object.entries(expectedReferenceMetadata)) {
-      const same = value && typeof value === "object"
-        ? stableJson(metadata[key]) === stableJson(value)
-        : metadata[key] === value;
-      if (!same) problems.push(where + " measured reference " + key + " is stale or mismatched");
-    }
-  }
+  const referenceIdentity = {
+    scope: "fixture", fixtureId: expected.fixtureId, profileKind: expected.profileKind, quality: 1,
+    engine, browserVersion, platform, sampleRate: expected.sampleRate, browserBundle: currentBundle,
+    midiSha256: expected.midiSha256, setupSha256: expected.setupSha256,
+    settingsSha256: expected.settingsSha256, probePlanSha256: expected.probePlanSha256,
+    methodSha256: expected.methodSha256, toleranceSha256: expected.toleranceSha256,
+    playbackOriginSec: fullMixSpec.ORIGIN,
+  };
+  const selectedReferences = Object.fromEntries(["source", "min"].map((build) => [build,
+    fullMixSpec.selectReference(fullMixSpec.REFERENCE, referenceIdentity, build)]));
   const expectedNotes = new Map(fixture.notes.map((n) => [n.id, n]));
   const parsedBuilds = {};
 
@@ -741,12 +856,13 @@ function validateFullMixCase(engine, browserVersion, platform, currentBundle, re
       problems.push(at + " raw float32 stereo artifact reference is missing or mismatched");
       return null;
     }
-    const base = path.dirname(resultFile), rawFile = path.resolve(base, artifact.path);
-    if (!rawFile.startsWith(base + path.sep)) { problems.push(at + " raw artifact path escapes its shard artifact"); return null; }
+    let rawBytes;
+    const expectedFrames = Math.ceil(fixture.renderDurationSec * expected.sampleRate);
+    try { rawBytes = readArtifactUnderShard(path.dirname(resultFile), path.join(engine, artifact.path), 44 + expectedFrames * 8); }
+    catch (e) { problems.push(at + " raw audio artifact is missing or invalid: " + e.message); return null; }
     let raw;
     try {
-      const expectedFrames = Math.ceil(fixture.renderDurationSec * expected.sampleRate);
-      raw = readFloatStereoWav(rawFile, expected.sampleRate, expectedFrames);
+      raw = parseFloatStereoWav(rawBytes, expected.sampleRate, expectedFrames);
     }
     catch (e) { problems.push(at + " raw audio artifact is missing or invalid: " + e.message); return null; }
     if (raw.bytes.length !== artifact.bytes || sha256(raw.bytes) !== artifact.sha256)
@@ -769,9 +885,13 @@ function validateFullMixCase(engine, browserVersion, platform, currentBundle, re
 
   for (const build of ["source", "min"]) {
     const row = builds[build], at = where + " " + build;
+    const selectedReference = selectedReferences[build];
     if (!row || typeof row !== "object" || Array.isArray(row) || row.firstAttempt !== true || row.attempt !== 1 ||
-        row.result !== "pass" || row.preBaselineEligible !== true)
-      problems.push(at + " does not preserve an eligible passing first attempt");
+        !["pass", "fail", "incomplete"].includes(row.result) || typeof row.preBaselineEligible !== "boolean") {
+      problems.push(at + " first-attempt status or eligibility is malformed");
+    } else if (row.result !== "pass") problems.push(at + " first-attempt result is " + row.result);
+    if (!row || row.referenceStatus !== selectedReference.status)
+      problems.push(at + " producer reference status differs from the aggregate's exact identity selection");
     const artifact = row && row.artifact;
     const parsed = readArtifact(artifact, build, 1, row || {}, "first attempt");
     if (parsed) parsedBuilds[build] = parsed;
@@ -854,10 +974,16 @@ function validateFullMixCase(engine, browserVersion, platform, currentBundle, re
           metrics.transient.left.length !== metrics.transient.right.length ||
           metrics.transient.left.some((x) => !finiteNumber(x) || x < 0) || metrics.transient.right.some((x) => !finiteNumber(x) || x < 0))
         problems.push(at + " first-downbeat 1 ms onset/envelope evidence is missing");
-      if (referenceForCase && refTolerances) {
-        const drift = fullMixSpec.compareBuildToReference(metrics, referenceForCase[build].metrics, refTolerances);
-        if (drift.length) problems.push(at + " differs from the measured engine/build reference: " + drift.slice(0, 4).join(", "));
-      }
+      const expectedResult = row && row.preBaselineEligible !== true ? "fail"
+        : selectedReference.status !== "measured" ? "incomplete"
+          : fullMixSpec.compareBuildToReference(metrics, selectedReference.reference.metrics, refTolerances).length ? "fail" : "pass";
+      if (row && row.result !== expectedResult)
+        problems.push(at + " producer first-attempt result differs from aggregate derivation (expected " + expectedResult + ")");
+      const expectedComparisonProblems = selectedReference.status === "measured"
+        ? fullMixSpec.compareBuildToReference(metrics, selectedReference.reference.metrics, refTolerances)
+        : selectedReference.problems;
+      if (row && stableJson(row.comparisonProblems) !== stableJson(expectedComparisonProblems))
+        problems.push(at + " producer comparison diagnostics differ from aggregate reference selection/recomputation");
     }
 
     const diagnostic = row && row.diagnosticRepeat;
@@ -888,13 +1014,17 @@ function validateFullMixCase(engine, browserVersion, platform, currentBundle, re
     }
   }
 
+  let sourceMin = null;
   if (parsedBuilds.source && parsedBuilds.min && builds.source && builds.min) {
-    const sourceMin = fullMixSpec.sameEnginePcm(parsedBuilds.source.channels, parsedBuilds.min.channels, engine);
+    sourceMin = fullMixSpec.sameEnginePcm(parsedBuilds.source.channels, parsedBuilds.min.channels, engine);
     if (!sourceMin.ok || stableJson(obs.sourceMinPcmComparison) !== stableJson(sourceMin) ||
         stableJson(builds.source.sourceMinPcmComparison) !== stableJson(sourceMin) ||
         stableJson(builds.min.sourceMinPcmComparison) !== stableJson(sourceMin))
       problems.push(where + " source/min first-attempt PCM differs beyond the measured same-engine tolerance or report");
   }
+  const derivedStatus = fullMixSpec.deriveFullMixStatus(builds, !!(sourceMin && sourceMin.ok));
+  if (obs.captureEligiblePreBaseline !== derivedStatus.captureEligiblePreBaseline || obs.status !== derivedStatus.status)
+    problems.push(where + " producer fullMix status/eligibility differs from aggregate first-attempt derivation");
   if (!builds.source || !builds.min || !obs.rawArtifacts ||
       stableJson(obs.rawArtifacts) !== stableJson({ source: builds.source.artifact, min: builds.min.artifact }))
     problems.push(where + " raw first-attempt artifact references do not match the build subresults");
@@ -902,7 +1032,7 @@ function validateFullMixCase(engine, browserVersion, platform, currentBundle, re
     problems.push(where + " fixture setup provenance is missing or mismatched");
 }
 
-function validateCases(engine, rel, actual, expected, problems) {
+function validateCases(engine, rel, resultFile, actual, expected, mode, problems) {
   if (!Array.isArray(actual)) {
     problems.push(rel + ": " + engine + " cases must be an array");
     return;
@@ -944,6 +1074,7 @@ function validateCases(engine, rel, actual, expected, problems) {
     if (want.spec === "render") {
       const observations = c.observations && typeof c.observations === "object" ? c.observations : {};
       problems.push(...renderBufferShaProblems(c, observations[RENDER_BUFFER_SHA_OBSERVATION], engine + " " + c.id));
+      generatedBufferArtifactProblems(engine, rel, resultFile, c, want, problems);
       const m = observations.measurements;
       const groups = ["gm-programs-0-31", "gm-programs-32-63", "gm-programs-64-95", "gm-programs-96-127", "gm-drums"];
       if (!m || typeof m !== "object" || Array.isArray(m)) problems.push(where + " is missing render measurements");
@@ -957,7 +1088,7 @@ function validateCases(engine, rel, actual, expected, problems) {
             xs.every((v) => typeof v === "number" && Number.isFinite(v) && v > 0);
           if (!row || !validRms(row.rms)) problems.push(where + " has missing, null or malformed " + group + " RMS observations");
           if (!row || !validPeaks(row.peaks)) problems.push(where + " has missing, null or malformed " + group + " peak observations");
-          else row.peaks.forEach((value, slot) => {
+          else if (mode === "full-mix-qualification") row.peaks.forEach((value, slot) => {
             if (value > 1) problems.push(engine + " " + c.id + " has over-full-scale peak for " + group + " slot " + slot + " = " + value);
           });
         }
@@ -984,21 +1115,23 @@ function merge(o) {
   files.sort();
   const problems = [];
   let expectedContext = null, expectedConfig = null, expectedBuilds = null, expectedBrowserToolchain = null;
-  for (const issue of fullMixSpec.referenceCoverageProblems())
+  if (o.mode === "full-mix-qualification") for (const issue of fullMixSpec.referenceCoverageProblems())
     problems.push("full-mix reference: " + issue);
   try { expectedContext = expectedContextForMerge(o); } catch (e) { problems.push(e.message); }
   try { expectedConfig = matrixConfigSha256(); } catch (e) { problems.push("cannot fingerprint current browser configuration: " + e.message); }
   try { expectedBuilds = buildSha256(); } catch (e) { problems.push("cannot identify current source/min builds: " + e.message); }
   try { expectedBrowserToolchain = resolveBrowserToolchain(); } catch (e) { problems.push("cannot independently resolve current browser toolchain: " + e.message); }
   const all = {};
-  const shards = [], expectedPaths = expectedResultPaths(), foundPaths = new Map(), seenCases = new Map();
+  const shards = [], expectedPaths = expectedResultPaths(o.mode), foundPaths = new Map(), seenCases = new Map();
   const versions = {}, platforms = {};
   for (const file of files) {
     const rel = path.relative(o.merge, file);
     const parts = rel.split(path.sep);
-    const rootMatch = /^browser-results-(chromium|firefox|webkit)-(\d+)$/.exec(parts[0] || "");
-    const index = rootMatch ? Number(rootMatch[2]) : NaN;
-    const artifactEngine = rootMatch && rootMatch[1];
+    const coreRootMatch = /^browser-results-(chromium|firefox|webkit)-(\d+)$/.exec(parts[0] || "");
+    const qualificationRootMatch = /^full-mix-qualification-(chromium|firefox|webkit)$/.exec(parts[0] || "");
+    const rootMatch = coreRootMatch || qualificationRootMatch;
+    const index = coreRootMatch ? Number(coreRootMatch[2]) : qualificationRootMatch ? 1 : NaN;
+    const artifactEngine = coreRootMatch ? coreRootMatch[1] : qualificationRootMatch && qualificationRootMatch[1];
     const expectedPath = expectedPaths.get(rel.split(path.sep).join(path.posix.sep));
     if (!rootMatch || parts.length !== 3 || !expectedPath || !["browser-matrix", "browser-observe"].includes(parts[1])) {
       problems.push(rel + ": unexpected result path");
@@ -1022,9 +1155,11 @@ function merge(o) {
         problems.push(rel + ": Playwright/browser bundle identity differs from the aggregate checkout");
       if (rootMatch) {
         if (meta.engine !== artifactEngine) problems.push(rel + ": provenance engine does not match artifact identity");
-        if (!meta.shard || meta.shard.index !== index || meta.shard.total !== MATRIX.shards)
+        const expectedTotal = expectedPath ? expectedPath.total : o.mode === "full-mix-qualification" ? 1 : MATRIX.shards;
+        if (!meta.shard || meta.shard.index !== index || meta.shard.total !== expectedTotal)
           problems.push(rel + ": provenance shard does not match artifact identity");
-        if (!expectedPath || !meta.selection || meta.selection.kind !== (parts[1] === "browser-matrix" ? "assert" : "observe") ||
+        if (!expectedPath || expectedPath.mode !== o.mode || !meta.selection || meta.selection.mode !== o.mode ||
+            meta.selection.kind !== (parts[1] === "browser-matrix" ? "assert" : "observe") ||
             stableJson(meta.selection.specs) !== stableJson(expectedPath.specs) || meta.selection.seed !== MATRIX.seed)
           problems.push(rel + ": declared selection does not match the required shard configuration");
       }
@@ -1048,7 +1183,7 @@ function merge(o) {
     }
     const expectedSpecs = expectedPath ? expectedPath.specs : [];
     const manifest = caseManifest(reportEngine, expectedSpecs);
-    validateCases(reportEngine, rel, r && r.cases, manifest, problems);
+    validateCases(reportEngine, rel, file, r && r.cases, manifest, o.mode, problems);
     if (Array.isArray(r.cases)) for (const c of r.cases) if (c && c.spec === "full-mix" && typeof c.id === "string")
       validateFullMixCase(reportEngine, r.version, r.platform, currentBundle, rel, file, c, FULL_MIX_CASES.get(c.id), problems);
     if (typeof r.version !== "string" || !r.version) problems.push(rel + ": " + reportEngine + " did not launch: " + String(r.launchError || "no browser version").split("\n")[0]);
@@ -1079,7 +1214,7 @@ function merge(o) {
       }
     }
     const specs = [...new Set(safeCases.map((c) => c.spec).filter((s) => typeof s === "string"))];
-    shards.push({ engine: reportEngine, shard: index ? index + "/" + MATRIX.shards : "?", file: rel, specs,
+    shards.push({ engine: reportEngine, shard: index ? index + "/" + (expectedPath ? expectedPath.total : MATRIX.shards) : "?", file: rel, specs,
       seconds: safeCases.reduce((a, c) => a + c.seconds, 0) });
   }
   for (const [rel] of expectedPaths) if (!files.some((file) => path.relative(o.merge, file).split(path.sep).join(path.posix.sep) === rel))
@@ -1088,10 +1223,10 @@ function merge(o) {
     if (!all[engine]) problems.push(engine + ": no valid shard results");
     else if (!all[engine].cases.length) problems.push(engine + ": no cases were reported");
   }
-  const cross = crossEngine(all);
+  const cross = crossEngine(all, o.mode);
   for (const c of cross) if (!c.ok) problems.push("cross-engine: " + c.name + " (" + c.detail + ")");
   const declared = Object.keys(MATRIX.specs);
-  const view = { specs: declared, engines: null, overrides: {}, seed: MATRIX.seed };
+  const view = { mode: o.mode, specs: selectedSpecs(o), engines: null, overrides: {}, seed: MATRIX.seed };
   summarize(all, view);
   console.log("\n== Shards (case time; each job also spends ~1 min on setup and launches)");
   for (const x of shards) console.log("  " + (x.engine + " " + x.shard).padEnd(16) + Math.round(x.seconds).toString().padStart(5) + " s  " + x.specs.join(", ") + "  (" + x.file + ")");
@@ -1194,7 +1329,9 @@ module.exports = {
   matrixConfigSha256,
   buildSha256,
   readFloatStereoWav,
+  readArtifactUnderShard,
   crossEngine,
   renderBufferShaProblems,
+  generatedBufferArtifactProblems,
   merge,
 };

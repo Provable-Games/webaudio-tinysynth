@@ -111,7 +111,8 @@
       var channels = [];
       for (var c = 0; c < buffer.numberOfChannels; ++c) channels.push(buffer.getChannelData(c));
       result[name] = { bytesBase64: window.__t6BufferDigest.base64Planar(channels),
-        channels: buffer.numberOfChannels, frames: buffer.length };
+        channels: buffer.numberOfChannels, frames: buffer.length,
+        byteLength: buffer.numberOfChannels * buffer.length * Float32Array.BYTES_PER_ELEMENT };
       return result;
     }, {});
   }

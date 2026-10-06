@@ -75,6 +75,7 @@ async function render(p, spec) {
   delete r.pcm;
   if (r.bufferBytes) {
     const digests = {};
+    const captures = {};
     for (const name of ["convBuf", "n0", "n1"]) {
       const capture = r.bufferBytes[name];
       if (capture === null) {
@@ -83,15 +84,21 @@ async function render(p, spec) {
       }
       if (!capture || typeof capture.bytesBase64 !== "string" ||
           !Number.isSafeInteger(capture.channels) || capture.channels < 1 ||
-          !Number.isSafeInteger(capture.frames) || capture.frames < 0)
+          !Number.isSafeInteger(capture.frames) || capture.frames < 0 ||
+          !Number.isSafeInteger(capture.byteLength) || capture.byteLength < 0)
         throw new Error("malformed generated Float32 buffer byte capture for " + name);
       try {
-        digests[name] = float32Digest.sha256Base64Planar(capture.bytesBase64, capture.channels, capture.frames);
+        const digest = float32Digest.sha256Base64Planar(capture.bytesBase64, capture.channels, capture.frames);
+        if (digest.byteLength !== capture.byteLength)
+          throw new RangeError("declared byteLength " + capture.byteLength + " differs from validated " + digest.byteLength);
+        digests[name] = Object.freeze(digest);
+        captures[name] = Buffer.from(capture.bytesBase64, "base64");
       } catch (error) {
         throw new Error("invalid generated Float32 buffer bytes for " + name + ": " + error.message, { cause: error });
       }
     }
     r.bufferSha256 = digests;
+    r.bufferCaptures = captures;
     r.bufferCaptureSettings = bufferCaptureSettings(spec);
     delete r.bufferBytes;
   }
@@ -138,6 +145,7 @@ function combine(s, parts) {
   const sr = parts[0].sr;
   return {
     sr, channels, buffers: parts[0].buffers, bufferSha256: parts[0].bufferSha256,
+    bufferCaptures: parts[0].bufferCaptures,
     bufferCaptureSettings: parts[0].bufferCaptureSettings, randomCalls: parts[0].randomCalls,
     internalContext: [...new Set(parts.map((r) => r.internalContext))].join(","),
     hash: parts.map((r) => r.hash).join("+"),
@@ -151,6 +159,20 @@ function combine(s, parts) {
     renders: parts.length,
     items: parts.map((r, i) => ({ label: s.items[i].label, length: r.channels[0].length })),
   };
+}
+
+function saveGeneratedBufferCaptures(result, quality, sampleRate, build, t) {
+  for (const name of ["convBuf", "n0", "n1"]) {
+    const measurement = result.bufferSha256 && result.bufferSha256[name];
+    const bytes = result.bufferCaptures && result.bufferCaptures[name];
+    if (!measurement || !bytes) continue;
+    const rel = "generated-buffers/q" + quality + "-" + sampleRate + "-reverb-" + build + "-" + name + ".f32le";
+    const saved = t.save(rel, bytes);
+    result.bufferSha256[name] = Object.freeze(Object.assign({}, measurement, {
+      artifact: Object.freeze({ path: rel, saved: !!saved }),
+    }));
+  }
+  return result.bufferSha256;
 }
 
 async function renderScenario(p, s, ctx, variant = {}) {
@@ -269,15 +291,24 @@ function cases(shared) {
               parity ? (identical ? "bit-identical" : "max |diff| " + diff.toExponential(3)) : persistent.slice(0, 2).join(" | "));
             if (s.name === "reverb") {
               const expectedFrames = Math.floor(sr * 0.5);
+              for (const build of matrix.builds) {
+                const result = res[build][0];
+                saveGeneratedBufferCaptures(result, quality, sr, build, t);
+              }
               const sourceBuffers = res.source[0].bufferSha256;
               const minBuffers = res.min[0].bufferSha256;
+              const equalBufferMeasurements = (left, right) => ["convBuf", "n0", "n1"].every((name) =>
+                left && right && left[name] && right[name] &&
+                ["sha256", "channels", "frames", "byteLength"].every((key) => left[name][key] === right[name][key]));
               const validBuffers = (value) => value && ["convBuf", "n0", "n1"].every((name) => {
                 const row = value[name];
                 const channels = name === "convBuf" ? 2 : 1;
-                return row && /^[a-f0-9]{64}$/.test(row.sha256) && row.channels === channels && row.frames === expectedFrames;
+                const rel = "generated-buffers/q" + quality + "-" + sr + "-reverb-" + (value === sourceBuffers ? "source" : "min") + "-" + name + ".f32le";
+                return row && /^[a-f0-9]{64}$/.test(row.sha256) && row.channels === channels && row.frames === expectedFrames &&
+                  row.byteLength === channels * expectedFrames * 4 && row.artifact && row.artifact.path === rel && row.artifact.saved === true;
               });
               const sourceMinMatch = validBuffers(sourceBuffers) && validBuffers(minBuffers) &&
-                JSON.stringify(sourceBuffers) === JSON.stringify(minBuffers);
+                equalBufferMeasurements(sourceBuffers, minBuffers);
               t.check("reverb-enabled first-attempt generated Float32 buffers have complete source/min SHA-256 measurements",
                 sourceMinMatch,
                 sourceMinMatch ? JSON.stringify(sourceBuffers) : "missing, malformed or different source/min SHA-256 descriptors");
@@ -366,4 +397,5 @@ function cases(shared) {
   return out;
 }
 
-module.exports = { cases, renderSpec, bufferCaptureSettings, renderScenario, renderParts, combine, openRenderPage, render, decode, maxDiff };
+module.exports = { cases, renderSpec, bufferCaptureSettings, renderScenario, renderParts, combine, saveGeneratedBufferCaptures,
+  openRenderPage, render, decode, maxDiff };

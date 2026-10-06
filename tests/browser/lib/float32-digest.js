@@ -67,6 +67,7 @@
       sha256: require("node:crypto").createHash("sha256").update(bytes).digest("hex"),
       channels,
       frames,
+      byteLength: bytes.length,
     };
   }
 

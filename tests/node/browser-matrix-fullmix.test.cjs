@@ -4,6 +4,8 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fullMix = require("../browser/specs/full-mix");
 const analysis = require("../browser/lib/analysis");
+const H = require("../harness");
+const browserToolchain = require("../../scripts/browser-toolchain");
 
 function fixtureAndPcm(sampleRate = 8000) {
   const fixture = {
@@ -142,9 +144,28 @@ test("renderOne compares measured reference metrics, and rejects missing referen
   const metrics = fullMix.analyzeChannels(channels, sampleRate, fixture);
   const row = fullMix.REFERENCE.engines.chromium[fixture.id][sampleRate];
   const originalMetrics = row.source.metrics;
+  const originalCapture = structuredClone(row.source.capture);
+  const originalMetadata = structuredClone(row.metadata);
+  const originalReferencePins = {
+    methodSha256: fullMix.REFERENCE.methodSha256,
+    toleranceSha256: fullMix.REFERENCE.toleranceSha256,
+  };
+  const toolchain = browserToolchain.resolveBrowserToolchain(process.env, H.ROOT);
+  const bundle = browserToolchain.engineBundle(toolchain, "chromium");
+  const platform = process.platform + "-" + process.arch;
+  Object.assign(row.metadata, {
+    scope: "fixture", fixtureId: fixture.id, profileKind: fixture.profileKind, quality: 1,
+    engine: "chromium", browserVersion: "153.0.8010.12", platform, sampleRate, browserBundle: bundle,
+    midiSha256: fixture.midiSha256, setupSha256: fixture.setupSha256,
+    settingsSha256: fixture.settingsSha256, probePlanSha256: fixture.probePlanSha256,
+    methodSha256: fixture.methodSha256, toleranceSha256: fixture.toleranceSha256,
+    playbackOriginSec: fullMix.ORIGIN,
+  });
+  fullMix.REFERENCE.methodSha256 = fixture.methodSha256;
+  fullMix.REFERENCE.toleranceSha256 = fixture.toleranceSha256;
   const pcm = channels.map((channel) => Buffer.from(channel.buffer, channel.byteOffset, channel.byteLength).toString("base64"));
   const t = {
-    engine: "chromium", version: "153.0.8010.12",
+    engine: "chromium", version: "153.0.8010.12", shared: { platform, browserBundle: bundle },
     async newPage() {
       return { page: {
         async setContent() {},
@@ -156,13 +177,54 @@ test("renderOne compares measured reference metrics, and rejects missing referen
     row.source.metrics = metrics;
     const positive = await fullMix.renderOne(t, "source", { seed: 1592590337, overrides: {} }, fixture, sampleRate, {});
     assert.deepEqual(positive.comparisonProblems, []);
+    assert.equal(positive.referenceStatus, "measured");
+
+    const wrongPlatform = platform === "linux-arm64" ? "linux-x64" : "linux-arm64";
+    for (const [key, value] of [["platform", wrongPlatform], ["methodSha256", "f".repeat(64)], ["settingsSha256", "e".repeat(64)]]) {
+      const expected = row.metadata[key];
+      row.metadata[key] = value;
+      const rejected = await fullMix.renderOne(t, "source", { seed: 1592590337, overrides: {} }, fixture, sampleRate, {});
+      assert.equal(rejected.referenceStatus, "incomplete", key);
+      assert.equal(rejected.reference, null, key);
+      assert.match(rejected.comparisonProblems.join(" "), new RegExp(key));
+      row.metadata[key] = expected;
+    }
+
+    row.source.capture.eligible = false;
+    const ineligibleReference = await fullMix.renderOne(t, "source", { seed: 1592590337, overrides: {} }, fixture, sampleRate, {});
+    assert.equal(ineligibleReference.referenceStatus, "incomplete");
+    assert.equal(ineligibleReference.reference, null);
+    assert.match(ineligibleReference.comparisonProblems.join(" "), /first-attempt capture eligibility/);
+    row.source.capture = originalCapture;
 
     row.source.metrics = null;
     const missing = await fullMix.renderOne(t, "source", { seed: 1592590337, overrides: {} }, fixture, sampleRate, {});
-    assert.match(missing.comparisonProblems.join(" "), /reference metrics are missing/);
+    assert.equal(missing.referenceStatus, "incomplete");
+    assert.match(missing.comparisonProblems.join(" "), /source metrics/);
   } finally {
     row.source.metrics = originalMetrics;
+    row.source.capture = originalCapture;
+    row.metadata = originalMetadata;
+    fullMix.REFERENCE.methodSha256 = originalReferencePins.methodSha256;
+    fullMix.REFERENCE.toleranceSha256 = originalReferencePins.toleranceSha256;
   }
+});
+
+test("aggregate full-mix status is order-independent for partially missing source/min references", () => {
+  const sourceIncomplete = {
+    source: { preBaselineEligible: true, result: "incomplete" },
+    min: { preBaselineEligible: true, result: "pass" },
+  };
+  const minIncomplete = {
+    source: { preBaselineEligible: true, result: "pass" },
+    min: { preBaselineEligible: true, result: "incomplete" },
+  };
+  assert.deepEqual(fullMix.deriveFullMixStatus(sourceIncomplete, true),
+    { captureEligiblePreBaseline: true, status: "incomplete" });
+  assert.deepEqual(fullMix.deriveFullMixStatus(minIncomplete, true),
+    { captureEligiblePreBaseline: true, status: "incomplete" });
+  assert.equal(fullMix.deriveFullMixStatus(minIncomplete, false).status, "fail");
+  assert.equal(fullMix.deriveFullMixStatus({ source: { preBaselineEligible: true, result: "fail" }, min: minIncomplete.min }, true).status, "fail");
 });
 
 test("mixed-bus downbeat is a fixed independently targeted band feature, not an estimated pitch", () => {

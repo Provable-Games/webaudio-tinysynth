@@ -66,6 +66,54 @@ function canonical(value) {
   return JSON.stringify(value);
 }
 
+function selectReference(reference, identity, build) {
+  const problems = [];
+  if (!reference || typeof reference !== "object" || Array.isArray(reference))
+    return { status: "incomplete", reference: null, problems: ["measured reference is missing"] };
+  if (reference.analysisVersion !== ANALYSIS_VERSION) problems.push("analysisVersion");
+  if (reference.methodSha256 !== identity.methodSha256) problems.push("methodSha256");
+  if (reference.toleranceSha256 !== identity.toleranceSha256) problems.push("toleranceSha256");
+  if (!reference.tolerances || reference.referenceToleranceSha256 !== sha256(Buffer.from(canonical(reference.tolerances))))
+    problems.push("referenceToleranceSha256");
+  const entry = reference.engines && reference.engines[identity.engine] &&
+    reference.engines[identity.engine][identity.fixtureId] && reference.engines[identity.engine][identity.fixtureId][identity.sampleRate];
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) problems.push("case row");
+  const metadata = entry && entry.metadata;
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) problems.push("case metadata");
+  else for (const [key, value] of Object.entries(identity)) {
+    const same = value && typeof value === "object"
+      ? canonical(metadata[key]) === canonical(value)
+      : metadata[key] === value;
+    if (!same) problems.push(key);
+  }
+  const row = entry && entry[build];
+  if (!row || typeof row !== "object" || Array.isArray(row) || !row.metrics || typeof row.metrics !== "object" || Array.isArray(row.metrics))
+    problems.push(build + " metrics");
+  const capture = row && row.capture;
+  if (!capture || typeof capture !== "object" || Array.isArray(capture) || capture.attempt !== 1 ||
+      capture.firstAttempt !== true || capture.eligible !== true || capture.finite !== true || capture.overFullScaleSamples !== 0 ||
+      !["incomplete", "pass"].includes(capture.priorCaptureVerdict) ||
+      typeof metadata?.captureMethodSha256 !== "string" || !/^[a-f0-9]{64}$/i.test(metadata.captureMethodSha256) ||
+      typeof capture.captureMethodSha256 !== "string" || !/^[a-f0-9]{64}$/i.test(capture.captureMethodSha256) ||
+      capture.captureMethodSha256 !== metadata.captureMethodSha256)
+    problems.push(build + " first-attempt capture eligibility");
+  if (problems.length)
+    return { status: "incomplete", reference: null, problems: ["measured reference identity or row is incomplete: " + problems.join(", ")] };
+  return { status: "measured", reference: row, problems: [] };
+}
+
+function deriveFullMixStatus(builds, sourceMinOk) {
+  const eligible = !!(sourceMinOk && builds && builds.source && builds.source.preBaselineEligible === true &&
+    builds.min && builds.min.preBaselineEligible === true);
+  const source = builds && builds.source && builds.source.result;
+  const min = builds && builds.min && builds.min.result;
+  const hasFailure = source === "fail" || min === "fail";
+  const hasIncomplete = source === "incomplete" || min === "incomplete";
+  const status = eligible && source === "pass" && min === "pass" ? "pass"
+    : eligible && !hasFailure && hasIncomplete ? "incomplete" : "fail";
+  return { captureEligiblePreBaseline: eligible, status };
+}
+
 function fixtureWaveCalls() {
   return FIXTURE_SETUP.waves.map((w) => {
     if (w.Harmonics) return ["setHarmonicWave", w.name, w.real, w.imag];
@@ -956,13 +1004,23 @@ async function renderOne(t, build, options, fixture, sampleRate, matrix) {
   const nonFinite = channels.map(A.nonFinite);
   const pcmHashes = channels.map((x) => A.sha256(x));
   const rawWav = A.wav(channels, sampleRate);
-  const reference = REFERENCE && REFERENCE.engines && REFERENCE.engines[t.engine] &&
-    REFERENCE.engines[t.engine][fixture.id] && REFERENCE.engines[t.engine][fixture.id][sampleRate] &&
-    REFERENCE.engines[t.engine][fixture.id][sampleRate][build];
-  const comparisonProblems = compareBuildToReference(metrics, reference && reference.metrics, REFERENCE && REFERENCE.tolerances);
+  const identity = {
+    scope: "fixture", fixtureId: fixture.id, profileKind: fixture.profileKind, quality: 1,
+    engine: t.engine, browserVersion: t.version, platform: t.shared && t.shared.platform,
+    sampleRate, browserBundle: t.shared && t.shared.browserBundle,
+    midiSha256: fixture.midiSha256, setupSha256: fixture.setupSha256,
+    settingsSha256: fixture.settingsSha256, probePlanSha256: fixture.probePlanSha256,
+    methodSha256: fixture.methodSha256, toleranceSha256: fixture.toleranceSha256,
+    playbackOriginSec: ORIGIN,
+  };
+  const selected = selectReference(REFERENCE, identity, build);
+  const reference = selected.reference;
+  const comparisonProblems = selected.status === "measured"
+    ? compareBuildToReference(metrics, reference.metrics, REFERENCE.tolerances)
+    : selected.problems;
   return {
     page, firstAttempt, channels, metrics, voices, probeVoices, nonFinite, pcmHashes, rawWav, reference,
-    comparisonProblems, sampleRate, engine: t.engine, version: t.version, build, matrix,
+    referenceStatus: selected.status, comparisonProblems, sampleRate, engine: t.engine, version: t.version, build, matrix,
   };
 }
 
@@ -976,7 +1034,7 @@ function caseRecord(result, attempt, t, fixture, sampleRate) {
 }
 
 function cases(shared) {
-  const { matrix, options, engine, version } = shared;
+  const { matrix, options, engine, version, platform, browserBundle } = shared;
   const out = [];
   for (const fixture of FIXTURES) for (const sampleRate of matrix.sampleRates) {
     const profile = profileForCase(fixture, sampleRate);
@@ -1007,9 +1065,9 @@ function cases(shared) {
           const preBaselineEligible = finiteBoth && fullScale && exactVoices && exactProbeVoices && probeComplete && separation && pageClean &&
             timingComplete && fault.checksPass && firstArtifact.saved;
           const comparison = first.comparisonProblems.length === 0;
-          const firstResult = preBaselineEligible
-            ? comparison ? "pass" : first.reference ? "fail" : "incomplete"
-            : "fail";
+          const firstResult = !preBaselineEligible ? "fail"
+            : first.referenceStatus !== "measured" ? "incomplete"
+              : comparison ? "pass" : "fail";
           const detail = JSON.stringify({
             finite: first.nonFinite, fullRenderPeak: first.metrics.overall.peak,
             voices: { expected: first.voices.expectedCount, created: first.voices.createdCount,
@@ -1065,6 +1123,7 @@ function cases(shared) {
             midiMessagesSent: first.firstAttempt.midiMessagesSent, parsedEventCount: first.firstAttempt.eventCount,
             intervalCount: first.firstAttempt.intervalCount, rejections: first.firstAttempt.rejections,
             pcmSha256: first.pcmHashes, diagnosticRepeat, faultSensitivity: fault,
+            referenceStatus: first.referenceStatus, comparisonProblems: first.comparisonProblems,
           };
         }
         const sourceMin = sameEnginePcm(pcm.source, pcm.min, engine);
@@ -1081,11 +1140,11 @@ function cases(shared) {
         t.check("source and fresh-min first-attempt raw PCM match without alignment", sourceMin.ok,
           "max |diff|=" + sourceMin.maxDiff.toExponential(3) + " at sample " + sourceMin.firstDifferingSample +
             " (<= " + sourceMin.tolerance + "; first attempt only)");
-        const captureEligible = builds.source.preBaselineEligible && builds.min.preBaselineEligible && sourceMin.ok;
+        const derivedStatus = deriveFullMixStatus(builds, sourceMin.ok);
         const observation = {
           schemaVersion: 2, scope: "fixture", qualification: "fixture-only-no-production-approval",
           fixtureId: fixture.id, profileKind: fixture.profileKind, label: fixture.label,
-          sampleRate, quality: 1, engine, browserVersion: version,
+          sampleRate, quality: 1, engine, browserVersion: version, platform, browserBundle,
           midiSha256: fixture.midiSha256, setupSha256: fixture.setupSha256,
           settingsSha256: fixture.settingsSha256, probePlanSha256: fixture.probePlanSha256,
           methodSha256: fixture.methodSha256, toleranceSha256: fixture.toleranceSha256,
@@ -1112,9 +1171,8 @@ function cases(shared) {
             quietWindows: builds.source.metrics.isolation,
           },
           setupProvenance: fixture.setupProvenance,
-          firstAttempt: true, captureEligiblePreBaseline: captureEligible,
-          status: builds.source.result === "pass" && builds.min.result === "pass" && sourceMin.ok ? "pass" :
-            captureEligible && builds.source.result === "incomplete" && builds.min.result === "incomplete" ? "incomplete" : "fail",
+          firstAttempt: true, captureEligiblePreBaseline: derivedStatus.captureEligiblePreBaseline,
+          status: derivedStatus.status,
           builds, sourceMinPcmComparison: sourceMin,
           fullMix: builds.source.metrics,
           rawArtifacts: Object.fromEntries(matrix.builds.map((b) => [b, builds[b].artifact])),
@@ -1150,7 +1208,8 @@ function expectedCases() {
 }
 
 module.exports = {
-  cases, expectedCases, FIXTURES, FIXTURE_BY_ID, noteManifest, analyzeChannels, renderOne,
+  cases, expectedCases, FIXTURES, FIXTURE_BY_ID, noteManifest, analyzeChannels, renderOne, caseRecord,
+  selectReference, deriveFullMixStatus,
   compareBuildToReference, referenceShapeProblems, referenceExpectedCases, referenceCoverageProblems,
   matchVoiceCreations, matchProbeCreations,
   sameEnginePcm, relativeProbeFault, zeroDownbeatWindow, faultSensitivity,
