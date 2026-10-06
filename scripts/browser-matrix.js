@@ -58,7 +58,7 @@ const FULL_MIX_CASES = new Map(fullMixSpec.expectedCases().map((c) => [c.id, c])
 
 const ROOT = path.resolve(__dirname, "..");
 const SPEC_DIR = path.join(ROOT, "tests", "browser", "specs");
-const PROVENANCE_SCHEMA = 2;
+const PROVENANCE_SCHEMA = 3;
 const PROVENANCE_CONTEXT_FIELDS = ["repository", "workflowRef", "eventName", "runId", "runAttempt", "testedSha"];
 const RENDER_BUFFER_SHA_OBSERVATION = "generated buffer SHA-256 (first reverb-enabled attempt)";
 const RENDER_BUFFER_SHA_METHOD = "sha256-f32le-planar-channel-order-v1";
@@ -143,13 +143,9 @@ function matrixConfigSha256() {
     h.update(fs.readFileSync(path.join(ROOT, rel)));
     h.update("\0");
   }
-  const declaredReference = path.join(SPEC_DIR, "full-mix-reference.json");
-  const activeReference = path.resolve(fullMixSpec.REFERENCE_FILE);
-  if (activeReference !== declaredReference) {
-    h.update("external full-mix reference\0");
-    h.update(fs.readFileSync(activeReference));
-    h.update("\0");
-  }
+  h.update("full-mix-reference-provenance-v1\0");
+  h.update(stableJson(fullMixSpec.referenceProvenance()));
+  h.update("\0");
   return h.digest("hex");
 }
 
@@ -168,6 +164,7 @@ function reportProvenance(o, engines, context = null) {
     schemaVersion: PROVENANCE_SCHEMA,
     ...identity,
     matrixConfigSha256: matrixConfigSha256(),
+    fullMixReference: fullMixSpec.referenceProvenance(),
     engine: engines.length === 1 ? engines[0] : null,
     shard: o.shard ? { index: o.shard.k, total: o.shard.n } : null,
     selection: { mode: o.mode || "core", kind: kinds.length === 1 ? kinds[0] : "mixed", seed: o.seed, specs: selection },
@@ -833,7 +830,10 @@ function validateFullMixCase(engine, browserVersion, platform, currentBundle, re
     quality: 1, engine, browserVersion, platform, browserBundle: currentBundle, midiSha256: expected.midiSha256,
     setupSha256: expected.setupSha256, settingsSha256: expected.settingsSha256,
     probePlanSha256: expected.probePlanSha256, methodSha256: expected.methodSha256,
-    toleranceSha256: expected.toleranceSha256, playbackOriginSec: fullMixSpec.ORIGIN,
+    toleranceSha256: expected.toleranceSha256,
+    referenceProvenance: fullMixSpec.referenceProvenance(),
+    referenceToleranceSha256: fullMixSpec.referenceProvenance().referenceToleranceSha256,
+    playbackOriginSec: fullMixSpec.ORIGIN,
     firstAttempt: true,
   };
   for (const [key, value] of Object.entries(expectedTop))
@@ -1179,6 +1179,8 @@ function merge(o) {
       if (expectedContext) for (const key of PROVENANCE_CONTEXT_FIELDS)
         if (meta[key] !== expectedContext[key]) problems.push(rel + ": stale or forged " + key + " (expected " + expectedContext[key] + ")");
       if (expectedConfig && meta.matrixConfigSha256 !== expectedConfig) problems.push(rel + ": browser configuration fingerprint differs from the aggregate checkout");
+      if (stableJson(meta.fullMixReference) !== stableJson(fullMixSpec.referenceProvenance()))
+        problems.push(rel + ": full-mix reference provenance differs from the aggregate checkout");
       if (expectedBuilds && stableJson(meta.buildSha256) !== stableJson(expectedBuilds)) problems.push(rel + ": source/min build hashes differ from the aggregate checkout");
       if (expectedBrowserToolchain && stableJson(meta.browserToolchain) !== stableJson(expectedBrowserToolchain))
         problems.push(rel + ": Playwright/browser bundle identity differs from the aggregate checkout");

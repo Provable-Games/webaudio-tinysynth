@@ -176,10 +176,14 @@ function saveGeneratedBufferCaptures(result, quality, sampleRate, build, t) {
     if (!measurement || !bytes) continue;
     const rel = "generated-buffers/q" + quality + "-" + sampleRate + "-reverb-" + build + "-" + name + ".f32le";
     const saved = t.save(rel, bytes);
-    result.bufferSha256[name] = Object.freeze(Object.assign({}, measurement, {
+    result.bufferSha256[name] = Object.freeze({
+      sha256: measurement.sha256,
+      channels: measurement.channels,
+      frames: measurement.frames,
+      byteLength: measurement.byteLength,
       captureTrace: result.bufferCaptureTrace && result.bufferCaptureTrace[name],
       artifact: Object.freeze({ path: rel, saved: !!saved }),
-    }));
+    });
   }
   return result.bufferSha256;
 }

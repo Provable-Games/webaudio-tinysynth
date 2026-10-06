@@ -2,6 +2,10 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const fullMix = require("../browser/specs/full-mix");
 const analysis = require("../browser/lib/analysis");
 const H = require("../harness");
@@ -51,6 +55,83 @@ function probeSignal(freq, { noise = false, duration = 1, sampleRate = 48000 } =
   }
   return { channels, probe, sampleRate };
 }
+
+function resolveBrowserToolchainFixture(webkitPath, revisionOverrides = { mac14: "2251", "mac14-arm64": "2251" }) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "tinysynth-browser-toolchain-"));
+  const packageDir = path.join(root, "node_modules", "playwright-core");
+  fs.mkdirSync(packageDir, { recursive: true });
+  fs.writeFileSync(path.join(packageDir, "package.json"), JSON.stringify({ name: "playwright-core", version: "1.63.0" }));
+  fs.writeFileSync(path.join(packageDir, "browsers.json"), JSON.stringify({ browsers: [
+    { name: "chromium-headless-shell", revision: "1243", browserVersion: "153.0.8010.12" },
+    { name: "firefox", revision: "1543", browserVersion: "155.0" },
+    { name: "webkit", revision: "2359", revisionOverrides, browserVersion: "26.6" },
+  ] }));
+  fs.writeFileSync(path.join(packageDir, "paths.json"), JSON.stringify({
+    chromium: "/cache/chromium-1243/chrome-linux64/chrome",
+    firefox: "/cache/firefox-1543/firefox/firefox",
+    webkit: webkitPath,
+  }));
+  fs.writeFileSync(path.join(packageDir, "index.js"), [
+    '"use strict";',
+    'const fs = require("node:fs");',
+    'const path = require("node:path");',
+    'function executablePath(engine) { return JSON.parse(fs.readFileSync(path.join(__dirname, "paths.json"), "utf8"))[engine]; }',
+    'module.exports = Object.fromEntries(["chromium", "firefox", "webkit"].map((engine) => [engine, { executablePath: () => executablePath(engine) }]));',
+  ].join("\n"));
+  try {
+    return browserToolchain.resolveBrowserToolchain({ PLAYWRIGHT_CORE: path.join(packageDir, "index.js") }, root);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function sha256(value) {
+  return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+test("browser toolchain follows pinned macOS WebKit override bundles and retains exact bundle identities", () => {
+  const linux = resolveBrowserToolchainFixture("/cache/webkit-2359/pw_run.sh");
+  const mac14 = resolveBrowserToolchainFixture("/cache/webkit_mac14_special-2251/pw_run.sh");
+  const mac14Arm64 = resolveBrowserToolchainFixture("/cache/webkit_mac14_arm64_special-2251/pw_run.sh");
+  for (const [toolchain, revision, bundleId] of [
+    [linux, "2359", "webkit-2359"],
+    [mac14, "2251", "webkit_mac14_special-2251"],
+    [mac14Arm64, "2251", "webkit_mac14_arm64_special-2251"],
+  ]) {
+    const webkit = browserToolchain.engineBundle(toolchain, "webkit");
+    assert.equal(webkit.revision, revision);
+    assert.equal(webkit.bundleId, bundleId);
+    assert.equal(webkit.browserVersion, "26.6");
+    const expectedIdentity = { ...webkit };
+    delete expectedIdentity.identitySha256;
+    assert.equal(webkit.identitySha256, sha256(Buffer.from(browserToolchain.canonical(expectedIdentity))));
+    assert.equal(toolchain.browsers.chromium.revision, "1243");
+    assert.equal(toolchain.browsers.chromium.bundleId, "chromium_headless_shell-1243");
+    assert.equal(toolchain.browsers.chromium.browserVersion, "153.0.8010.12");
+  }
+  for (const toolchain of [linux, mac14, mac14Arm64]) {
+    const expectedIdentity = { ...toolchain };
+    delete expectedIdentity.identitySha256;
+    assert.equal(toolchain.identitySha256, sha256(Buffer.from(browserToolchain.canonical(expectedIdentity))));
+  }
+  assert.notEqual(linux.browsers.webkit.identitySha256, mac14.browsers.webkit.identitySha256);
+  assert.notEqual(mac14.browsers.webkit.identitySha256, mac14Arm64.browsers.webkit.identitySha256);
+});
+
+test("browser toolchain rejects WebKit executable paths that do not match a manifest bundle", () => {
+  for (const executable of [
+    "/cache/webkit-2251/pw_run.sh",
+    "/cache/webkit_mac15_arm64_special-2251/pw_run.sh",
+    "/cache/webkit_mac14_arm64_special-2359/pw_run.sh",
+    "/cache/webkit-2359/webkit_mac14_arm64_special-2251/pw_run.sh",
+  ]) {
+    assert.throws(() => resolveBrowserToolchainFixture(executable), /does not identify exactly one manifest bundle/);
+  }
+  assert.throws(() => resolveBrowserToolchainFixture("/cache/webkit-2359/pw_run.sh", { mac14: "invalid" }),
+    /invalid webkit revision override for mac14/);
+  assert.throws(() => resolveBrowserToolchainFixture("/cache/webkit-2359/pw_run.sh", { mac14: 0 }),
+    /invalid webkit revision override for mac14/);
+});
 
 test("isolated pitch probe accepts the expected pitch and rejects semitone/octave faults", () => {
   const sr = 48000, expected = analysis.midiHz(69);

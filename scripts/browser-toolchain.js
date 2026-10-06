@@ -53,19 +53,34 @@ function resolveBrowserToolchain(env = process.env, root = path.resolve(__dirnam
     if (!browser || !Number.isSafeInteger(Number(browser.revision)) || !browser.browserVersion)
       throw new Error("resolved Playwright browsers.json has no valid " + manifestName + " revision/version");
     const revision = String(browser.revision);
-    const bundleId = manifestName.replace(/-/g, "_") + "-" + revision;
+    let selectedRevision = revision;
+    let bundleId = manifestName.replace(/-/g, "_") + "-" + revision;
     if (engine !== "chromium") {
       const executable = playwright[engine].executablePath();
       const parts = path.resolve(executable).split(path.sep);
-      if (!parts.includes(bundleId))
-        throw new Error("resolved Playwright " + engine + " executable path does not identify expected bundle " + bundleId);
+      const candidates = [{ revision, bundleId }];
+      for (const [platform, overrideRevision] of Object.entries(browser.revisionOverrides || {})) {
+        const override = String(overrideRevision);
+        if (!overrideRevision || !Number.isSafeInteger(Number(override)) || Number(override) <= 0)
+          throw new Error("resolved Playwright browsers.json has an invalid " + engine + " revision override for " + platform);
+        candidates.push({
+          revision: override,
+          bundleId: manifestName.replace(/-/g, "_") + "_" + platform.replace(/-/g, "_") + "_special-" + override,
+        });
+      }
+      const matches = candidates.filter((candidate) => parts.includes(candidate.bundleId));
+      if (matches.length !== 1)
+        throw new Error("resolved Playwright " + engine + " executable path does not identify exactly one manifest bundle (" +
+          candidates.map((candidate) => candidate.bundleId).join(", ") + ")");
+      selectedRevision = matches[0].revision;
+      bundleId = matches[0].bundleId;
     }
     const bundle = {
       schemaVersion: 1, engine, playwrightCoreVersion: resolved.pkg.version,
-      browsersManifestSha256, revision, bundleId, browserVersion: browser.browserVersion,
+      browsersManifestSha256, revision: selectedRevision, bundleId, browserVersion: browser.browserVersion,
     };
     bundle.identitySha256 = sha256(Buffer.from(canonical(bundle)));
-    browsers[engine] = { revision, bundleId, browserVersion: browser.browserVersion, identitySha256: bundle.identitySha256 };
+    browsers[engine] = { revision: selectedRevision, bundleId, browserVersion: browser.browserVersion, identitySha256: bundle.identitySha256 };
   }
   const identity = {
     schemaVersion: 1,

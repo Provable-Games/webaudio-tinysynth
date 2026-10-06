@@ -28,6 +28,7 @@ const TEST_REFERENCE_FILE = path.join(TEST_REFERENCE_DIR, "full-mix-reference.js
 const previousReference = process.env.TINYSYNTH_BROWSER_MATRIX_REFERENCE;
 const seedFullMixSpec = require("../browser/specs/full-mix");
 const renderSpec = require("../browser/specs/render");
+const gestureSpec = require("../browser/specs/gesture");
 const { SCENARIOS } = require("../browser/lib/scenarios");
 const testAnalysis = require("../browser/lib/analysis");
 const float32Digest = require("../browser/lib/float32-digest");
@@ -115,17 +116,37 @@ test("generated-buffer SHA-256 uses known Float32LE planar channel bytes", async
   const persisted = [];
   const artifactRoot = fs.mkdtempSync(path.join(os.tmpdir(), "matrix-buffer-producer-"));
   const resultFile = path.join(artifactRoot, "browser-results-chromium-1", "browser-matrix", "results.json");
-  for (const build of ["source", "min"]) {
-    renderSpec.saveGeneratedBufferCaptures(captures[build], quality, sampleRate, build, {
-      out: resultFile,
-      save: (rel, bytes) => {
-        const target = path.join(path.dirname(resultFile), "chromium", rel);
-        fs.mkdirSync(path.dirname(target), { recursive: true });
-        fs.writeFileSync(target, bytes);
-        persisted.push([build, rel, bytes]);
-        return target;
+  const inheritedChannels = Object.getOwnPropertyDescriptor(Object.prototype, "channels");
+  let inheritedSetterCalls = 0;
+  try {
+    Object.defineProperty(Object.prototype, "channels", {
+      configurable: true,
+      set() {
+        ++inheritedSetterCalls;
+        Object.defineProperty(this, "channels", { configurable: true, enumerable: true, writable: true, value: 1 });
       },
     });
+    for (const build of ["source", "min"]) {
+      renderSpec.saveGeneratedBufferCaptures(captures[build], quality, sampleRate, build, {
+        out: resultFile,
+        save: (rel, bytes) => {
+          const target = path.join(path.dirname(resultFile), "chromium", rel);
+          fs.mkdirSync(path.dirname(target), { recursive: true });
+          fs.writeFileSync(target, bytes);
+          persisted.push([build, rel, bytes]);
+          return target;
+        },
+      });
+    }
+  } finally {
+    if (inheritedChannels) Object.defineProperty(Object.prototype, "channels", inheritedChannels);
+    else delete Object.prototype.channels;
+  }
+  assert.equal(inheritedSetterCalls, 0, "saving uses own data properties instead of invoking inherited channel setters");
+  for (const build of ["source", "min"]) {
+    assert.equal(Object.hasOwn(captures[build].bufferSha256.convBuf, "channels"), true);
+    assert.equal(captures[build].bufferSha256.convBuf.channels, 2, "the validated stereo count is copied unchanged");
+    assert.equal(captures[build].bufferSha256.n0.channels, 1, "observed mono data stays mono rather than being normalized");
   }
   const observation = makeObservation(captures);
   assert.deepEqual(renderBufferShaProblems(dimensions, observation, "producer control", { expectedSeed: seed }), [],
@@ -169,6 +190,21 @@ test("generated-buffer SHA-256 uses known Float32LE planar channel bytes", async
   assert.ok(renderBufferShaProblems(dimensions, changedFinalDescriptor, "producer control", { expectedSeed: seed })
     .some((problem) => /final descriptor differs from the Node-validated capture-stage snapshot/.test(problem)),
   "the aggregate locates a post-Node descriptor mutation separately from browser-reported metadata");
+});
+
+test("gesture pre-input readiness waits for five page reports and remains bounded", async () => {
+  const rec = { console: [] };
+  for (let i = 0; i < 5; ++i) setTimeout(() => rec.console.push({
+    text: "T6STATE " + JSON.stringify({ tag: "tick", index: i }),
+  }), i * 20);
+  const ready = await gestureSpec.waitForReports(rec, 5, 500);
+  assert.equal(ready.timedOut, false);
+  assert.equal(ready.reports.length, 5);
+  assert.equal(ready.reports[4].index, 4);
+
+  const sparse = await gestureSpec.waitForReports({ console: [] }, 5, 100);
+  assert.equal(sparse.timedOut, true);
+  assert.equal(sparse.reports.length, 0);
 });
 
 function testPcm(fixture, sampleRate) {
@@ -378,6 +414,7 @@ function artifactReference(engine, index, step, fixture, sampleRate, build, atte
 }
 
 function fakeFullMixCase(def, engine, index, step) {
+  const currentFullMix = require("../browser/specs/full-mix");
   const expected = FULL_MIX.expectedCases().find((x) => x.id === def.id);
   const fixture = FULL_MIX.FIXTURE_BY_ID[expected.fixtureId];
   const channels = testPcm(fixture, expected.sampleRate);
@@ -436,6 +473,8 @@ function fakeFullMixCase(def, engine, index, step) {
       relativeLevelScope: "isolated fixture-timbre level comparison through the common output graph; not musical-part balance or composer approval",
       quietWindows: metrics.isolation },
     setupProvenance: fixture.setupProvenance, firstAttempt: true, captureEligiblePreBaseline: true, status: "pass",
+    referenceProvenance: currentFullMix.referenceProvenance(),
+    referenceToleranceSha256: currentFullMix.referenceProvenance().referenceToleranceSha256,
     builds, sourceMinPcmComparison: sourceMin, fullMix: metrics,
     rawArtifacts: Object.fromEntries(["source", "min"].map((build) => [build, builds[build].artifact])),
     faultSensitivity, incompleteCriteria: ["fixture only", "physical devices are not covered", "musical-part balance remains incomplete"],
@@ -492,15 +531,17 @@ function result(engine, index, step, specs, mode = "core") {
   const opts = { mode, shard: { k: index, n: total }, specs, seed: MATRIX.seed, overrides: {} };
   const cases = caseManifest(engine, specs).map((def) => fakeCase(def, engine, index, step));
   return {
-    matrixRun: reportProvenance(opts, [engine], CONTEXT),
+    matrixRun: require("../../scripts/browser-matrix").reportProvenance(opts, [engine], CONTEXT),
     [engine]: { engine, version: testBrowserVersion(engine), platform: "linux-x64", browserBundle: testBrowserBundle(engine), cases },
   };
 }
 
 /* Results directory laid out exactly as actions/download-artifact produces it. */
-function merged(change, expectedReferenceBytes = TEST_REFERENCE_BYTES, afterWrite = null, reportMode = "core", mergeMode = reportMode) {
+function merged(change, expectedReferenceBytes = TEST_REFERENCE_BYTES, afterWrite = null, reportMode = "core", mergeMode = reportMode, childEnv = {}) {
   ATTACHMENTS.clear();
   fs.writeFileSync(TEST_REFERENCE_FILE, expectedReferenceBytes);
+  delete require.cache[require.resolve("../browser/specs/full-mix")];
+  delete require.cache[require.resolve("../../scripts/browser-matrix")];
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "browser-matrix-merge-"));
   const contextFile = path.join(dir, "expected-context.json");
   fs.writeFileSync(contextFile, JSON.stringify(CONTEXT));
@@ -528,13 +569,41 @@ function merged(change, expectedReferenceBytes = TEST_REFERENCE_BYTES, afterWrit
     fs.writeFileSync(file, data);
   }
   if (afterWrite) afterWrite(dir);
-  const r = node(["--mode=" + mergeMode, "--merge=" + dir, "--expected-context=" + contextFile]);
+  const r = node(["--mode=" + mergeMode, "--merge=" + dir, "--expected-context=" + contextFile], childEnv);
   fs.rmSync(dir, { recursive: true, force: true });
   return r;
 }
 
-function qualificationMerged(change, referenceBytes = TEST_REFERENCE_BYTES, afterWrite = null, mergeMode = "full-mix-qualification") {
-  return merged(change, referenceBytes, afterWrite, "full-mix-qualification", mergeMode);
+function qualificationMerged(change, referenceBytes = TEST_REFERENCE_BYTES, afterWrite = null, mergeMode = "full-mix-qualification", childEnv = {}) {
+  return merged(change, referenceBytes, afterWrite, "full-mix-qualification", mergeMode, childEnv);
+}
+
+function provenanceWithMissingReference(file, engine, specs) {
+  const code = "const m=require(" + JSON.stringify(SCRIPT) + ");" +
+    "const opts={mode:'full-mix-qualification',shard:{k:1,n:1},specs:" + JSON.stringify(specs) + ",seed:" + MATRIX.seed + ",overrides:{}};" +
+    "process.stdout.write(JSON.stringify(m.reportProvenance(opts,[" + JSON.stringify(engine) + "]," + JSON.stringify(CONTEXT) + ")));";
+  const r = spawnSync(process.execPath, ["-e", code], {
+    cwd: H.ROOT, encoding: "utf8", timeout: 60000, killSignal: "SIGKILL",
+    env: Object.assign({}, process.env, { TINYSYNTH_BROWSER_MATRIX_REFERENCE: file }),
+  });
+  assert.equal(r.error, undefined, "absent-reference provenance process did not finish");
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  return JSON.parse(r.stdout);
+}
+
+async function withFullMixReference(file, callback) {
+  const modulePath = require.resolve("../browser/specs/full-mix");
+  const cached = require.cache[modulePath];
+  const previous = process.env.TINYSYNTH_BROWSER_MATRIX_REFERENCE;
+  process.env.TINYSYNTH_BROWSER_MATRIX_REFERENCE = file;
+  delete require.cache[modulePath];
+  try { return await callback(require(modulePath)); }
+  finally {
+    if (previous === undefined) delete process.env.TINYSYNTH_BROWSER_MATRIX_REFERENCE;
+    else process.env.TINYSYNTH_BROWSER_MATRIX_REFERENCE = previous;
+    delete require.cache[modulePath];
+    if (cached) require.cache[modulePath] = cached;
+  }
 }
 
 const first = (files, engine, spec) => Object.entries(files).find(([, data]) => data[engine] && data[engine].cases.some((c) => c.spec === spec));
@@ -567,6 +636,13 @@ test("core and qualification artifacts cannot satisfy each other's independently
   });
   assert.equal(forgedMode.status, 1, forgedMode.out);
   assert.match(forgedMode.out, /declared selection does not match the required shard configuration/);
+  const forgedReference = qualificationMerged((files) => {
+    const [rel, report] = first(files, "webkit", "full-mix");
+    report.matrixRun.fullMixReference.sha256 = "0".repeat(64);
+    files[rel] = report;
+  });
+  assert.equal(forgedReference.status, 1, forgedReference.out);
+  assert.match(forgedReference.out, /full-mix reference provenance differs from the aggregate checkout/);
 });
 
 test("qualification merge uses the same strict aggregate for render headroom and full-mix evidence", () => {
@@ -576,6 +652,112 @@ test("qualification merge uses the same strict aggregate for render headroom and
   assert.match(r.out, /render q1 44100/);
   assert.match(r.out, /spec full-mix\s+assert\s+\[build x sampleRate\]\s+run/);
   assert.ok([...ATTACHMENTS.keys()].some((key) => key.includes("chromium/full-mix/")));
+  const present = reportProvenance({ mode: "full-mix-qualification", shard: { k: 1, n: 1 },
+    specs: ["render", "full-mix"], seed: MATRIX.seed, overrides: {} }, ["chromium"], CONTEXT);
+  assert.deepEqual(present.fullMixReference, FULL_MIX.referenceProvenance());
+  assert.equal(present.fullMixReference.status, "present");
+});
+
+test("missing reference survives a complete mocked full-mix run and fails strict aggregate", async () => {
+  const missingReference = path.join(TEST_REFERENCE_DIR, "unavailable-qualification-reference.json");
+  await withFullMixReference(missingReference, async (spec) => {
+    const fixture = spec.FIXTURE_BY_ID["tinychip-ws-mid"];
+    const sampleRate = 44100;
+    const channels = testPcm(fixture, sampleRate);
+    const songEndFrame = Math.round(fixture.songEndSec * sampleRate);
+    for (const channel of channels) for (let i = 0; i < channel.length; ++i)
+      channel[i] *= i < songEndFrame ? 5 : 0.25;
+    const pcm = channels.map((x) => Buffer.from(x.buffer, x.byteOffset, x.byteLength).toString("base64"));
+    const noteCreations = fixture.notes.map((note) => ({ channel: note.channel, pitch: note.pitch,
+      velocity: note.velocity, timeSec: note.onsetSec, program: note.program, created: true,
+      sourceCount: note.channel === 9 ? 1 : 2, percussion: note.channel === 9 }));
+    const probeCreations = fixture.probes.map((probe) => ({ channel: probe.channel, pitch: probe.pitch,
+      velocity: probe.velocity, timeSec: probe.startSec, program: probe.program, created: true, sourceCount: 2 }));
+    const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "full-mix-no-reference-run-"));
+    const observations = [], checks = [], saved = [];
+    const shared = { matrix: { sampleRates: [sampleRate], builds: ["source", "min"] },
+      options: { seed: MATRIX.seed, overrides: {} }, engine: "chromium", version: testBrowserVersion("chromium"),
+      platform: "linux-x64", browserBundle: testBrowserBundle("chromium") };
+    const t = {
+      ...shared,
+      shared,
+      newPage: async () => ({ page: { setContent: async () => {}, evaluate: async () => ({ pcm,
+        noteCreations: [...noteCreations, ...probeCreations], prunedInstances: [], midiMessagesSent: fixture.notes.length,
+        eventCount: fixture.notes.length, intervalCount: 1, rejections: [] }) }, pageErrors: [], aborted: [] }),
+      save: (rel, bytes) => {
+        const file = path.join(outputDir, rel);
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, bytes);
+        saved.push({ rel, file });
+        return rel;
+      },
+      check: (name, ok, detail) => checks.push({ name, ok, detail }),
+      note: () => {},
+      observe: (name, value) => observations.push({ name, value: JSON.parse(JSON.stringify(value)) }),
+    };
+    try {
+      const testCase = spec.cases(shared).find((item) => item.id === "full-mix tinychip-ws-mid q1 44100");
+      assert.ok(testCase, "mock selected a declared full-mix case");
+      await testCase.run(t);
+      assert.equal(observations.length, 1, "the real case runner reaches t.observe(fullMix)");
+      assert.equal(observations[0].name, "fullMix");
+      const { value } = observations[0];
+      assert.deepEqual(value.referenceProvenance, { schemaVersion: 1, source: "external-override", status: "absent",
+        sha256: null, referenceToleranceSha256: null });
+      assert.equal(value.referenceToleranceSha256, null);
+      assert.equal(value.captureEligiblePreBaseline, true,
+        "a missing comparison reference does not erase otherwise-valid first-capture eligibility: " +
+          JSON.stringify({ checks: checks.filter((check) => !check.ok), faultSensitivity: value.faultSensitivity,
+            noteTiming: value.noteTiming, voiceDemand: value.voiceDemand }));
+      assert.equal(value.status, "incomplete");
+      assert.equal(value.builds.source.referenceStatus, "incomplete");
+      assert.equal(value.builds.min.referenceStatus, "incomplete");
+      assert.equal(value.builds.source.result, "incomplete");
+      assert.equal(value.builds.min.result, "incomplete");
+      assert.equal(value.faultSensitivity.relativeProbe.relativeRejected, true);
+      assert.equal(value.faultSensitivity.relativeProbe.wholeRenderRmsStillWithinPolicy, true);
+      assert.ok(checks.some((check) => /agrees with measured engine\/build/.test(check.name) && !check.ok),
+        "missing reference remains a failed comparison check");
+      for (const build of ["source", "min"]) {
+        const first = saved.find((item) => item.rel.endsWith(build + "-first.wav"));
+        assert.ok(first && fs.readFileSync(first.file).toString("ascii", 0, 4) === "RIFF",
+          "first-attempt raw WAV was retained for " + build);
+      }
+      assert.equal(saved.length, 4, "both first attempts and diagnostic-only repeats retain their separate WAVs");
+    } finally {
+      fs.rmSync(outputDir, { recursive: true, force: true });
+    }
+  });
+
+  const r = qualificationMerged((files) => {
+    for (const [rel, report] of Object.entries(files)) {
+      const expected = expectedResultPaths("full-mix-qualification").get(rel);
+      const meta = provenanceWithMissingReference(missingReference, expected.engine, expected.specs);
+      report.matrixRun = meta;
+      const c = report[expected.engine].cases.find((item) => item.spec === "full-mix");
+      if (!c) continue;
+      c.status = "fail";
+      c.checks = [{ name: "first attempt agrees with measured engine/build song and probe reference", ok: false,
+        detail: "incomplete: measured reference is missing" }];
+      const obs = c.observations.fullMix;
+      obs.referenceProvenance = meta.fullMixReference;
+      obs.referenceToleranceSha256 = null;
+      obs.status = "incomplete";
+      for (const build of ["source", "min"]) {
+        obs.builds[build].referenceStatus = "incomplete";
+        obs.builds[build].result = "incomplete";
+        obs.builds[build].comparisonProblems = ["measured reference is missing"];
+      }
+      files[rel] = report;
+    }
+  }, TEST_REFERENCE_BYTES, null, "full-mix-qualification", {
+    TINYSYNTH_BROWSER_MATRIX_REFERENCE: missingReference,
+  });
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /full-mix reference: measured full-mix reference is missing/);
+  assert.match(r.out, /first-attempt result is incomplete/);
+  assert.doesNotMatch(r.out, /cannot fingerprint current browser configuration/);
+  assert.doesNotMatch(r.out, /full-mix reference provenance differs from the aggregate checkout/);
 });
 
 test("qualification merge rejects full-mix WAVs uploaded to the old sibling directory", () => {

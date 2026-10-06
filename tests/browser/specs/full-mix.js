@@ -34,16 +34,32 @@ const SETUP_BYTES = fs.readFileSync(SETUP_PATH);
 const TINY_MIDI = fs.readFileSync(path.join(pages.ROOT, "tests/fixtures/consumer", FIXTURE_SETUP.song.file));
 const WS_MIDI = fs.readFileSync(path.join(pages.ROOT, "ws.mid"));
 const WS_SETTINGS = { quality: 1, masterVol: 0.5, reverbLev: 0.3, liveVoices: 64 };
-const REFERENCE_FILE = process.env.TINYSYNTH_BROWSER_MATRIX_REFERENCE
+const EXTERNAL_REFERENCE = !!process.env.TINYSYNTH_BROWSER_MATRIX_REFERENCE;
+const REFERENCE_FILE = EXTERNAL_REFERENCE
   ? path.resolve(process.env.TINYSYNTH_BROWSER_MATRIX_REFERENCE)
   : path.join(__dirname, "full-mix-reference.json");
 let REFERENCE = null;
-try { REFERENCE = JSON.parse(fs.readFileSync(REFERENCE_FILE, "utf8")); } catch (e) {
+let REFERENCE_BYTES = null;
+try {
+  REFERENCE_BYTES = fs.readFileSync(REFERENCE_FILE);
+  REFERENCE = JSON.parse(REFERENCE_BYTES.toString("utf8"));
+} catch (e) {
   if (e.code !== "ENOENT") throw e;
 }
 
 function sha256(bytes) {
   return crypto.createHash("sha256").update(bytes).digest("hex");
+}
+
+function referenceProvenance() {
+  return {
+    schemaVersion: 1,
+    source: EXTERNAL_REFERENCE ? "external-override" : "declared-reference",
+    status: REFERENCE_BYTES ? "present" : "absent",
+    sha256: REFERENCE_BYTES ? sha256(REFERENCE_BYTES) : null,
+    referenceToleranceSha256: REFERENCE && typeof REFERENCE.referenceToleranceSha256 === "string"
+      ? REFERENCE.referenceToleranceSha256 : null,
+  };
 }
 
 const METHOD_FILES = [
@@ -1141,6 +1157,7 @@ function cases(shared) {
           "max |diff|=" + sourceMin.maxDiff.toExponential(3) + " at sample " + sourceMin.firstDifferingSample +
             " (<= " + sourceMin.tolerance + "; first attempt only)");
         const derivedStatus = deriveFullMixStatus(builds, sourceMin.ok);
+        const referenceState = referenceProvenance();
         const observation = {
           schemaVersion: 2, scope: "fixture", qualification: "fixture-only-no-production-approval",
           fixtureId: fixture.id, profileKind: fixture.profileKind, label: fixture.label,
@@ -1148,7 +1165,8 @@ function cases(shared) {
           midiSha256: fixture.midiSha256, setupSha256: fixture.setupSha256,
           settingsSha256: fixture.settingsSha256, probePlanSha256: fixture.probePlanSha256,
           methodSha256: fixture.methodSha256, toleranceSha256: fixture.toleranceSha256,
-          referenceToleranceSha256: REFERENCE.referenceToleranceSha256,
+          referenceProvenance: referenceState,
+          referenceToleranceSha256: referenceState.referenceToleranceSha256,
           masterVol: profile.masterVol, reverbLev: profile.reverbLev, playbackOriginSec: ORIGIN,
           songEndSec: fixture.songEndSec, durationSec: fixture.renderDurationSec,
           input: { midiPath: fixture.id === "tinychip-ws-mid" ? "tests/fixtures/consumer/waves-song.mid" : "ws.mid",
@@ -1209,7 +1227,7 @@ function expectedCases() {
 
 module.exports = {
   cases, expectedCases, FIXTURES, FIXTURE_BY_ID, noteManifest, analyzeChannels, renderOne, caseRecord,
-  selectReference, deriveFullMixStatus,
+  selectReference, deriveFullMixStatus, referenceProvenance,
   compareBuildToReference, referenceShapeProblems, referenceExpectedCases, referenceCoverageProblems,
   matchVoiceCreations, matchProbeCreations,
   sameEnginePcm, relativeProbeFault, zeroDownbeatWindow, faultSensitivity,
