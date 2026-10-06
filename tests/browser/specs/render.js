@@ -245,7 +245,8 @@ function cases(shared) {
             const persistent = [];
             for (let k = 0; k < ps.length; ++k) {
               const label = name + (s.items ? " " + s.items[k].label : "") + " repeat";
-              const r = await judgePair(label, ps[k], kept[name].parts[k], () => renderPart(again, s, { seed, sr, quality }, {}, k), null);
+              // Both sides are re-rendered as diagnostics: the kept first render may be the odd one.
+              const r = await judgePair(label, ps[k], kept[name].parts[k], () => renderPart(again, s, { seed, sr, quality }, {}, k), () => renderPart(pg.source, s, { seed, sr, quality }, {}, k));
               if (!r.ok) persistent.push(label + ": " + r.reasons[0] + " (first attempt; " + FA.SHORT[r.outcome] + ")");
             }
             const r = combine(s, ps);

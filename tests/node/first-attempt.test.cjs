@@ -84,6 +84,18 @@ for (const kind of ["transient", "quiet", "nonfinite"]) {
   });
 }
 
+test("comparePair: a glitch in the first reference render is intermittent when both sides are re-rendered", async () => {
+  const good = render(wave);
+  const res = await FA.comparePair({ a: good, b: FA.corruptRender("transient", good), tolerance: 5e-4, budget: FA.makeBudget(1), rerenderA: async () => good, rerenderB: async () => good });
+  assert.equal(res.ok, false);
+  assert.equal(res.outcome, FA.OUTCOMES.INTERMITTENT);
+  assert.equal(res.diagnostics[0].info.newAvsFirstB > 0, true, "the retried repeat disagrees with the first reference: the reference was the bad render");
+  assert.equal(res.diagnostics[0].info.firstAvsNewB, 0);
+  // With only the repeat side retried, the retained faulty reference makes the same glitch look reproduced.
+  const one = await FA.comparePair({ a: good, b: FA.corruptRender("transient", good), tolerance: 5e-4, budget: FA.makeBudget(1), rerenderA: async () => good, rerenderB: null });
+  assert.equal(one.outcome, FA.OUTCOMES.REPRODUCED);
+});
+
 test("comparePair: within the summation tolerance there is no failure and no re-render", async () => {
   let reruns = 0;
   const res = await FA.comparePair({ a: render(wave), b: render(wave.map((x, i) => (i === 3 ? x + 1e-4 : x))), tolerance: 5e-4, budget: FA.makeBudget(1), rerenderA: async () => { ++reruns; } });

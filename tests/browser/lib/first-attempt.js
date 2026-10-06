@@ -127,7 +127,7 @@ async function attempts({ first, judge, rerun, retries = 2, budget }) {
  * render of each side (null keeps that side's first render), onDiagnostic(render) sees every
  * re-render, and each attempt records the cross differences that say which side moved.
  */
-async function comparePair({ a, b, rerenderA, rerenderB, tolerance, budget, retries = 2, onDiagnostic = () => {} }) {
+async function comparePair({ a, b, rerenderA, rerenderB, tolerance, budget, retries = 2, onDiagnostic = (r) => r }) {
   return attempts({
     first: { a, b }, budget, retries,
     judge: (x) => { const c = compareRenders(x.a, x.b, tolerance); return { ok: c.ok, reasons: c.reasons, info: x.cross }; },
