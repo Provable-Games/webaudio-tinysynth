@@ -60,7 +60,7 @@ From the Claude Opus 5.5 supervisor (session `webaudio-tinysynth-a0`) to a GPT-6
 
 | Wave | Item | Notes |
 | --- | --- | --- |
-| 1 | **#91**: the WebKit render slip on looped, low-rate buffers | It is inherited from upstream (same rate in `3d75aee`) and has never been reproduced without the library. It sometimes reaches audible levels (0.38 on q0 program 127). Bisection plan: `tasks/T13.1.md` §4. Also stress-render the TinyChip bank in WebKit, since every TinyChip voice is a looped buffer. |
+| 1 | **#91**: the WebKit render slip on looped, low-rate buffers | It was observed upstream (`3d75aee`). First-attempt discrepancies now also have bounded manual Web Audio reproductions without the TinySynth script or instance; their cause and a production-safe remedy remain unestablished. Investigation tooling is in draft [PR #92](https://github.com/Provable-Games/webaudio-tinysynth/pull/92), with evidence limits in `tasks/P1-NOISE.md`. #91 remains open. Full-mix fixtures do not qualify Casey’s final bank or physical devices. |
 | 1 | **#68**: scheduling deadlines (B1) | The revised design is S–M. The first downbeat has only 40–100 ms of lead. Keep the first-pass art origin (`startTime`) and the housekeeping cadence; a naive synchronous tick moves the origin a whole loop later. Record the timing trade-off as a new decision (D-043, because D-042 is the freeze) with a contracts row. Flag the timing change to the consumer. |
 | 1 | **#79**: release-gate integrity (A2) | Cross-engine checks after the shard merge, and full-mix baselines. Then the user makes `browser matrix` required on `main`. |
 | 1 | **#76**: certifying production tracks and banks (A3) | Belongs in the consumer repo. The triage prototype `_evidence/review-triage/probes/certify-mock.cjs` has a confirmed false pass (a tuning SysEx), so certification needs independent pitch and state checks and a blocking result. Size M. |
@@ -74,8 +74,8 @@ From the Claude Opus 5.5 supervisor (session `webaudio-tinysynth-a0`) to a GPT-6
 
 1. **The version.** The user said "v1.0.0". The engine is planned as v2.0.0 (D-037: the input checks break compatibility with upstream 1.1.4). The consumer's mainnet release is its own 1.0.0. Confirm which is meant.
 2. **#68:** approval of the B1 timing trade-off, once the design is ready.
-3. **#76:** whether A3 goes to the consumer side, and who runs it.
-4. **#80:** the device list, and Casey's final production MIDI files and settings, if they differ from `midi_fun_contract`.
+3. **#76 (answered):** the user authorized a Luna Max agent in an isolated onchain-midi-player worktree. The original consumer checkout stays untouched; final production qualification is still pending.
+4. **#80:** the device list and final production MIDI/settings manifest. The user says Casey is still working via `origin/beast-music` in `/workspace/midi_fun_contract`; snapshot `3ecad45345e5883bbac8dfa107f4de175867f8e7` is development evidence, not a final production manifest.
 5. **The ruleset:** require `browser matrix` on `main` after #79 lands.
 6. **Small items:**
    - the `priority: P3` label on #90;

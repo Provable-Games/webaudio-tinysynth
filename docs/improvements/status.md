@@ -2,6 +2,22 @@
 
 Supervisor-owned. **On 2026-10-06 supervision passed to a GPT-6.1 Sol supervisor: start with [HANDOVER.md](HANDOVER.md).** After a context reset, read this file, then [contracts.md](contracts.md), then the newest entries of [decisions.md](decisions.md).
 
+## P1 first-wave checkpoint (2026-10-06)
+
+Scope remains frozen by D-042. The user authorized Luna Max implementers using the standard subagent tools, each in its own worktree with written CONCURRENCY briefs. Every change needs supervisor code review before opening a PR. The user merges; no agent merges. The signed scratch commit `6a7fb1c` verified GPG signing and was not pushed.
+
+| Item | State | Review and release limits |
+| --- | --- | --- |
+| #91 noise path | review; draft [PR #92](https://github.com/Provable-Games/webaudio-tinysynth/pull/92), signed `1d1f2f3` | Investigation tools only. Focused controls 29/29 and Node 223/223 pass. Standard matrix remains red at 341/342: WebKit q0/44.1 kHz program 125 has a preserved first source/min discrepancy; a clean diagnostic does not clear it. First min PCM was not retained. No cause, remedy, production bank qualification or physical-device certification is claimed. |
+| #68 scheduling | running; publication held | Full unit suite 1,104/1,104, Node 194/194 and three regressions pass. Candidate synchronous startup and 0.5 s horizon preserve legacy `startTime` and add stable `initialStartTime`; Stop/resume and voice-cap tradeoffs remain disclosed. Actual consumer sync closure checks pass with an evidence-only migration patch. A post-hoc audit preserves Chromium’s first realtime control as an integrity failure (512-frame clock gap); Firefox/WebKit controls pass. Stall captures, the standard native matrix, and user timing-policy approval remain pending. No D-043 decision has been approved. |
+| #79 release gate | running | Exact aggregate context, cross-engine checks, raw first-attempt PCM verification and full-mix fixture method are under review. Historical 48-capture v5/v6 evidence has 11/12 eligible case pairs before references; WebKit ws.mid/48 kHz first and diagnostic source/min WAVs each contain an over-full-scale stereo frame. Partial references cannot qualify a release. Exact browser bundle provenance, including Chromium’s actual headless shell, now passes an independent real merge-CLI positive and four fault controls. A fresh current-config matrix remains pending. Main required-check/current-base administration remains the user’s step. |
+| #76 consumer certification | review; consumer draft [PR #56](https://github.com/Provable-Games/onchain-midi-player/pull/56), signed `3b39d2a` | User authorized the isolated consumer agent. Full consumer suite 399/399 on current main and artifact checks pass; production CLI exits 2, incomplete with zero final pairs. Exact-pair mock runtime checks and fixed native tolerance controls cannot substitute for native part attribution, final production files, devices or the final P1 engine repin. |
+| #80 device qualification | pending | Final Casey files/settings, physical device captures and Casey’s signoff are required. Browser fixtures and null audio sinks do not qualify physical devices. |
+
+Casey’s development reference is `origin/beast-music` in `/workspace/midi_fun_contract`, observed at `3ecad45345e5883bbac8dfa107f4de175867f8e7`; the original checkout is read-only. The consumer’s initial implementation base was `1787a933` (VERSION 0.3.0, PAGE_VERSION 10), embedding engine `4bf9829`, distinct from the handover’s ready-to-offer `31fb18d` pin. Its main moved to `500da1b`; the assigned agent integrated that base in its own worktree, resolved the documentation overlap, and passed affected checks. The remote delta leaves PAGE, versions, engine, player and settings unchanged. No consumer PAGE bytes or engine pin have been migrated in this wave.
+
+G2, T10 and the release remain pending. This records review state, not acceptance or issue completion. No NOTICE update is due for the investigation-only tools; any merged shipped behavior change still follows D-040.
+
 ## After every merge into improve/integration (supervisor checklist, D-040)
 
 Do these in order, as soon as a merge is seen. Fetch first: the user merges on GitHub.
