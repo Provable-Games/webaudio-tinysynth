@@ -189,6 +189,12 @@ function overFullScaleFrames(channels) {
 
 function readAttempt(reportDir, engine, fixture, sampleRate, build, attempt, sourceRef) {
   const artifact = attempt === 1 ? sourceRef.artifact : sourceRef.diagnosticRepeat && sourceRef.diagnosticRepeat.artifact;
+  const attemptName = attempt === 1 ? "first" : attempt === 2 ? "diagnostic-repeat" : null;
+  if (!attemptName) throw new Error("unsupported retained full-mix attempt " + String(attempt));
+  const expectedPath = path.posix.join("full-mix", fixture.id + "-q1-" + sampleRate + "-" + build + "-" + attemptName + ".wav");
+  if (!artifact || artifact.path !== expectedPath)
+    throw new Error(engine + " " + fixture.id + " " + sampleRate + " " + build + " attempt " + attempt +
+      " artifact path must be exactly " + expectedPath);
   if (!artifact || typeof artifact.path !== "string" || artifact.saved !== true ||
       artifact.sampleRate !== sampleRate || artifact.channels !== 2 || artifact.encoding !== "WAVE_FORMAT_IEEE_FLOAT")
     throw new Error(engine + " " + fixture.id + " " + sampleRate + " " + build + " attempt " + attempt + " lacks a retained stereo Float32 artifact");
@@ -283,21 +289,60 @@ function pairRows(report, reportDir, { env = process.env, root = path.resolve(__
       if (!obs) continue;
       const fixture = fullMix.FIXTURE_BY_ID[obs.fixtureId];
       if (!fixture || ![44100, 48000].includes(obs.sampleRate)) throw new Error("v5 report has an undeclared full-mix case " + String(c && c.id));
+      const currentMethod = obs.methodSha256 === fixture.methodSha256 && obs.toleranceSha256 === fixture.toleranceSha256;
       const builds = {};
       for (const build of ["source", "min"]) {
         const row = obs.builds && obs.builds[build];
-        if (!row || row.attempt !== 1 || row.firstAttempt !== true || !row.diagnosticRepeat ||
-            row.diagnosticRepeat.attempt !== 2 || row.diagnosticRepeat.neverPromotesFirstAttempt !== true)
+        const diagnostic = row && row.diagnosticRepeat;
+        if (!row || row.attempt !== 1 || row.firstAttempt !== true || !diagnostic ||
+            diagnostic.attempt !== 2 || diagnostic.role !== "diagnostic-only" ||
+            diagnostic.neverPromotesFirstAttempt !== true || diagnostic.firstVerdict !== row.result ||
+            !["captured", "incomplete"].includes(diagnostic.result))
           throw new Error(c.id + " " + build + " does not preserve attempt 1 and diagnostic repeat roles");
+        if (diagnostic.result === "incomplete" &&
+            (typeof diagnostic.error !== "string" || diagnostic.error.length === 0))
+          throw new Error(c.id + " " + build + " incomplete diagnostic repeat must preserve a nonempty error");
+        if (diagnostic.result === "captured" &&
+            (!diagnostic.metrics || typeof diagnostic.metrics !== "object" || Array.isArray(diagnostic.metrics) ||
+             !diagnostic.sameEnginePcm || typeof diagnostic.sameEnginePcm !== "object" || Array.isArray(diagnostic.sameEnginePcm) ||
+             typeof diagnostic.sameEnginePcm.ok !== "boolean" ||
+             !["identical", "summation", "mismatch"].includes(diagnostic.sameEnginePcm.category) ||
+             !(Number.isFinite(diagnostic.sameEnginePcm.maxDiff) || diagnostic.sameEnginePcm.maxDiff === null) ||
+             !Number.isFinite(diagnostic.sameEnginePcm.tolerance) ||
+             !Number.isSafeInteger(diagnostic.sameEnginePcm.firstDifferingSample) ||
+             !Array.isArray(diagnostic.sameEnginePcm.reasons) ||
+             diagnostic.sameEnginePcm.reasons.some((reason) => typeof reason !== "string")))
+          throw new Error(c.id + " " + build + " captured diagnostic repeat evidence is malformed");
+        const first = readAttempt(reportDir, engine, fixture, obs.sampleRate, build, 1, row);
+        const repeat = diagnostic.result === "captured"
+          ? readAttempt(reportDir, engine, fixture, obs.sampleRate, build, 2, row)
+          : null;
+        const firstVsRepeat = repeat ? fullMix.sameEnginePcm(first.channels, repeat.channels, engine) : null;
+        if (repeat && currentMethod && !sameJson(diagnostic.metrics, repeat.metrics))
+          throw new Error(c.id + " " + build + " diagnostic metrics differ from retained repeat WAV");
+        if (repeat && currentMethod && !sameJson(diagnostic.sameEnginePcm, firstVsRepeat))
+          throw new Error(c.id + " " + build + " diagnostic PCM comparison differs from retained first/repeat WAVs");
         builds[build] = {
           priorResult: row.result,
           priorPreBaselineEligible: row.preBaselineEligible === true,
-          first: readAttempt(reportDir, engine, fixture, obs.sampleRate, build, 1, row),
-          repeat: readAttempt(reportDir, engine, fixture, obs.sampleRate, build, 2, row),
+          first,
+          repeat,
+          diagnosticRepeat: {
+            attempt: diagnostic.attempt,
+            role: diagnostic.role,
+            result: diagnostic.result,
+            firstVerdict: diagnostic.firstVerdict,
+            neverPromotesFirstAttempt: diagnostic.neverPromotesFirstAttempt,
+            error: diagnostic.result === "incomplete" ? diagnostic.error : null,
+            artifactPath: repeat ? repeat.path : null,
+            reportedMetricsSha256: repeat ? hash(Buffer.from(canonical(diagnostic.metrics))) : null,
+            recomputedMetricsSha256: repeat ? hash(Buffer.from(canonical(repeat.metrics))) : null,
+            reportedComparisonSha256: repeat ? hash(Buffer.from(canonical(diagnostic.sameEnginePcm))) : null,
+            recomputedComparisonSha256: repeat ? hash(Buffer.from(canonical(firstVsRepeat))) : null,
+            priorMethodEvidence: !currentMethod,
+          },
         };
-        builds[build].firstVsRepeat = fullMix.sameEnginePcm(
-          builds[build].first.channels, builds[build].repeat.channels, engine,
-        );
+        builds[build].firstVsRepeat = firstVsRepeat;
       }
       const sourceChannels = builds.source.first.channels;
       const minChannels = builds.min.first.channels;
@@ -316,7 +361,6 @@ function pairRows(report, reportDir, { env = process.env, root = path.resolve(__
           if (matrix.nativeNoteEvidenceComplete(capture.noteInstances, fixture, obs.sampleRate))
             recomputedFault = fullMix.faultSensitivity(first.channels, obs.sampleRate, fixture, first.metrics, capture.noteInstances);
         } catch { /* malformed native evidence remains ineligible */ }
-        const currentMethod = obs.methodSha256 === fixture.methodSha256 && obs.toleranceSha256 === fixture.toleranceSha256;
         const faultMatchesCurrentMethod = currentMethod && !!recomputedFault && recomputedFault.checksPass === true &&
           sameJson(capture.faultSensitivity, recomputedFault);
         const priorMethodEvidence = !currentMethod;
@@ -363,7 +407,6 @@ function pairRows(report, reportDir, { env = process.env, root = path.resolve(__
         if (typeof ok === "boolean" && !ok) eligibilityReasons.push(build + ": " + name);
       if (!sourceMinPcmEligible) eligibilityReasons.push("source/min first-attempt PCM differs or producer comparison does not match raw samples");
       if (priorFirstFailure) eligibilityReasons.push("producer retained a first-attempt fail; a later or offline reanalysis cannot promote it");
-      const currentMethod = obs.methodSha256 === fixture.methodSha256 && obs.toleranceSha256 === fixture.toleranceSha256;
       if (!currentMethod) eligibilityReasons.push("retained capture method/tolerance differs from the current hashed fixture contract");
       if (captureCheckEvidence.source.priorMethodEvidence || captureCheckEvidence.min.priorMethodEvidence)
         eligibilityReasons.push("prior-method fault summaries are historical; missing current-method page/fault evidence cannot certify a current reference");
@@ -424,8 +467,8 @@ function pairRows(report, reportDir, { env = process.env, root = path.resolve(__
         };
       }
       for (const build of ["source", "min"]) {
-      delete builds[build].first.channels;
-      delete builds[build].repeat.channels;
+        delete builds[build].first.channels;
+        if (builds[build].repeat) delete builds[build].repeat.channels;
       }
     }
   }

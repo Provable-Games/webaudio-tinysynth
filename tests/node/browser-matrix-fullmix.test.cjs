@@ -183,13 +183,19 @@ function makeReanalysisReport(root, toolchain, engine = "chromium", runtimeVersi
     const artifact = (relative) => ({ path: relative, saved: true, sha256: artifactSha,
       pcmSha256: pcmSha, bytes: wav.length, sampleRate, channels: 2, encoding: "WAVE_FORMAT_IEEE_FLOAT" });
     const faultSensitivity = fullMix.faultSensitivity(channels, sampleRate, fixture, metrics, noteInstances);
+    const repeatArtifact = artifact(repeatPath);
     builds[build] = {
       attempt: 1, firstAttempt: true, result: "incomplete", preBaselineEligible: true,
       artifact: artifact(firstPath), noteInstances: structuredClone(noteInstances),
       probeInstances: structuredClone(probeInstances), metrics: structuredClone(metrics),
       pageErrors: [], aborted: [], intervalCount: 1, rejections: [], faultSensitivity,
       referenceStatus: "incomplete", comparisonProblems: [],
-      diagnosticRepeat: { attempt: 2, neverPromotesFirstAttempt: true, artifact: artifact(repeatPath) },
+      diagnosticRepeat: {
+        attempt: 2, role: "diagnostic-only", result: "captured", artifact: repeatArtifact,
+        metrics: structuredClone(metrics), noteInstances: structuredClone(noteInstances),
+        sameEnginePcm: fullMix.sameEnginePcm(channels, channels, engine),
+        firstVerdict: "incomplete", neverPromotesFirstAttempt: true,
+      },
     };
     builds[build].sourceMinPcmComparison = sourceMinPcmComparison;
     checks.push({ name: build + " first attempt completed without scheduler, rejection, page error or network request", ok: true });
@@ -567,11 +573,148 @@ test("offline reference export re-derives first-attempt eligibility and validate
     assert.match(rows[0].captureCheckEvidence.source.originalFaultSummarySha256, /^[a-f0-9]{64}$/);
     assert.deepEqual(rows[0].captureCheckEvidence.source.originalFaultSensitivity,
       baseline.report.chromium.cases[0].observations.fullMix.builds.source.faultSensitivity);
+    assert.equal(rows[0].builds.source.repeat.attempt, 2);
+    assert.equal(rows[0].builds.source.diagnosticRepeat.result, "captured");
+    assert.equal(rows[0].builds.source.diagnosticRepeat.artifactPath,
+      "chromium/full-mix/tinychip-ws-mid-q1-44100-source-diagnostic-repeat.wav");
+    assert.equal(rows[0].builds.source.firstVsRepeat.ok, true);
     const reference = reanalyzer.makeReference(rows, sha256(Buffer.from("retained-test-report")),
       baseline.matrixRun, linuxToolchain, linuxFixture.env, linuxFixture.root);
     assert.equal(reference.status, "incomplete");
     assert.equal(reference.coverage.measuredCases.length, 1);
     assert.ok(reference.engines.chromium[baseline.fixture.id][baseline.sampleRate]);
+
+    const changedRepeatReport = structuredClone(baseline.report);
+    const changedRepeatDiagnostic = changedRepeatReport.chromium.cases[0].observations.fullMix.builds.source.diagnosticRepeat;
+    const changedRepeatChannels = baseline.channels.map((channel) => Float32Array.from(channel));
+    changedRepeatChannels[0][Math.round(0.4 * baseline.sampleRate)] += 0.1;
+    const changedRepeatWav = stereoFloatWav(changedRepeatChannels, baseline.sampleRate);
+    const changedRepeatPath = path.join(temp, "chromium", changedRepeatDiagnostic.artifact.path);
+    const originalRepeatWav = fs.readFileSync(changedRepeatPath);
+    try {
+      fs.writeFileSync(changedRepeatPath, changedRepeatWav);
+      changedRepeatDiagnostic.artifact.sha256 = sha256(changedRepeatWav);
+      changedRepeatDiagnostic.artifact.pcmSha256 = sha256(Buffer.concat(changedRepeatChannels.map((channel) =>
+        Buffer.from(channel.buffer, channel.byteOffset, channel.byteLength))));
+      changedRepeatDiagnostic.artifact.bytes = changedRepeatWav.length;
+      changedRepeatDiagnostic.metrics = fullMix.analyzeChannels(changedRepeatChannels, baseline.sampleRate, baseline.fixture);
+      changedRepeatDiagnostic.sameEnginePcm = fullMix.sameEnginePcm(baseline.channels, changedRepeatChannels, "chromium");
+      assert.equal(changedRepeatDiagnostic.sameEnginePcm.ok, false, "the captured repeat fixture must contain a measured mismatch");
+      const changedRepeatRows = reanalyzer.pairRows(changedRepeatReport, temp, options);
+      assert.equal(changedRepeatRows[0].builds.source.firstVsRepeat.ok, false);
+      assert.equal(changedRepeatRows[0].referenceExportEligible, true,
+        "a valid captured diagnostic mismatch is evidence only and cannot change first-attempt eligibility");
+    } finally {
+      fs.writeFileSync(changedRepeatPath, originalRepeatWav);
+    }
+
+    const incompleteRepeat = structuredClone(baseline.report);
+    const incompleteObs = incompleteRepeat.chromium.cases[0].observations.fullMix;
+    for (const build of ["source", "min"]) {
+      const diagnostic = incompleteObs.builds[build].diagnosticRepeat;
+      Object.assign(diagnostic, {
+        result: "incomplete", error: "fixture diagnostic repeat unavailable", firstVerdict: incompleteObs.builds[build].result,
+      });
+      delete diagnostic.artifact;
+      delete diagnostic.metrics;
+      delete diagnostic.noteInstances;
+      delete diagnostic.sameEnginePcm;
+    }
+    const incompleteRows = reanalyzer.pairRows(incompleteRepeat, temp, options);
+    const incompleteRow = JSON.parse(JSON.stringify(incompleteRows[0]));
+    assert.equal(incompleteRow.referenceExportEligible, true,
+      "a legitimate missing diagnostic repeat must not change first-attempt eligibility");
+    for (const build of ["source", "min"]) {
+      assert.equal(incompleteRow.builds[build].repeat, null);
+      assert.equal(incompleteRow.builds[build].firstVsRepeat, null);
+      assert.deepEqual(incompleteRow.builds[build].diagnosticRepeat, {
+        attempt: 2, role: "diagnostic-only", result: "incomplete", firstVerdict: "incomplete",
+        neverPromotesFirstAttempt: true, error: "fixture diagnostic repeat unavailable", artifactPath: null,
+        reportedMetricsSha256: null, recomputedMetricsSha256: null,
+        reportedComparisonSha256: null, recomputedComparisonSha256: null, priorMethodEvidence: false,
+      });
+      assert.equal(Object.hasOwn(incompleteRow.builds[build].diagnosticRepeat, "sha256"), false);
+    }
+    const incompleteReference = reanalyzer.makeReference(incompleteRows, sha256(Buffer.from("missing-repeat")),
+      baseline.matrixRun, linuxToolchain, linuxFixture.env, linuxFixture.root);
+    assert.equal(incompleteReference.coverage.measuredCases.length, 1,
+      "reference export remains based on the independently validated first WAVs");
+
+    const olderCapturedDiagnostic = structuredClone(baseline.report);
+    for (const build of ["source", "min"])
+      delete olderCapturedDiagnostic.chromium.cases[0].observations.fullMix.builds[build].diagnosticRepeat.noteInstances;
+    assert.equal(reanalyzer.pairRows(olderCapturedDiagnostic, temp, options)[0].referenceExportEligible, true,
+      "captured diagnostic note telemetry is not required beyond the existing aggregate schema");
+
+    const pathRejects = [
+      ["first path cannot claim diagnostic WAV", (obs) => {
+        obs.builds.source.artifact.path = obs.builds.source.diagnosticRepeat.artifact.path;
+      }, /artifact path must be exactly full-mix\/tinychip-ws-mid-q1-44100-source-first\.wav/],
+      ["first path cannot claim another build WAV", (obs) => {
+        obs.builds.source.artifact.path = obs.builds.min.artifact.path;
+      }, /artifact path must be exactly full-mix\/tinychip-ws-mid-q1-44100-source-first\.wav/],
+      ["diagnostic path cannot claim first WAV", (obs) => {
+        obs.builds.source.diagnosticRepeat.artifact.path = obs.builds.source.artifact.path;
+      }, /artifact path must be exactly full-mix\/tinychip-ws-mid-q1-44100-source-diagnostic-repeat\.wav/],
+      ["swapped first and diagnostic paths are rejected", (obs) => {
+        const first = obs.builds.source.artifact.path;
+        obs.builds.source.artifact.path = obs.builds.source.diagnosticRepeat.artifact.path;
+        obs.builds.source.diagnosticRepeat.artifact.path = first;
+      }, /artifact path must be exactly full-mix\/tinychip-ws-mid-q1-44100-source-first\.wav/],
+    ];
+    for (const [label, mutate, expected] of pathRejects) {
+      const report = structuredClone(baseline.report);
+      mutate(report.chromium.cases[0].observations.fullMix);
+      assert.throws(() => reanalyzer.pairRows(report, temp, options), expected, label);
+    }
+
+    const diagnosticRejects = [
+      ["wrong diagnostic role", (diagnostic) => { diagnostic.role = "first-attempt"; }, /diagnostic repeat roles/],
+      ["wrong diagnostic attempt number", (diagnostic) => { diagnostic.attempt = 1; }, /diagnostic repeat roles/],
+      ["wrong diagnostic first verdict", (diagnostic) => { diagnostic.firstVerdict = "fail"; }, /diagnostic repeat roles/],
+      ["unsupported diagnostic result", (diagnostic) => { diagnostic.result = "retried"; }, /diagnostic repeat roles/],
+      ["incomplete diagnostic needs error", (diagnostic) => {
+        diagnostic.result = "incomplete"; delete diagnostic.artifact; delete diagnostic.metrics;
+        delete diagnostic.noteInstances; delete diagnostic.sameEnginePcm; delete diagnostic.error;
+      }, /incomplete diagnostic repeat must preserve a nonempty error/],
+      ["captured diagnostic needs complete evidence", (diagnostic) => { delete diagnostic.metrics; }, /captured diagnostic repeat evidence is malformed/],
+      ["captured diagnostic needs its named artifact", (diagnostic) => { delete diagnostic.artifact; }, /artifact path must be exactly full-mix\/tinychip-ws-mid-q1-44100-source-diagnostic-repeat\.wav/],
+      ["captured comparison requires boolean result", (diagnostic) => { diagnostic.sameEnginePcm.ok = "true"; }, /captured diagnostic repeat evidence is malformed/],
+      ["captured comparison requires declared category", (diagnostic) => { diagnostic.sameEnginePcm.category = "unknown"; }, /captured diagnostic repeat evidence is malformed/],
+      ["captured comparison requires finite tolerance", (diagnostic) => { diagnostic.sameEnginePcm.tolerance = null; }, /captured diagnostic repeat evidence is malformed/],
+      ["captured comparison requires integral first sample", (diagnostic) => { diagnostic.sameEnginePcm.firstDifferingSample = 1.5; }, /captured diagnostic repeat evidence is malformed/],
+      ["captured comparison requires string reasons", (diagnostic) => { diagnostic.sameEnginePcm.reasons = ["ok", 1]; }, /captured diagnostic repeat evidence is malformed/],
+      ["captured comparison is checked against both retained WAVs", (diagnostic) => { diagnostic.sameEnginePcm.ok = false; }, /diagnostic PCM comparison differs from retained first\/repeat WAVs/],
+      ["captured metrics are checked against repeat WAV", (diagnostic) => { diagnostic.metrics.overall.peak += 0.01; }, /diagnostic metrics differ from retained repeat WAV/],
+      ["captured diagnostic hash must match its WAV", (diagnostic) => { diagnostic.artifact.sha256 = "0".repeat(64); }, /raw artifact metadata does not match bytes/],
+    ];
+    for (const [label, mutate, expected] of diagnosticRejects) {
+      const report = structuredClone(baseline.report);
+      mutate(report.chromium.cases[0].observations.fullMix.builds.source.diagnosticRepeat);
+      assert.throws(() => reanalyzer.pairRows(report, temp, options), expected, label);
+    }
+
+    const missingRepeatReport = structuredClone(baseline.report);
+    const missingRepeatDiagnostic = missingRepeatReport.chromium.cases[0].observations.fullMix.builds.source.diagnosticRepeat;
+    const missingRepeatPath = path.join(temp, "chromium", missingRepeatDiagnostic.artifact.path);
+    const retainedRepeatWav = fs.readFileSync(missingRepeatPath);
+    try {
+      fs.unlinkSync(missingRepeatPath);
+      assert.throws(() => reanalyzer.pairRows(missingRepeatReport, temp, options), /ENOENT/, "captured repeat cannot reference a missing WAV");
+    } finally {
+      fs.writeFileSync(missingRepeatPath, retainedRepeatWav);
+    }
+
+    const failedFirst = structuredClone(incompleteRepeat);
+    const failedRepeatObs = failedFirst.chromium.cases[0].observations.fullMix;
+    Object.assign(failedRepeatObs.builds.source, { result: "fail", referenceStatus: "measured", comparisonProblems: ["first-attempt comparison failed"] });
+    failedRepeatObs.builds.source.diagnosticRepeat.firstVerdict = "fail";
+    failedRepeatObs.status = "fail";
+    const failedWithIncompleteRepeat = reanalyzer.pairRows(failedFirst, temp, options)[0];
+    assert.equal(failedWithIncompleteRepeat.builds.source.diagnosticRepeat.result, "incomplete");
+    assert.equal(failedWithIncompleteRepeat.preBaselineEligible, false);
+    assert.equal(failedWithIncompleteRepeat.referenceExportEligible, false,
+      "an incomplete diagnostic repeat cannot promote a failed first attempt");
 
     const rejects = [
       ["sample-rounded note onset", (obs) => { obs.builds.source.noteInstances.rows[0].onsetSec += 3 / baseline.sampleRate; },
@@ -604,7 +747,10 @@ test("offline reference export re-derives first-attempt eligibility and validate
         "currentFixtureIdentity"],
       ["contradictory aggregate status", (obs) => { obs.status = "pass"; },
         "producerAggregateStatus"],
-      ["contradictory build pass", (obs) => { obs.builds.source.result = "pass"; },
+      ["contradictory build pass", (obs) => {
+        obs.builds.source.result = "pass";
+        obs.builds.source.diagnosticRepeat.firstVerdict = "pass";
+      },
         "producerStatusShape"],
     ];
     for (const [label, mutate, check] of rejects) {
@@ -620,6 +766,7 @@ test("offline reference export re-derives first-attempt eligibility and validate
     const failedComparison = structuredClone(baseline.report);
     const failedObs = failedComparison.chromium.cases[0].observations.fullMix;
     Object.assign(failedObs.builds.source, { result: "fail", referenceStatus: "measured", comparisonProblems: ["RMS drift"] });
+    failedObs.builds.source.diagnosticRepeat.firstVerdict = "fail";
     failedObs.status = "fail";
     const failedRow = reanalyzer.pairRows(failedComparison, temp, options)[0];
     assert.equal(failedRow.producerAggregateStatusMatches, true);
@@ -630,6 +777,9 @@ test("offline reference export re-derives first-attempt eligibility and validate
     const priorObs = priorMethod.chromium.cases[0].observations.fullMix;
     priorObs.methodSha256 = "b".repeat(64);
     priorObs.toleranceSha256 = "c".repeat(64);
+    priorObs.builds.source.diagnosticRepeat.metrics.downbeat.bandRms += 0.01;
+    const originalHistoricalDiagnosticMetricsSha256 = sha256(Buffer.from(
+      browserToolchain.canonical(priorObs.builds.source.diagnosticRepeat.metrics)));
     for (const build of ["source", "min"]) {
       delete priorObs.builds[build].pageErrors;
       delete priorObs.builds[build].aborted;
@@ -642,6 +792,14 @@ test("offline reference export re-derives first-attempt eligibility and validate
     assert.equal(priorRow.captureCheckEvidence.source.nativeFaultSensitivity, false);
     assert.equal(priorRow.captureCheckEvidence.source.recomputedFault.checksPass, true);
     assert.match(priorRow.captureCheckEvidence.source.originalFaultSummarySha256, /^[a-f0-9]{64}$/);
+    assert.equal(priorRow.builds.source.diagnosticRepeat.priorMethodEvidence, true);
+    assert.equal(priorRow.builds.source.diagnosticRepeat.reportedMetricsSha256, originalHistoricalDiagnosticMetricsSha256);
+    assert.match(priorRow.builds.source.diagnosticRepeat.recomputedMetricsSha256, /^[a-f0-9]{64}$/);
+    assert.notEqual(priorRow.builds.source.diagnosticRepeat.reportedMetricsSha256,
+      priorRow.builds.source.diagnosticRepeat.recomputedMetricsSha256,
+      "historical metrics remain inspectable without comparing their old analysis as current evidence");
+    assert.match(priorRow.builds.source.diagnosticRepeat.reportedComparisonSha256, /^[a-f0-9]{64}$/);
+    assert.match(priorRow.builds.source.diagnosticRepeat.recomputedComparisonSha256, /^[a-f0-9]{64}$/);
     assert.equal(reanalyzer.makeReference([priorRow], sha256(Buffer.from("prior-method")), baseline.matrixRun,
       linuxToolchain, linuxFixture.env, linuxFixture.root).coverage.measuredCases.length, 0);
 

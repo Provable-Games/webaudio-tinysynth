@@ -117,14 +117,37 @@ test("generated-buffer SHA-256 uses known Float32LE planar channel bytes", async
   const artifactRoot = fs.mkdtempSync(path.join(os.tmpdir(), "matrix-buffer-producer-"));
   const resultFile = path.join(artifactRoot, "browser-results-chromium-1", "browser-matrix", "results.json");
   const inheritedChannels = Object.getOwnPropertyDescriptor(Object.prototype, "channels");
-  let inheritedSetterCalls = 0;
+  const inheritedConvBuf = Object.getOwnPropertyDescriptor(Object.prototype, "convBuf");
+  const originalNodeOptions = process.env.NODE_OPTIONS;
+  const hadNodeOptions = Object.prototype.hasOwnProperty.call(process.env, "NODE_OPTIONS");
+  const originalExecArgvDescriptor = Object.getOwnPropertyDescriptor(process, "execArgv");
+  let inheritedChannelsGetterCalls = 0, inheritedChannelsSetterCalls = 0;
+  let inheritedConvBufGetterCalls = 0, inheritedConvBufSetterCalls = 0;
   try {
     Object.defineProperty(Object.prototype, "channels", {
       configurable: true,
-      set() {
-        ++inheritedSetterCalls;
-        Object.defineProperty(this, "channels", { configurable: true, enumerable: true, writable: true, value: 1 });
+      get() { ++inheritedChannelsGetterCalls; return undefined; },
+      set(value) {
+        ++inheritedChannelsSetterCalls;
+        Object.defineProperty(this, "channels", { configurable: true, enumerable: true, writable: true, value });
       },
+    });
+    Object.defineProperty(Object.prototype, "convBuf", {
+      configurable: true,
+      get() { ++inheritedConvBufGetterCalls; return undefined; },
+      set(value) {
+        ++inheritedConvBufSetterCalls;
+        Object.defineProperty(this, "convBuf", { configurable: true, enumerable: true, writable: true, value });
+      },
+    });
+    process.env.NODE_OPTIONS = "T6_PRIVATE_NODE_OPTIONS_DO_NOT_EMIT";
+    const privateExecArgv = ["--require=/T6_PRIVATE_PRELOAD_PATH", "--credential=T6_PRIVATE_ARG_VALUE", "--import", "/T6_PRIVATE_IMPORT_PATH"];
+    for (let i = 0; i < 70; ++i) privateExecArgv.push("--T6_PRIVATE_FLAG_" + i + "=T6_PRIVATE_FLAG_VALUE");
+    Object.defineProperty(process, "execArgv", {
+      configurable: true,
+      enumerable: originalExecArgvDescriptor ? !!originalExecArgvDescriptor.enumerable : true,
+      writable: true,
+      value: privateExecArgv,
     });
     for (const build of ["source", "min"]) {
       renderSpec.saveGeneratedBufferCaptures(captures[build], quality, sampleRate, build, {
@@ -141,8 +164,15 @@ test("generated-buffer SHA-256 uses known Float32LE planar channel bytes", async
   } finally {
     if (inheritedChannels) Object.defineProperty(Object.prototype, "channels", inheritedChannels);
     else delete Object.prototype.channels;
+    if (inheritedConvBuf) Object.defineProperty(Object.prototype, "convBuf", inheritedConvBuf);
+    else delete Object.prototype.convBuf;
+    if (hadNodeOptions) process.env.NODE_OPTIONS = originalNodeOptions;
+    else delete process.env.NODE_OPTIONS;
+    if (originalExecArgvDescriptor) Object.defineProperty(process, "execArgv", originalExecArgvDescriptor);
+    else delete process.execArgv;
   }
-  assert.equal(inheritedSetterCalls, 0, "saving uses own data properties instead of invoking inherited channel setters");
+  assert.equal(inheritedChannelsGetterCalls + inheritedChannelsSetterCalls + inheritedConvBufGetterCalls + inheritedConvBufSetterCalls, 0,
+    "saving and descriptor diagnostics do not invoke inherited channel or buffer-slot accessors");
   for (const build of ["source", "min"]) {
     assert.equal(Object.hasOwn(captures[build].bufferSha256.convBuf, "channels"), true);
     assert.equal(captures[build].bufferSha256.convBuf.channels, 2, "the validated stereo count is copied unchanged");
@@ -151,6 +181,15 @@ test("generated-buffer SHA-256 uses known Float32LE planar channel bytes", async
   const observation = makeObservation(captures);
   assert.deepEqual(renderBufferShaProblems(dimensions, observation, "producer control", { expectedSeed: seed }), [],
     "actual render/decode/hash/combine/save producer output retains both first reverb builds through JSON serialization");
+  const goodProducerIntegrity = renderSpec.generatedBufferIntegrityCheck(captures.source.bufferSha256, captures.min.bufferSha256, {
+    quality, sampleRate, expectedFrames: Math.floor(sampleRate * 0.5), requireSaved: true,
+  });
+  assert.equal(goodProducerIntegrity.ok, true, "actual producer consistency check keeps valid stereo and mono measurements passing");
+  assert.doesNotMatch(goodProducerIntegrity.detail, /integrity-context=/, "successful producer checks retain their existing detail without diagnostics");
+  for (const build of ["source", "min"]) {
+    assert.equal(captures[build].bufferSha256.convBuf.channels, 2);
+    assert.equal(captures[build].bufferSha256.n0.channels, 1);
+  }
   const resultRel = "browser-results-chromium-1/browser-matrix/results.json";
   const producerCase = { id: "render-reverb-q1-44100", dims: dimensions.dims,
     observations: { "generated buffer SHA-256 (first reverb-enabled attempt)": observation } };
@@ -162,6 +201,113 @@ test("generated-buffer SHA-256 uses known Float32LE planar channel bytes", async
     const name = path.basename(rel).split("-").at(-1).replace(".f32le", "");
     assert.equal(bytes.length, observation.builds[build][name].byteLength);
     assert.equal(stableSha256(bytes), observation.builds[build][name].sha256);
+  }
+  const sourceMap = captures.source.bufferSha256;
+  const originalConvBufDescriptor = Object.getOwnPropertyDescriptor(sourceMap, "convBuf");
+  const minMap = captures.min.bufferSha256;
+  const originalN1Descriptor = Object.getOwnPropertyDescriptor(minMap, "n1");
+  try {
+    sourceMap.convBuf = Object.freeze(Object.assign({}, originalConvBufDescriptor.value, { channels: 1 }));
+    minMap.n1 = Object.freeze(Object.assign({}, originalN1Descriptor.value, { channels: 2 }));
+    const failedProducerIntegrity = renderSpec.generatedBufferIntegrityCheck(sourceMap, minMap, {
+      quality, sampleRate, expectedFrames: Math.floor(sampleRate * 0.5), requireSaved: true,
+    });
+    assert.equal(failedProducerIntegrity.ok, false, "the actual first-attempt consistency check keeps a malformed final channel count failing");
+    assert.match(failedProducerIntegrity.detail, /source convBuf channels=1 expected=2/,
+      "failure context preserves the original human-readable integrity reason");
+    const marker = " | integrity-context=";
+    const markerAt = failedProducerIntegrity.detail.lastIndexOf(marker);
+    assert.notEqual(markerAt, -1, "the existing integrity failure receives appended diagnostic context");
+    const diagnosticText = failedProducerIntegrity.detail.slice(markerAt + marker.length);
+    const diagnostic = JSON.parse(diagnosticText);
+    const stages = diagnostic.focus.stages;
+    assert.equal(diagnostic.focus.build, "source");
+    assert.equal(diagnostic.focus.buffer, "convBuf", "focus is the first failing build/buffer in fixed traversal order");
+    assert.equal(diagnostic.counterpart.build, "min");
+    assert.equal(diagnostic.counterpart.buffer, "convBuf");
+    assert.equal(diagnostic.failure.slotCount, 2);
+    assert.deepEqual(diagnostic.failure.slots, ["source/convBuf", "min/n1"],
+      "context identifies multiple independently failing generated buffers with a bounded slot list");
+    for (const stageName of ["beforeSave", "afterSave"]) {
+      assert.deepEqual(stages[stageName].value.channels, {
+        kind: "data", enumerable: true, configurable: false, writable: false, valueType: "number", value: 2,
+      });
+      assert.equal(stages[stageName].value.frozen, true);
+      assert.equal(stages[stageName].mapSlot.own.kind, "data");
+      assert.equal(stages[stageName].mapSlot.own.valueType, "object");
+    }
+    assert.equal(stages.constructedRow.value.channels.value, 2);
+    assert.equal(stages.afterInsert.value.channels.value, 2);
+    assert.equal(stages.beforeSave.value.objectPrototypeChannels.kind, "accessor");
+    assert.equal(stages.beforeSave.value.objectPrototypeChannels.get, true);
+    assert.equal(stages.beforeSave.value.objectPrototypeChannels.set, true);
+    assert.equal(stages.beforeSave.mapSlot.objectPrototype.kind, "accessor");
+    assert.equal(stages.beforeSave.mapSlot.objectPrototype.get, true);
+    assert.equal(stages.beforeSave.mapSlot.objectPrototype.set, true);
+    assert.equal(stages.comparison.value.channels.value, 1);
+    assert.equal(stages.comparison.value.frozen, true);
+    assert.equal(stages.comparison.mapSlot.own.valueType, "object");
+    assert.equal(stages.comparison.mapSlot.objectPrototype.kind, "missing");
+    assert.equal(stages.comparison.value.objectPrototypeChannels.kind, "missing");
+    assert.equal(diagnostic.counterpart.comparison.value.channels.value, 2);
+    assert.equal(diagnostic.counterpart.comparison.mapSlot.objectPrototype.kind, "missing");
+    assert.equal(diagnostic.runtime.nodeOptionsSet, true);
+    assert.equal(typeof diagnostic.runtime.nodeVersion, "string");
+    assert.equal(typeof diagnostic.runtime.platform, "string");
+    assert.equal(typeof diagnostic.runtime.arch, "string");
+    assert.equal(diagnostic.runtime.preloadPresent, true);
+    assert.equal(diagnostic.runtime.execArgvTruncated, true);
+    assert.ok(diagnostic.runtime.execArgvFlags.includes("--require"));
+    assert.ok(diagnostic.runtime.execArgvFlags.includes("--import"));
+    assert.ok(diagnosticText.length <= 4096, "oversized argv input yields a bounded diagnostic context");
+    assert.doesNotMatch(diagnosticText, /T6_PRIVATE|\/T6_PRIVATE|NODE_OPTIONS_DO_NOT_EMIT/,
+      "runtime diagnostics do not emit supplied environment or argv values");
+
+    const originalStringify = JSON.stringify;
+    try {
+      JSON.stringify = function (value, ...args) {
+        if (value && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, "runtime") &&
+            Object.prototype.hasOwnProperty.call(value, "failure")) throw new Error("T6_PRIVATE_DIAGNOSTIC_SERIALIZER_FAILURE");
+        return originalStringify.call(this, value, ...args);
+      };
+      const serializationFailure = renderSpec.generatedBufferIntegrityCheck(sourceMap, minMap, {
+        quality, sampleRate, expectedFrames: Math.floor(sampleRate * 0.5), requireSaved: true,
+      });
+      assert.equal(serializationFailure.ok, false, "context serialization failure cannot turn an integrity failure into a pass");
+      assert.match(serializationFailure.detail, /source convBuf channels=1 expected=2/);
+      assert.match(serializationFailure.detail, /integrity-context=\{"unavailable":true\}$/,
+        "context serialization errors use a short bounded fallback");
+      assert.doesNotMatch(serializationFailure.detail, /T6_PRIVATE_DIAGNOSTIC_SERIALIZER_FAILURE/);
+    } finally {
+      JSON.stringify = originalStringify;
+    }
+  } finally {
+    Object.defineProperty(sourceMap, "convBuf", originalConvBufDescriptor);
+    Object.defineProperty(minMap, "n1", originalN1Descriptor);
+  }
+  const pureMismatchOriginal = originalN1Descriptor.value;
+  const differentSha = pureMismatchOriginal.sha256[0] === "0" ? "1" + pureMismatchOriginal.sha256.slice(1) : "0" + pureMismatchOriginal.sha256.slice(1);
+  const changedNodeTrace = Object.freeze(Object.assign({}, pureMismatchOriginal.captureTrace.node, { sha256: differentSha }));
+  const pureMismatchRow = Object.freeze(Object.assign({}, pureMismatchOriginal, {
+    sha256: differentSha,
+    captureTrace: Object.freeze(Object.assign({}, pureMismatchOriginal.captureTrace, { node: changedNodeTrace })),
+  }));
+  try {
+    minMap.n1 = pureMismatchRow;
+    const pureMismatch = renderSpec.generatedBufferIntegrityCheck(sourceMap, minMap, {
+      quality, sampleRate, expectedFrames: Math.floor(sampleRate * 0.5), requireSaved: true,
+    });
+    assert.equal(pureMismatch.ok, false, "source/min metadata equality remains a separate integrity failure when each slot is internally consistent");
+    assert.match(pureMismatch.detail, /^source\/min SHA-256 descriptors differ \| integrity-context=/);
+    const contextText = pureMismatch.detail.slice(pureMismatch.detail.lastIndexOf(" | integrity-context=") + " | integrity-context=".length);
+    const mismatchContext = JSON.parse(contextText);
+    assert.equal(mismatchContext.focus.build, "source");
+    assert.equal(mismatchContext.focus.buffer, "n1");
+    assert.deepEqual(mismatchContext.failure.slots, ["source/n1", "min/n1"]);
+    assert.equal(mismatchContext.counterpart.comparison.value.channels.value, 1);
+    assert.ok(contextText.length <= 4096);
+  } finally {
+    Object.defineProperty(minMap, "n1", originalN1Descriptor);
   }
   const changedSidecar = path.join(path.dirname(resultFile), "chromium", persisted.find(([build, rel]) => build === "source" && rel.endsWith("-n1.f32le"))[1]);
   const originalSidecar = fs.readFileSync(changedSidecar);

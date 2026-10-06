@@ -169,14 +169,248 @@ function combine(s, parts) {
   };
 }
 
+const GENERATED_BUFFER_NAMES = ["convBuf", "n0", "n1"];
+const GENERATED_BUFFER_INTEGRITY_CONTEXTS = new WeakMap();
+const MAX_GENERATED_BUFFER_CONTEXT_CHARS = 4096;
+
+function runtimeIntegrityFlags() {
+  const knownFlags = new Set(["--inspect", "--inspect-brk", "--require", "--import", "--max-old-space-size",
+    "--stack-size", "--enable-source-maps", "--no-warnings", "--trace-warnings", "--conditions", "--expose-gc",
+    "--test", "--test-reporter"]);
+  const flags = [];
+  let preloadPresent = false;
+  let truncated = false;
+  try {
+    const args = process.execArgv;
+    if (Array.isArray(args)) {
+      const scanLength = Math.min(args.length, 64);
+      for (let i = 0; i < scanLength; ++i) {
+        const arg = args[i];
+        if (typeof arg !== "string" || !arg.startsWith("-")) continue;
+        const equalsAt = arg.indexOf("=");
+        const name = arg.slice(0, equalsAt < 0 ? 64 : Math.min(equalsAt, 64));
+        const normalized = name === "-r" ? "--require" : name;
+        if (["--require", "--import"].includes(normalized)) {
+          preloadPresent = true;
+          if (arg === normalized || arg === "-r") ++i;
+        }
+        if (flags.length < 16) flags.push(knownFlags.has(normalized) ? normalized : "--other");
+        else truncated = true;
+      }
+      if (args.length > scanLength) truncated = true;
+    }
+  } catch {
+    truncated = true;
+  }
+  return {
+    nodeVersion: typeof process.version === "string" ? process.version.slice(0, 32) : "unknown",
+    platform: typeof process.platform === "string" ? process.platform.slice(0, 24) : "unknown",
+    arch: typeof process.arch === "string" ? process.arch.slice(0, 24) : "unknown",
+    nodeOptionsSet: (() => { try { return Object.prototype.hasOwnProperty.call(process.env, "NODE_OPTIONS"); } catch { return false; } })(),
+    execArgvFlags: flags,
+    execArgvTruncated: truncated,
+    preloadPresent,
+  };
+}
+
+function safeValueType(value) {
+  if (value === null) return "null";
+  return typeof value;
+}
+
+function descriptorSummary(target, key, mode) {
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(target, key);
+    if (!descriptor) return { kind: "missing" };
+    const summary = {
+      kind: Object.prototype.hasOwnProperty.call(descriptor, "value") ? "data" : "accessor",
+      enumerable: !!descriptor.enumerable,
+      configurable: !!descriptor.configurable,
+    };
+    if (summary.kind === "data") {
+      summary.writable = !!descriptor.writable;
+      if (mode === "channels") {
+        summary.valueType = safeValueType(descriptor.value);
+        summary.value = typeof descriptor.value === "number" && Number.isFinite(descriptor.value) ? descriptor.value : null;
+      } else if (mode === "slot") summary.valueType = safeValueType(descriptor.value);
+    } else {
+      summary.get = typeof descriptor.get === "function";
+      summary.set = typeof descriptor.set === "function";
+    }
+    return summary;
+  } catch {
+    return { kind: "error" };
+  }
+}
+
+function objectPrototypeKind(value) {
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype ? "Object.prototype" : prototype === null ? "null" : "other";
+  } catch {
+    return "error";
+  }
+}
+
+function objectIntegritySummary(value) {
+  if ((typeof value !== "object" && typeof value !== "function") || value === null)
+    return { valueType: safeValueType(value), channels: { kind: "unavailable" }, frozen: null, prototype: "unavailable" };
+  let frozen = null;
+  try { frozen = Object.isFrozen(value); } catch { /* Keep failure-only context primitive and bounded. */ }
+  return {
+    valueType: safeValueType(value),
+    channels: descriptorSummary(value, "channels", "channels"),
+    frozen,
+    prototype: objectPrototypeKind(value),
+    objectPrototypeChannels: descriptorSummary(Object.prototype, "channels", "flags"),
+  };
+}
+
+function bufferSlotIntegritySummary(bufferMap, name) {
+  return {
+    own: descriptorSummary(bufferMap, name, "slot"),
+    objectPrototype: descriptorSummary(Object.prototype, name, "flags"),
+  };
+}
+
+function integrityContextForMap(bufferMap) {
+  if (!bufferMap || (typeof bufferMap !== "object" && typeof bufferMap !== "function")) return null;
+  let context = GENERATED_BUFFER_INTEGRITY_CONTEXTS.get(bufferMap);
+  if (!context) {
+    context = { runtime: runtimeIntegrityFlags(), buffers: Object.create(null) };
+    for (const name of GENERATED_BUFFER_NAMES) context.buffers[name] = { stages: Object.create(null) };
+    GENERATED_BUFFER_INTEGRITY_CONTEXTS.set(bufferMap, context);
+  }
+  return context;
+}
+
+function recordBufferIntegrityStage(bufferMap, name, stage, value) {
+  try {
+    const context = integrityContextForMap(bufferMap);
+    if (!context || !GENERATED_BUFFER_NAMES.includes(name)) return;
+    context.buffers[name].stages[stage] = {
+      value: objectIntegritySummary(value),
+      mapSlot: bufferSlotIntegritySummary(bufferMap, name),
+    };
+  } catch {
+    /* Diagnostics must never replace the integrity verdict. */
+  }
+}
+
+function appendBufferIntegrityContext(detail, sourceBuffers, minBuffers, failingSlots) {
+  const fallback = '{"unavailable":true}';
+  try {
+    const source = sourceBuffers && GENERATED_BUFFER_INTEGRITY_CONTEXTS.get(sourceBuffers);
+    const min = minBuffers && GENERATED_BUFFER_INTEGRITY_CONTEXTS.get(minBuffers);
+    const slots = [...new Set(failingSlots)];
+    const first = slots[0] || "";
+    const slash = first.indexOf("/");
+    const focusBuild = slash < 0 ? null : first.slice(0, slash);
+    const focusName = slash < 0 ? null : first.slice(slash + 1);
+    const focusState = focusBuild === "source" ? source : focusBuild === "min" ? min : null;
+    const otherBuild = focusBuild === "source" ? "min" : "source";
+    const otherState = otherBuild === "source" ? source : min;
+    const focusStages = focusName && focusState && focusState.buffers[focusName] && focusState.buffers[focusName].stages;
+    const counterpartStages = focusName && otherState && otherState.buffers[focusName] && otherState.buffers[focusName].stages;
+    const context = {
+      runtime: (source || min) && (source || min).runtime,
+      failure: {
+        slotCount: slots.length,
+        slots: slots.slice(0, GENERATED_BUFFER_NAMES.length * 2),
+        slotsTruncated: slots.length > GENERATED_BUFFER_NAMES.length * 2,
+      },
+      focus: focusName ? {
+        build: focusBuild,
+        buffer: focusName,
+        stages: focusStages || null,
+      } : null,
+      counterpart: focusName ? {
+        build: otherBuild,
+        buffer: focusName,
+        comparison: counterpartStages && counterpartStages.comparison || null,
+      } : null,
+    };
+    let encoded;
+    try { encoded = JSON.stringify(context); } catch { encoded = fallback; }
+    if (typeof encoded !== "string" || encoded.length > MAX_GENERATED_BUFFER_CONTEXT_CHARS) encoded = '{"omitted":"size-limit"}';
+    return detail + " | integrity-context=" + encoded;
+  } catch {
+    return detail + " | integrity-context=" + fallback;
+  }
+}
+
+function generatedBufferIntegrityCheck(sourceBuffers, minBuffers, options) {
+  const { quality, sampleRate, expectedFrames, requireSaved } = options;
+  const equalBufferMeasurements = (left, right) => GENERATED_BUFFER_NAMES.every((name) =>
+    left && right && left[name] && right[name] &&
+    ["sha256", "channels", "frames", "byteLength"].every((key) => left[name][key] === right[name][key]));
+  const failingSlots = [];
+  const bufferShapeProblems = (value, buildName) => GENERATED_BUFFER_NAMES.flatMap((name) => {
+    if (!value || typeof value !== "object") {
+      failingSlots.push(buildName + "/descriptors");
+      return [buildName + " descriptors missing"];
+    }
+    const row = value[name];
+    recordBufferIntegrityStage(value, name, "comparison", row);
+    const channels = name === "convBuf" ? 2 : 1;
+    const rel = "generated-buffers/q" + quality + "-" + sampleRate + "-reverb-" + buildName + "-" + name + ".f32le";
+    const at = buildName + " " + name;
+    if (!row) {
+      failingSlots.push(buildName + "/" + name);
+      return [at + " descriptor missing"];
+    }
+    const problems = [];
+    if (!/^[a-f0-9]{64}$/.test(row.sha256)) problems.push(at + " SHA-256 malformed");
+    if (row.channels !== channels) problems.push(at + " channels=" + row.channels + " expected=" + channels);
+    if (row.frames !== expectedFrames) problems.push(at + " frames=" + row.frames + " expected=" + expectedFrames);
+    if (row.byteLength !== channels * expectedFrames * 4)
+      problems.push(at + " byteLength=" + row.byteLength + " expected=" + (channels * expectedFrames * 4));
+    const trace = row.captureTrace;
+    if (!trace || !trace.browser || !trace.node) problems.push(at + " browser/Node capture-stage snapshot missing");
+    else {
+      const b = trace.browser, n = trace.node;
+      if (b.channels !== n.channels || b.frames !== n.frames || b.byteLength !== n.byteLength || b.byteLength !== n.decodedByteLength)
+        problems.push(at + " browser snapshot=" + JSON.stringify(b) + " Node snapshot=" + JSON.stringify(n));
+      if (n.channels !== row.channels || n.frames !== row.frames || n.byteLength !== row.byteLength || n.sha256 !== row.sha256)
+        problems.push(at + " final descriptor=" + JSON.stringify({ channels: row.channels, frames: row.frames, byteLength: row.byteLength, sha256: row.sha256 }) +
+          " differs from Node snapshot=" + JSON.stringify(n));
+      if (b.base64Chars !== Math.ceil(n.decodedByteLength / 3) * 4)
+        problems.push(at + " base64Chars=" + b.base64Chars + " does not match decoded bytes=" + n.decodedByteLength);
+    }
+    if (!row.artifact || row.artifact.path !== rel || row.artifact.saved !== requireSaved)
+      problems.push(at + " artifact retention/path mismatch (saved=" + (row.artifact && row.artifact.saved) + ")");
+    if (problems.length) failingSlots.push(buildName + "/" + name);
+    return problems;
+  });
+  const bufferProblems = [
+    ...bufferShapeProblems(sourceBuffers, "source"),
+    ...bufferShapeProblems(minBuffers, "min"),
+  ];
+  const measurementsMatch = !bufferProblems.length && equalBufferMeasurements(sourceBuffers, minBuffers);
+  if (!bufferProblems.length && !measurementsMatch) {
+    for (const name of GENERATED_BUFFER_NAMES) {
+      const left = sourceBuffers && sourceBuffers[name], right = minBuffers && minBuffers[name];
+      if (!left || !right || ["sha256", "channels", "frames", "byteLength"].some((key) => left[key] !== right[key]))
+        failingSlots.push("source/" + name, "min/" + name);
+    }
+  }
+  const ok = !bufferProblems.length && measurementsMatch;
+  let detail = ok ? JSON.stringify(sourceBuffers) : bufferProblems.slice(0, 8).join("; ") || "source/min SHA-256 descriptors differ";
+  if (!ok) detail = appendBufferIntegrityContext(detail, sourceBuffers, minBuffers, failingSlots);
+  return { ok, detail };
+}
+
 function saveGeneratedBufferCaptures(result, quality, sampleRate, build, t) {
+  const bufferMap = result.bufferSha256;
   for (const name of ["convBuf", "n0", "n1"]) {
-    const measurement = result.bufferSha256 && result.bufferSha256[name];
+    const measurement = bufferMap && bufferMap[name];
     const bytes = result.bufferCaptures && result.bufferCaptures[name];
     if (!measurement || !bytes) continue;
     const rel = "generated-buffers/q" + quality + "-" + sampleRate + "-reverb-" + build + "-" + name + ".f32le";
+    recordBufferIntegrityStage(bufferMap, name, "beforeSave", measurement);
     const saved = t.save(rel, bytes);
-    result.bufferSha256[name] = Object.freeze({
+    recordBufferIntegrityStage(bufferMap, name, "afterSave", measurement);
+    const row = Object.freeze({
       sha256: measurement.sha256,
       channels: measurement.channels,
       frames: measurement.frames,
@@ -184,6 +418,9 @@ function saveGeneratedBufferCaptures(result, quality, sampleRate, build, t) {
       captureTrace: result.bufferCaptureTrace && result.bufferCaptureTrace[name],
       artifact: Object.freeze({ path: rel, saved: !!saved }),
     });
+    recordBufferIntegrityStage(bufferMap, name, "constructedRow", row);
+    result.bufferSha256[name] = row;
+    recordBufferIntegrityStage(bufferMap, name, "afterInsert", row);
   }
   return result.bufferSha256;
 }
@@ -438,47 +675,12 @@ function cases(shared) {
               }
               const sourceBuffers = res.source[0].bufferSha256;
               const minBuffers = res.min[0].bufferSha256;
-              const equalBufferMeasurements = (left, right) => ["convBuf", "n0", "n1"].every((name) =>
-                left && right && left[name] && right[name] &&
-                ["sha256", "channels", "frames", "byteLength"].every((key) => left[name][key] === right[name][key]));
-              const bufferShapeProblems = (value, buildName) => ["convBuf", "n0", "n1"].flatMap((name) => {
-                if (!value || typeof value !== "object") return [buildName + " descriptors missing"];
-                const row = value[name];
-                const channels = name === "convBuf" ? 2 : 1;
-                const rel = "generated-buffers/q" + quality + "-" + sr + "-reverb-" + buildName + "-" + name + ".f32le";
-                const at = buildName + " " + name;
-                if (!row) return [at + " descriptor missing"];
-                const problems = [];
-                if (!/^[a-f0-9]{64}$/.test(row.sha256)) problems.push(at + " SHA-256 malformed");
-                if (row.channels !== channels) problems.push(at + " channels=" + row.channels + " expected=" + channels);
-                if (row.frames !== expectedFrames) problems.push(at + " frames=" + row.frames + " expected=" + expectedFrames);
-                if (row.byteLength !== channels * expectedFrames * 4)
-                  problems.push(at + " byteLength=" + row.byteLength + " expected=" + (channels * expectedFrames * 4));
-                const trace = row.captureTrace;
-                if (!trace || !trace.browser || !trace.node) problems.push(at + " browser/Node capture-stage snapshot missing");
-                else {
-                  const b = trace.browser, n = trace.node;
-                  if (b.channels !== n.channels || b.frames !== n.frames || b.byteLength !== n.byteLength || b.byteLength !== n.decodedByteLength)
-                    problems.push(at + " browser snapshot=" + JSON.stringify(b) + " Node snapshot=" + JSON.stringify(n));
-                  if (n.channels !== row.channels || n.frames !== row.frames || n.byteLength !== row.byteLength || n.sha256 !== row.sha256)
-                    problems.push(at + " final descriptor=" + JSON.stringify({ channels: row.channels, frames: row.frames, byteLength: row.byteLength, sha256: row.sha256 }) +
-                      " differs from Node snapshot=" + JSON.stringify(n));
-                  if (b.base64Chars !== Math.ceil(n.decodedByteLength / 3) * 4)
-                    problems.push(at + " base64Chars=" + b.base64Chars + " does not match decoded bytes=" + n.decodedByteLength);
-                }
-                if (!row.artifact || row.artifact.path !== rel || row.artifact.saved !== !!t.out)
-                  problems.push(at + " artifact retention/path mismatch (saved=" + (row.artifact && row.artifact.saved) + ")");
-                return problems;
+              const integrity = generatedBufferIntegrityCheck(sourceBuffers, minBuffers, {
+                quality, sampleRate: sr, expectedFrames, requireSaved: !!t.out,
               });
-              const bufferProblems = [
-                ...bufferShapeProblems(sourceBuffers, "source"),
-                ...bufferShapeProblems(minBuffers, "min"),
-              ];
-              const sourceMinMatch = !bufferProblems.length &&
-                equalBufferMeasurements(sourceBuffers, minBuffers);
               t.check("reverb-enabled first-attempt generated Float32 buffers have complete source/min SHA-256 measurements",
-                sourceMinMatch,
-                sourceMinMatch ? JSON.stringify(sourceBuffers) : bufferProblems.slice(0, 8).join("; ") || "source/min SHA-256 descriptors differ");
+                integrity.ok, integrity.detail);
+              const sourceMinMatch = integrity.ok;
               const expectedBuffers = SEED_EXPECTED.hashes[sr] && SEED_EXPECTED.hashes[sr][seed];
               if (expectedBuffers) {
                 const expectedMatch = sourceMinMatch && ["convBuf", "n0", "n1"].every((name) => sourceBuffers[name].sha256 === expectedBuffers[name]);
@@ -566,4 +768,4 @@ function cases(shared) {
 }
 
 module.exports = { cases, renderSpec, bufferCaptureSettings, renderScenario, renderParts, combine, saveGeneratedBufferCaptures,
-  openRenderPage, render, decode, maxDiff, createFirstPcmRetainer, rawGmMeasurements };
+  openRenderPage, render, decode, maxDiff, createFirstPcmRetainer, rawGmMeasurements, generatedBufferIntegrityCheck };
