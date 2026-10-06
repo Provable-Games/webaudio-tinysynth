@@ -8,7 +8,10 @@
  * Also asserted: every render is finite; the minified build renders the same
  * PCM as the source build, and a repeat render in a fresh page matches, both
  * within the engine's same-engine sample tolerance (bit-identical where the
- * engine is deterministic); a different Math.random seed changes the
+ * engine is deterministic). The first attempt decides (#78, lib/first-attempt.js):
+ * a source/min or repeat difference beyond the tolerance, a non-finite sample, or a
+ * missing or quiet note in a first render fails the run even if a re-render is clean.
+ * Re-renders are diagnostics, counted and recorded apart from the verdict. A different Math.random seed changes the
  * noise-based output (the seeding is effective). Unhandled
  * promise rejections are classified (lib/known.js): known baseline ones (#12)
  * are counted and reported, any other fails.
@@ -19,6 +22,7 @@ const A = require("../lib/analysis");
 const { SCENARIOS } = require("../lib/scenarios");
 const { classifyRejections } = require("../lib/known");
 const { tolerances } = require("../tolerances");
+const FA = require("../lib/first-attempt");
 
 const decode = (b64) => {
   const b = Buffer.from(b64, "base64");
@@ -104,31 +108,10 @@ async function renderScenario(p, s, ctx, variant = {}) {
   return combine(s, await renderParts(p, s, ctx, variant));
 }
 
-/* Index of the first differing sample between two renders, or -1. */
-function firstDifference(a, b) {
-  let first = -1;
-  for (let c = 0; c < Math.min(a.channels.length, b.channels.length); ++c)
-    for (let i = 0; i < Math.min(a.channels[c].length, b.channels[c].length); ++i)
-      if (a.channels[c][i] !== b.channels[c][i]) { if (first < 0 || i < first) first = i; break; }
-  return first;
-}
+const { maxDiff } = FA;
 
-/* Largest absolute sample difference between two renders (Infinity if their shapes differ). */
-function maxDiff(a, b) {
-  if (!a.channels || !b.channels || a.channels.length !== b.channels.length) return Infinity;
-  let m = 0;
-  for (let c = 0; c < a.channels.length; ++c) {
-    const x = a.channels[c], y = b.channels[c];
-    if (x.length !== y.length) return Infinity;
-    for (let i = 0; i < x.length; ++i) {
-      const d = Math.abs(x[i] - y[i]);
-      if (d > m || d !== d) m = d !== d ? Infinity : d;
-    }
-  }
-  return m;
-}
-
-const MAX_RECONCILE = 3;
+/* Diagnostic re-renders a case may spend (the verdict never depends on them), first-attempt.js. */
+const MAX_DIAGNOSED = 6;
 
 function cases(shared) {
   const { matrix, options, engine } = shared;
@@ -157,48 +140,45 @@ function cases(shared) {
           const buffers = {};
           const sameEngine = { bitIdentical: [], differing: {} };
           const kept = {};
-          // Every render, including re-renders and the repeat and alternate-seed
-          // renders, is checked for NaN/Infinity, realtime contexts and rejections.
-          const audit = (r, label) => {
-            renders += r.renders || 1;
+          // Every first-attempt render, and the repeat and alternate-seed renders, is checked for
+          // NaN/Infinity, realtime contexts and rejections and decides the verdict. A diagnostic
+          // re-render (of a part that failed its first attempt) is audited the same way but counted
+          // and listed apart.
+          let diagRenders = 0;
+          const diagFinite = [];
+          const audit = (r, label, diagnostic = false) => {
+            if (diagnostic) {
+              ++diagRenders;
+              if (r.whole.nan || r.whole.inf) diagFinite.push(label + " " + JSON.stringify(r.whole));
+            } else {
+              renders += r.renders || 1;
+              if (r.whole.nan || r.whole.inf) finiteProblems.push(label + " " + JSON.stringify(r.whole));
+            }
             const c = classifyRejections(r.rejections);
             for (const [k, n] of Object.entries(c.counts)) rejectionCounts[k] = (rejectionCounts[k] || 0) + n;
             unknownRejections.push(...c.unknown.map((u) => label + ": " + u.name + ": " + u.message));
-            if (r.whole.nan || r.whole.inf) finiteProblems.push(label + " " + JSON.stringify(r.whole));
             if (r.internalContext !== "offline") realtimeInternal.push(label + " " + r.internalContext);
             return r;
           };
           /*
-           * Same-engine reconciliation. WebKit occasionally renders a segment
-           * that differs from an otherwise identical render (up to 0.56 on
-           * arm64 CI, 0.19 locally; reproduced under main-thread GC pressure,
-           * about 1 in 50 renders; cause not isolated). A real difference
-           * reproduces on every render, a glitch does not. When two renders
-           * that must agree differ beyond the tolerance, the part is
-           * re-rendered (at most twice per side): it is reconciled only if a
-           * render of one side agrees with a render of the other within the
-           * tolerance, and that pair is used from then on. At most
-           * MAX_RECONCILE parts per case may be reconciled; every
-           * reconciliation is recorded.
+           * Same-engine comparisons (#78). WebKit occasionally renders a segment that differs from
+           * an otherwise identical render (up to 0.56 on arm64 CI; tasks/T13.1.md measures it).
+           * That is a lost or broken note, so the FIRST attempt decides: two renders that must agree
+           * and differ beyond the tolerance fail the check, and a clean re-render does not clear it
+           * (lib/first-attempt.js). The tolerance is the measured summation-order one and is not
+           * widened. Parts that fail get at most two diagnostic re-renders (at most MAX_DIAGNOSED
+           * parts per case); each attempt is counted and recorded in the observation, apart from
+           * the verdict, with which side moved.
            */
-          const reconciled = [];
-          const reconcile = async (label, k, a, b, rerenderA, rerenderB, sides) => {
-            const As = [a], Bs = [b];
-            const first = firstDifference(a, b), d0 = maxDiff(a, b);
-            if (reconciled.length >= MAX_RECONCILE) return { ok: false, why: "more than " + MAX_RECONCILE + " reconciliations in this case" };
-            for (let tries = 0; tries < 2; ++tries) {
-              if (rerenderA) As.push(audit(await rerenderA(), label + " re-render"));
-              if (rerenderB) Bs.push(audit(await rerenderB(), label + " re-render"));
-              for (const x of As) for (const y of Bs) {
-                if (maxDiff(x, y) <= tol.sameEngineSample) {
-                  reconciled.push({ part: label, maxDiff: d0, firstDifferingSample: first, renders: As.length + Bs.length, differingRender: x === a ? sides[1] : y === b ? sides[0] : "both" });
-                  return { ok: true, x, y };
-                }
-              }
-            }
-            const stable = (list) => list.some((x, i) => list.some((y, j) => j > i && maxDiff(x, y) <= tol.sameEngineSample));
-            return { ok: false, why: "max |diff| " + d0.toExponential(3) + " at sample " + first + ", reproduced in " + (As.length + Bs.length) + " renders" + (stable(As) && stable(Bs) ? "" : " (engine output unstable)") };
+          const budget = FA.makeBudget(MAX_DIAGNOSED);
+          const diag = FA.createLog(budget);
+          // A part pair that must agree, rerendered by rerenderA/rerenderB (null: that side keeps its render).
+          const judgePair = async (label, a, b, rerenderA, rerenderB) => {
+            const res = await FA.comparePair({ a, b, rerenderA, rerenderB, tolerance: tol.sameEngineSample, budget, onDiagnostic: (r) => audit(r, label + " diagnostic re-render", true) });
+            diag.add(label, res);
+            return res;
           };
+          const injectRender = FA.faultInjector("render"), injectRepeat = FA.faultInjector("repeat");
 
           for (const s of SCENARIOS) {
             const variants = s.variants || [];
@@ -207,6 +187,9 @@ function cases(shared) {
               parts[build] = [];
               for (const v of [{}, ...variants]) {
                 const ps = await renderParts(pg[build], s, { seed, sr, quality }, v);
+                // Fault injection (lib/first-attempt.js): the first part of the min build's first render.
+                const fault = build === "min" && !parts.min.length ? injectRender.take() : null;
+                if (fault) ps[0] = FA.corruptRender(fault, ps[0]);
                 ps.forEach((r, k) => audit(r, s.name + "/" + build + (s.items ? " " + s.items[k].label : "")));
                 parts[build].push(ps);
               }
@@ -216,12 +199,11 @@ function cases(shared) {
             for (let vi = 0; vi < allVariants.length; ++vi) {
               for (let k = 0; k < parts.source[vi].length; ++k) {
                 const a = parts.source[vi][k], b = parts.min[vi][k];
-                if (maxDiff(a, b) <= tol.sameEngineSample) continue;
                 const label = s.name + (s.items ? " " + s.items[k].label : "") + (vi ? " variant " + vi : "") + " source/min";
-                const r = await reconcile(label, k, a, b,
+                const r = await judgePair(label, a, b,
                   () => renderPart(pg.source, s, { seed, sr, quality }, allVariants[vi], k),
-                  () => renderPart(pg.min, s, { seed, sr, quality }, allVariants[vi], k), ["source", "min"]);
-                if (r.ok) { parts.source[vi][k] = r.x; parts.min[vi][k] = r.y; } else persistent.push(label + ": " + r.why);
+                  () => renderPart(pg.min, s, { seed, sr, quality }, allVariants[vi], k));
+                if (!r.ok) persistent.push(label + ": " + r.reasons[0] + " (first attempt; " + FA.SHORT[r.outcome] + ")");
               }
             }
             const res = { source: parts.source.map((ps) => combine(s, ps)), min: parts.min.map((ps) => combine(s, ps)) };
@@ -257,13 +239,15 @@ function cases(shared) {
           for (const name of Object.keys(kept)) {
             const s = SCENARIOS.find((x) => x.name === name);
             const ps = await renderParts(again, s, { seed, sr, quality });
+            const fault = injectRepeat.take();
+            if (fault) ps[0] = FA.corruptRender(fault, ps[0]);
             ps.forEach((r, k) => audit(r, name + "/repeat" + (s.items ? " " + s.items[k].label : "")));
             const persistent = [];
             for (let k = 0; k < ps.length; ++k) {
-              if (maxDiff(ps[k], kept[name].parts[k]) <= tol.sameEngineSample) continue;
               const label = name + (s.items ? " " + s.items[k].label : "") + " repeat";
-              const r = await reconcile(label, k, ps[k], kept[name].parts[k], () => renderPart(again, s, { seed, sr, quality }, {}, k), null, ["repeat", "first render"]);
-              if (r.ok) ps[k] = r.x; else persistent.push(label + ": " + r.why);
+              // Both sides are re-rendered as diagnostics: the kept first render may be the odd one.
+              const r = await judgePair(label, ps[k], kept[name].parts[k], () => renderPart(again, s, { seed, sr, quality }, {}, k), () => renderPart(pg.source, s, { seed, sr, quality }, {}, k));
+              if (!r.ok) persistent.push(label + ": " + r.reasons[0] + " (first attempt; " + FA.SHORT[r.outcome] + ")");
             }
             const r = combine(s, ps);
             const d = maxDiff(r, kept[name].combined);
@@ -279,12 +263,13 @@ function cases(shared) {
             t.check(name + ": seed " + ((seed + 1) >>> 0) + " changes the noise-based output (the seeding is effective)", Number.isFinite(d) && d >= tol.seedEffect, "max |diff| " + d.toExponential(3));
           }
           t.check("all " + renders + " renders finite (no NaN or Infinity), including repeat and alternate-seed renders", !finiteProblems.length, finiteProblems.slice(0, 3).join(" | "));
+          t.check("all " + diagRenders + " diagnostic re-renders finite", !diagFinite.length, diagFinite.slice(0, 3).join(" | "));
           t.check("no realtime context ran during the renders (constructor context was the offline stub)", !realtimeInternal.length, realtimeInternal.slice(0, 3).join(" | "));
           t.observe("renders with samples beyond full scale (not asserted)", { renders: overFullScale, slots: gmOver });
           t.check("no unrecognized unhandled rejections", !unknownRejections.length, unknownRejections.slice(0, 3).join(" | "));
           t.observe("known baseline unhandled rejections (#12, removed by T4)", rejectionCounts);
           t.observe("same-engine comparisons (bit-identical, or max |diff|)", sameEngine);
-          t.observe("reconciled same-engine differences (re-rendered; see the reconcile comment)", reconciled);
+          t.observe("first-attempt same-engine failures and their diagnostic re-renders (the verdict is the first attempt's; a clean re-render does not clear it)", Object.assign({ firstAttemptRenders: renders, diagnosticRenders: diagRenders }, diag.summary()));
           t.observe("measurements", measurements);
           t.observe("render hashes (source build)", hashes);
           t.observe("generated buffer hashes (convBuf, n0, n1)", buffers[SCENARIOS[0].name]);

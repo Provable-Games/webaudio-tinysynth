@@ -20,9 +20,11 @@
  *     bit-identical throughout. Separately, WebKit occasionally renders a
  *     segment that differs by up to 0.56 from an otherwise identical render
  *     (arm64 CI and x64; reproduced under main-thread GC pressure; cause not
- *     isolated). Such a difference does not reproduce, so specs/render.js
- *     re-renders and reconciles it, records it, and fails a difference that
- *     reproduces.
+ *     isolated). That is not summation order and no tolerance covers it: it
+ *     is a lost or broken note. The first attempt decides (#78,
+ *     lib/first-attempt.js): such a difference fails the run, and a clean
+ *     re-render does not clear it. Re-renders are diagnostics only,
+ *     counted and recorded apart from the verdict.
  *   - Across engines, renders are never compared sample by sample: each
  *     engine is checked against the same independent expectations. At the
  *     test level (masterVol 0.05, compressor below threshold) the engines
@@ -53,7 +55,7 @@ const DEFAULT = {
   reverbTailDb: 26, // wet tail over max(dry tail, dryTailMax) = 20*log10(reverbTailMin/dryTailMax); min 45.7 dB
   reverbTailSide: 0.3, // rms(L-R)/tail in the tail window (a stereo impulse); min 0.697
   audiblePeak: 2e-4, // every GM program and drum rendered alone; min 0.080 (drum 53, Firefox q1 48 kHz); a silent program measures <= 2.3e-7
-  sameEngineSample: 1e-6, // source vs min and repeat renders, max |sample diff|
+  sameEngineSample: 1e-6, // source vs min and repeat renders, max |sample diff|: the floating-point summation tolerance only, applied to the first attempt
   seedEffect: 1e-2, // a different seed must change noise-based renders by more than this; min 0.0295
   crossEngineDb: { linear: 0.25, compressed: 7 }, // per-slot GM energy across engines; max 0.085 dB / 5.5 dB (q1 drum 57)
 };
@@ -61,7 +63,7 @@ const DEFAULT = {
 const PER_ENGINE = {
   chromium: { sameEngineSample: 5e-4 }, // max 5.45e-5 (GM batches, compressor active); 1.2e-7 at linear levels
   firefox: { sameEngineSample: 0 }, // bit-identical in every comparison
-  webkit: { sameEngineSample: 1e-6 }, // max 9.3e-8 for reproducible differences; occasional glitches up to 0.56 (about 1 in 50 renders under GC pressure) are re-rendered and reconciled in specs/render.js
+  webkit: { sameEngineSample: 1e-6 }, // max 9.3e-8 for reproducible differences; occasional glitches up to 0.56 (about 1 in 50 renders under GC pressure) are beyond it and fail on their first attempt (#78); clean re-renders are diagnostics
 };
 
 function tolerances(engine) {

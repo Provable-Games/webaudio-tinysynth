@@ -16,6 +16,16 @@
  *     note-off, within FOLLOW of the peak, up to 1 ms before output time T (the compressor's
  *     detector reads its input 6 ms ahead of the delayed output, so its gain reacts to the
  *     note-off from output time T on);
+ *   - every render is finite (no NaN or Infinity), in every case below too.
+ *   The first render of an item decides (#78, lib/first-attempt.js). WebKit occasionally renders
+ *   one segment of a render differently (tasks/T6.md, "WebKit's occasional render differences";
+ *   tasks/T13.1.md measures it): "held min" failed that way on PR #60 (q0, program 126, 0.07 s,
+ *   1.47 of the peak) and passed on re-run. A note that is missing or too quiet, a large finite
+ *   transient or a non-finite sample in a first render fails the run, and a clean re-render does not
+ *   clear it, because an intermittent defect is not disproved by a clean render. Held and
+ *   completed items that fail their first attempt are re-rendered (at most twice, at most
+ *   MAX_DIAGNOSED items per case) only as diagnostics: every attempt is counted and recorded
+ *   in an observation apart from the verdict, which says whether the re-render was clean;
  *   - release level: a two-operator timbre at fixed frequencies (400 Hz with a = 0.02 s, then
  *     1000 Hz with a = 0.5 s, so the last operator's attack is the longer), on at 0.4 s and off
  *     0.1 s later, masterVol 0.05 (below the compressor's threshold). Each operator's amplitude
@@ -35,14 +45,13 @@
  *   - completed attacks: every program with an attack (any operator a > 0), in both quality
  *     modes, released 0.1 s after its longest attack ends, renders as with upstream's release
  *     (3d75aee's _releaseNote below, put on the synth after its install), within the engine's
- *     same-engine tolerance (tolerances.js). A difference beyond it is re-rendered (at most twice)
- *     and passes only if a re-render agrees, as specs/render.js does for WebKit's occasional
- *     non-reproducible renders; every such re-render is recorded;
+ *     same-engine tolerance (tolerances.js), on the first render;
  *   - no page errors.
  */
 "use strict";
 const pages = require("../lib/pages");
 const { tolerances } = require("../tolerances");
+const FA = require("../lib/first-attempt");
 
 const ON = 0.05; // note-on time (s)
 const LAT = 0.006; // the DynamicsCompressor's pre-delay (T6 §4.2)
@@ -55,6 +64,7 @@ const GUARD = 0.001; // the hold window ends this long before the note-off reach
 const DURATIONS = [0.025, 0.07, 0.3].map((D) => Math.round(D * 44100) / 44100);
 const FOLLOW = 2e-4; // short vs uncut note before T, max |diff| / peak; measured max 6.0e-5 (Firefox), 1.7e-5 (WebKit), 1.3e-5 (Chromium)
 const LEVEL = 5e-3; // relative amplitude error of the release-level check; measured max 1.9e-3, every engine
+const MAX_DIAGNOSED = 6; // items per case that may be re-rendered as diagnostics (never part of the verdict)
 const PREROLL = 1e-4; // suspend()-sent vs pre-scheduled note-off, max |diff| / peak; measured 0 (Chromium, WebKit)
 const PREROLL_NOTES = [[1, 119], [1, 125], [1, 40], [0, 119], [0, 40]];
 
@@ -104,19 +114,22 @@ function PAGE() {
     const buf = await ctx.startRendering();
     await resumed;
     await y.dispose();
-    return { ch: [buf.getChannelData(0), buf.getChannelData(1)], sent };
+    const ch = [buf.getChannelData(0), buf.getChannelData(1)];
+    let nf = 0; // samples that are NaN or infinite
+    for (const x of ch) for (let i = 0; i < x.length; ++i) if (!Number.isFinite(x[i])) ++nf;
+    return { ch, sent, nf };
   }
   const span = (a, b, n) => [Math.max(0, Math.round(a * SR)), Math.min(n, Math.round(b * SR))];
   function peak(r, a, b) {
     let p = 0;
-    for (const x of r.ch) { const [i0, i1] = span(a, b, x.length); for (let i = i0; i < i1; ++i) p = Math.max(p, Math.abs(x[i])); }
+    for (const x of r.ch) { const [i0, i1] = span(a, b, x.length); for (let i = i0; i < i1; ++i) { const a = Math.abs(x[i]); if (a > p) p = a; } }
     return p;
   }
   function maxDiff(r, s, a, b) {
     let d = 0;
     for (let c = 0; c < 2; ++c) {
       const x = r.ch[c], z = s.ch[c], [i0, i1] = span(a, b, Math.min(x.length, z.length));
-      for (let i = i0; i < i1; ++i) { const e = Math.abs(x[i] - z[i]); if (!(e <= d)) d = e; }
+      for (let i = i0; i < i1; ++i) { const e = Math.abs(x[i] - z[i]); if (e > d) d = e; }
     }
     return d;
   }
@@ -143,7 +156,7 @@ function PAGE() {
         const r = await note({ q, program, on, off: on + D, dur: end(D) + 0.01 });
         // The compressor's detector reads its input lat ahead of the delayed output, so its gain
         // reacts to the note-off from output time on + D on: compare the output up to there.
-        out.push({ D, hold: peak(r, on + lat, end(D)), diff: maxDiff(r, long, 0, on + D - guard), peak: peak(long, 0, on + D - guard) });
+        out.push({ D, hold: peak(r, on + lat, end(D)), diff: maxDiff(r, long, 0, on + D - guard), peak: peak(long, 0, on + D - guard), nf: r.nf + long.nf });
       }
       return out;
     },
@@ -152,21 +165,21 @@ function PAGE() {
       const short = await note({ q: 1, timbre, on, off, dur: off + 0.1, masterVol: 0.05 });
       const long = await note({ q: 1, timbre, on, off: null, dur: off + 0.1, masterVol: 0.05 });
       const before = [off + lat - 0.0005 - win, off + lat - 0.0005], after = [off + lat + 0.0005, off + lat + 0.0005 + win];
-      return freqs.map((f) => ({ f, shortBefore: amp(short, f, ...before), longBefore: amp(long, f, ...before), shortAfter: amp(short, f, ...after), longAfter: amp(long, f, ...after) }));
+      return { nf: short.nf + long.nf, amps: freqs.map((f) => ({ f, shortBefore: amp(short, f, ...before), longBefore: amp(long, f, ...before), shortAfter: amp(short, f, ...after), longAfter: amp(long, f, ...after) })) };
     },
     /* Lookahead: the note-off sent from suspend() at off - preroll, against the same note-off scheduled before the render. */
     preroll: async ({ q, program, on, off, lat, guard, preroll }) => {
       const direct = await note({ q, program, on, off, dur: off + 0.3 });
       const sent = await note({ q, program, on, off, dur: off + 0.3, preroll });
-      return { sent: sent.sent, gap: peak(sent, sent.sent + lat + 0.003, off + lat - guard), diff: maxDiff(sent, direct, 0, off + 0.3), peak: peak(direct, 0, off + 0.3) };
+      return { nf: sent.nf + direct.nf, sent: sent.sent, gap: peak(sent, sent.sent + lat + 0.003, off + lat - guard), diff: maxDiff(sent, direct, 0, off + 0.3), peak: peak(direct, 0, off + 0.3) };
     },
     /* Zero-length notes: program 0 with its note-off at its note-on time; the peak after it. */
-    zero: async ({ q, on }) => peak(await note({ q, program: 0, on, off: on, dur: on + 0.5 }), on, on + 0.5),
+    zero: async ({ q, on }) => { const r = await note({ q, program: 0, on, off: on, dur: on + 0.5 }); return { peak: peak(r, on, on + 0.5), nf: r.nf }; },
     /* Completed attacks: this build's release against upstream's. */
     completed: async ({ q, program, on, off, dur }) => {
       const fixed = await note({ q, program, on, off, dur });
       const ref = await note({ q, program, on, off, dur, reference: true });
-      return { diff: maxDiff(fixed, ref, 0, dur), peak: peak(fixed, 0, dur) };
+      return { diff: maxDiff(fixed, ref, 0, dur), peak: peak(fixed, 0, dur), nf: fixed.nf + ref.nf };
     },
   };
 }
@@ -194,16 +207,33 @@ function cases(shared) {
       deadline: 900,
       run: async (t) => {
         const p = await openPage(t, build);
-        const silent = [], off = [];
-        let worst = { rel: 0 }, renders = 0;
+        const silent = [], off = [], infinite = [];
+        let worst = { rel: 0 }, renders = 0, diagRenders = 0;
+        const budget = FA.makeBudget(MAX_DIAGNOSED), log = FA.createLog(budget), inject = FA.faultInjector("held");
+        const judge = (x) => FA.judgeHeld(x, { audiblePeak: tol.audiblePeak, follow: FOLLOW });
         for (const q of shared.matrix.qualities) {
           for (let n = 0; n < 128; ++n) {
             const r = await call(p, "held", { q, program: n, on: ON, durations: DURATIONS, lat: LAT, guard: GUARD });
             renders += r.length + 1;
-            for (const x of r) {
-              if (!(x.hold >= tol.audiblePeak)) silent.push("q" + q + " " + n + " @" + x.D.toFixed(4) + " s (" + x.hold.toExponential(2) + ")");
+            for (let x of r) {
+              const fault = inject.take();
+              if (fault) x = FA.corruptSummary(fault, x);
+              const label = "q" + q + " " + n + " @" + x.D.toFixed(4) + " s";
+              /*
+               * The first attempt decides: the lists below, and the checks made from them, read x.
+               * If it fails, the item is rendered again, alone, as a diagnostic (at most twice and
+               * while the budget lasts), and the attempts are recorded apart from the verdict.
+               */
+              const res = await FA.attempts({
+                first: x, judge, budget,
+                rerun: async () => { const [y] = await call(p, "held", { q, program: n, on: ON, durations: [x.D], lat: LAT, guard: GUARD }); diagRenders += 2; return y; },
+              });
+              log.add(label, res);
+              const why = res.ok ? "" : " [" + FA.SHORT[res.outcome] + "]";
+              if (!(x.hold >= tol.audiblePeak)) silent.push(label + " (" + x.hold.toExponential(2) + ")" + why);
               const rel = x.diff / x.peak;
-              if (!(rel <= FOLLOW)) off.push("q" + q + " " + n + " @" + x.D.toFixed(4) + " s: " + rel.toExponential(2));
+              if (!(rel <= FOLLOW)) off.push(label + ": " + rel.toExponential(2) + why);
+              if (x.nf) infinite.push(label + ": " + x.nf + " samples" + why);
               if (rel > worst.rel) worst = { rel, at: "q" + q + " " + n + " @" + x.D.toFixed(4) };
             }
           }
@@ -211,7 +241,9 @@ function cases(shared) {
         t.check("every program in both quality modes sounds while held with a " + DURATIONS.map((D) => +D.toFixed(4)).join(", ") + " s note (hold peak >= " + tol.audiblePeak + ")", !silent.length, silent.length ? "silent while held: " + list(silent) : "");
         t.check("until the note-off the short note renders as the uncut note (max |diff| <= " + FOLLOW + " of the peak)", !off.length,
           off.length ? list(off) : "max " + worst.rel.toExponential(2) + " (" + worst.at + " s)");
+        t.check("every held render is finite (no NaN or Infinity)", !infinite.length, infinite.length ? "non-finite: " + list(infinite) : "");
         t.observe("renders", renders);
+        t.observe("first-attempt failures and their diagnostic re-renders (the verdict is the first attempt's; a clean re-render does not clear it)", Object.assign({ firstAttemptRenders: renders, diagnosticRenders: diagRenders }, log.summary()));
         t.check("no page errors", !p.pageErrors.length, p.pageErrors.slice(0, 2).join(" | "));
       },
     });
@@ -225,7 +257,8 @@ function cases(shared) {
         const on = 0.4, off = 0.5, win = 0.02, r = 1, N = 882;
         const ops = [{ f: 400, a: 0.02 }, { f: 1000, a: 0.5 }];
         const timbre = ops.map((o) => ({ w: "sine", t: 0, f: o.f, v: 0.5, a: o.a, h: 2, d: 1, s: 1, r }));
-        const m = await call(p, "level", { timbre, on, off, lat: LAT, freqs: ops.map((o) => o.f), win });
+        const { nf: levelNf, amps: m } = await call(p, "level", { timbre, on, off, lat: LAT, freqs: ops.map((o) => o.f), win });
+        let nf = levelNf;
         const rel = (x, y) => Math.abs(x / y - 1);
         m.forEach((x, k) => {
           const o = ops[k], D = off - on;
@@ -248,9 +281,11 @@ function cases(shared) {
         });
         t.observe("amplitudes", m);
         for (const q of shared.matrix.qualities) {
-          const z = await call(p, "zero", { q, on: 0.5 });
+          const zero = await call(p, "zero", { q, on: 0.5 }), z = zero.peak;
+          nf += zero.nf;
           t.check("q" + q + " program 0 (output operator a = 0), note-off at its note-on time: plays its release (peak " + z.toExponential(3) + " >= " + tol.audiblePeak + ")", z >= tol.audiblePeak);
         }
+        t.check("every render is finite (no NaN or Infinity)", nf === 0, nf + " non-finite sample(s)");
         t.check("no page errors", !p.pageErrors.length, p.pageErrors.slice(0, 2).join(" | "));
       },
     });
@@ -265,12 +300,15 @@ function cases(shared) {
           t.check("only Firefox lacks OfflineAudioContext.suspend()", t.engine === "firefox", t.engine);
         } else {
           const res = [];
+          let nf = 0;
           for (const [q, program] of PREROLL_NOTES) {
             const r = await call(p, "preroll", { q, program, on: ON, off: ON + 0.5, lat: LAT, guard: GUARD, preroll: 0.2 });
             res.push(r);
+            nf += r.nf;
             t.check("q" + q + " program " + program + ", 0.5 s note, note-off sent at " + r.sent.toFixed(4) + " s: sounds until the note-off (peak " + r.gap.toExponential(3) + ")", r.gap >= tol.audiblePeak);
             t.check("q" + q + " program " + program + ": renders as the note-off scheduled before the render (max |diff| <= " + PREROLL + " of the peak)", r.diff <= PREROLL * r.peak, (r.diff / r.peak).toExponential(2));
           }
+          t.check("every render is finite (no NaN or Infinity)", nf === 0, nf + " non-finite sample(s)");
           t.observe("preroll renders", res);
         }
         t.check("no page errors", !p.pageErrors.length, p.pageErrors.slice(0, 2).join(" | "));
@@ -282,8 +320,10 @@ function cases(shared) {
       deadline: 900,
       run: async (t) => {
         const p = await openPage(t, build);
-        const bad = [], reconciled = [];
-        let worst = 0, compared = 0;
+        const bad = [];
+        let worst = 0, compared = 0, renders = 0, diagRenders = 0;
+        const budget = FA.makeBudget(MAX_DIAGNOSED), log = FA.createLog(budget), inject = FA.faultInjector("completed");
+        const judge = (x) => FA.judgeCompleted(x, tol.sameEngineSample);
         for (const q of shared.matrix.qualities) {
           const attacks = await call(p, "attacks", q);
           for (let n = 0; n < 128; ++n) {
@@ -291,19 +331,23 @@ function cases(shared) {
             if (!(a > 0)) continue;
             const off = ON + a + 0.1, arg = { q, program: n, on: ON, off, dur: off + 0.4 };
             let r = await call(p, "completed", arg);
+            const fault = inject.take();
+            if (fault) r = FA.corruptSummary(fault, r);
             ++compared;
-            if (!(r.diff <= tol.sameEngineSample)) {
-              const first = r.diff;
-              for (let k = 0; k < 2 && !(r.diff <= tol.sameEngineSample); ++k) r = await call(p, "completed", arg);
-              if (r.diff <= tol.sameEngineSample) reconciled.push({ q, program: n, first, renders: 2 });
-              else bad.push("q" + q + " " + n + ": " + first.toExponential(2) + " (reproduced)");
-            }
+            renders += 2; // the build's release and upstream's, one attempt
+            // The first attempt decides; a failing program is rendered again only as a diagnostic.
+            const res = await FA.attempts({
+              first: r, judge, budget,
+              rerun: async () => { const y = await call(p, "completed", arg); diagRenders += 2; return y; },
+            });
+            log.add("q" + q + " " + n, res);
+            if (!res.ok) bad.push("q" + q + " " + n + ": " + res.reasons.join("; ") + " [" + FA.SHORT[res.outcome] + "]");
             worst = Math.max(worst, r.diff);
           }
         }
         t.check("every program with an attack, released after its attacks end, renders as with upstream's release (" + compared + " programs, max |diff| <= " + tol.sameEngineSample + ")",
           !bad.length && compared > 100, bad.length ? list(bad) : "max " + worst.toExponential(2));
-        t.observe("reconciled same-engine differences (re-rendered)", reconciled);
+        t.observe("first-attempt failures and their diagnostic re-renders (the verdict is the first attempt's; a clean re-render does not clear it)", Object.assign({ firstAttemptRenders: renders, diagnosticRenders: diagRenders }, log.summary()));
         t.check("no page errors", !p.pageErrors.length, p.pageErrors.slice(0, 2).join(" | "));
       },
     });
