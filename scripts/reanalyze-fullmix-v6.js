@@ -81,10 +81,15 @@ function makeReference(rows, reportSha256, matrixRun, historicalToolchain, env =
   const expectedCases = fullMix.referenceExpectedCases();
   const expectedCaseSet = new Set(expectedCases);
   const seenCases = new Set();
+  const hasCurrentCaptureIdentity = (row) => {
+    const fixture = fullMix.FIXTURE_BY_ID[row.fixtureId];
+    return !!fixture && row.input?.captureMethodSha256 === fixture.methodSha256 &&
+      row.input?.captureToleranceSha256 === fixture.toleranceSha256;
+  };
   const hasPinnedSeed = (row) => row.seed === MATRIX.seed && row.matrixSeed === MATRIX.seed &&
     row.captureRun?.selection?.seed === MATRIX.seed && matrixRun?.selection?.seed === MATRIX.seed &&
     row.input?.settingsSha256 === fullMix.FIXTURE_BY_ID[row.fixtureId]?.settingsSha256;
-  const canExport = (row) => row.referenceExportEligible === true && hasPinnedSeed(row);
+  const canExport = (row) => row.referenceExportEligible === true && hasPinnedSeed(row) && hasCurrentCaptureIdentity(row);
   for (const row of rows) {
     const caseId = row.engine + "/" + row.fixtureId + "/" + row.sampleRate;
     if (!expectedCaseSet.has(caseId) || seenCases.has(caseId)) continue;
@@ -153,7 +158,9 @@ function makeReference(rows, reportSha256, matrixRun, historicalToolchain, env =
       ? "first attempt failed: source and min raw WAVs each contain two over-full-scale channel samples in one frame; a diagnostic repeat retains the same frame and cannot promote attempt 1"
       : row.referenceExportEligible && !hasPinnedSeed(row)
         ? "retained matrix seed or fixture settings identity differs from the independently pinned matrix seed"
-      : row.referenceEligibilityReason,
+        : row.referenceExportEligible && !hasCurrentCaptureIdentity(row)
+          ? "original capture method/tolerance identity differs from the current fixture contract"
+          : row.referenceEligibilityReason || "row did not pass independent first-attempt reference export eligibility",
   }));
   for (const id of expectedCases) {
     const count = rows.filter((row) => row.engine + "/" + row.fixtureId + "/" + row.sampleRate === id).length;
@@ -369,7 +376,25 @@ function pairRows(report, reportDir, { env = process.env, root = path.resolve(__
       const sourceChannels = builds.source.first.channels;
       const minChannels = builds.min.first.channels;
       const sourceMin = fullMix.sameEnginePcm(sourceChannels, minChannels, engine);
-      const reportedSourceMin = obs.sourceMinPcmComparison;
+      const comparisonEvidenceFor = (owner, key) => {
+        const present = !!owner && typeof owner === "object" && !Array.isArray(owner) && Object.hasOwn(owner, key);
+        const reported = present ? owner[key] : undefined;
+        const serialized = reported === undefined ? null : canonical(reported);
+        return {
+          present,
+          reported: reported === undefined ? null : reported,
+          reportedSha256: typeof serialized === "string" ? hash(Buffer.from(serialized)) : null,
+          matchesRecomputed: present && reported !== undefined && sameJson(sourceMin, reported),
+        };
+      };
+      const firstSourceMinPcmComparisonEvidence = {
+        recomputedSha256: hash(Buffer.from(canonical(sourceMin))),
+        topLevel: comparisonEvidenceFor(obs, "sourceMinPcmComparison"),
+        builds: Object.fromEntries(["source", "min"].map((build) => [build,
+          comparisonEvidenceFor(obs.builds && obs.builds[build], "sourceMinPcmComparison")])),
+      };
+      const sourceMinComparisonsMatch = firstSourceMinPcmComparisonEvidence.topLevel.matchesRecomputed &&
+        ["source", "min"].every((build) => firstSourceMinPcmComparisonEvidence.builds[build].matchesRecomputed);
       const producerStatusMatches = producerSummaryConsistent(obs, sourceMin);
       const expectedBundle = matrix.browserBundle(resolvedToolchain, engine);
       const currentBundleIdentity = toolchainMatches && sameJson(obs.browserBundle, expectedBundle) &&
@@ -392,6 +417,9 @@ function pairRows(report, reportDir, { env = process.env, root = path.resolve(__
           pinnedMatrixSeed,
           currentFixtureIdentity: currentFixtureIdentity(obs, fixture, engine, engineReport),
           reportedFirstMetricsMatchRecomputedWav: builds[build].firstMetricsEvidence.matchesCurrentMethodWav,
+          reportedFirstSourceMinPcmComparisonMatchesRecomputed:
+            firstSourceMinPcmComparisonEvidence.topLevel.matchesRecomputed &&
+            firstSourceMinPcmComparisonEvidence.builds[build].matchesRecomputed,
           currentBrowserBundleIdentity: currentBundleIdentity,
           finiteFirstPcm: first.finite && first.metrics.channels.left.finite && first.metrics.channels.right.finite,
           fullScaleFirstPcm: first.overFullScaleSamples === 0 && first.peak <= 1,
@@ -418,7 +446,7 @@ function pairRows(report, reportDir, { env = process.env, root = path.resolve(__
           originalFaultSensitivity: reportedFault || null,
           originalFaultSummarySha256: reportedFaultSha256, recomputedFault, priorMethodEvidence }];
       }));
-      const sourceMinPcmEligible = sourceMin.ok && sameJson(sourceMin, reportedSourceMin) &&
+      const sourceMinPcmEligible = sourceMin.ok && sourceMinComparisonsMatch &&
         checkPass(c, "source and fresh-min first-attempt raw PCM match without alignment");
       const captureGateChecks = Object.fromEntries(Object.entries(captureCheckEvidence).map(([build, checks]) => [build,
         Object.fromEntries(Object.entries(checks).filter(([name, value]) =>
@@ -466,7 +494,9 @@ function pairRows(report, reportDir, { env = process.env, root = path.resolve(__
           pruned: obs.builds[build].noteInstances && obs.builds[build].noteInstances.prunedInstances,
         }])),
         builds, sourceMinPcmComparison: sourceMin,
-        reportedSourceMinPcmComparisonMatches: sameJson(sourceMin, reportedSourceMin),
+        firstSourceMinPcmComparisonEvidence,
+        reportedSourceMinPcmComparisonMatches: firstSourceMinPcmComparisonEvidence.topLevel.matchesRecomputed,
+        reportedFirstSourceMinPcmComparisonsMatch: sourceMinComparisonsMatch,
         producerAggregateStatusMatches: producerStatusMatches,
         preBaselineEligible, independentlyEligible, referenceExportEligible,
         captureCheckEvidence, eligibilityReasons,

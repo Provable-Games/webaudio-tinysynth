@@ -86,6 +86,8 @@ function canonical(value) {
 
 function selectReference(reference, identity, build) {
   const problems = [];
+  const fixture = identity && FIXTURE_BY_ID[identity.fixtureId];
+  if (!fixture) problems.push("fixtureId");
   if (!identity || identity.seed !== MATRIX.seed) problems.push("seed is not the pinned matrix seed");
   if (!reference || typeof reference !== "object" || Array.isArray(reference))
     return { status: "incomplete", reference: null, problems: ["measured reference is missing"] };
@@ -105,6 +107,8 @@ function selectReference(reference, identity, build) {
       : metadata[key] === value;
     if (!same) problems.push(key);
   }
+  if (metadata?.captureMethodSha256 !== fixture?.methodSha256) problems.push("captureMethodSha256 is not the current fixture method");
+  if (metadata?.captureToleranceSha256 !== fixture?.toleranceSha256) problems.push("captureToleranceSha256 is not the current fixture tolerance");
   if (metadata?.captureRun?.selection?.seed !== MATRIX.seed) problems.push("captureRun.selection.seed");
   const row = entry && entry[build];
   if (!row || typeof row !== "object" || Array.isArray(row) || !row.metrics || typeof row.metrics !== "object" || Array.isArray(row.metrics))
@@ -115,7 +119,7 @@ function selectReference(reference, identity, build) {
       !["incomplete", "pass"].includes(capture.priorCaptureVerdict) ||
       typeof metadata?.captureMethodSha256 !== "string" || !/^[a-f0-9]{64}$/i.test(metadata.captureMethodSha256) ||
       typeof capture.captureMethodSha256 !== "string" || !/^[a-f0-9]{64}$/i.test(capture.captureMethodSha256) ||
-      capture.captureMethodSha256 !== metadata.captureMethodSha256)
+      capture.captureMethodSha256 !== metadata.captureMethodSha256 || capture.captureMethodSha256 !== fixture?.methodSha256)
     problems.push(build + " first-attempt capture eligibility");
   if (problems.length)
     return { status: "incomplete", reference: null, problems: ["measured reference identity or row is incomplete: " + problems.join(", ")] };
@@ -936,7 +940,8 @@ function referenceCoverageProblems(reference = REFERENCE) {
           typeof meta.captureRun.buildSha256.min !== "string" || !/^[a-f0-9]{64}$/i.test(meta.captureRun.buildSha256.min) ||
           typeof meta.captureReportSha256 !== "string" || !/^[a-f0-9]{64}$/i.test(meta.captureReportSha256) ||
           typeof meta.captureMethodSha256 !== "string" || !/^[a-f0-9]{64}$/i.test(meta.captureMethodSha256) ||
-          typeof meta.captureToleranceSha256 !== "string" || !/^[a-f0-9]{64}$/i.test(meta.captureToleranceSha256))
+          typeof meta.captureToleranceSha256 !== "string" || !/^[a-f0-9]{64}$/i.test(meta.captureToleranceSha256) ||
+          meta.captureMethodSha256 !== fixture.methodSha256 || meta.captureToleranceSha256 !== fixture.toleranceSha256)
         problems.push("reference case " + key + " input, engine, version, method or historical capture identity is malformed");
       for (const build of ["source", "min"]) {
         const capture = entry[build].capture;
@@ -950,7 +955,7 @@ function referenceCoverageProblems(reference = REFERENCE) {
             capture.firstAttempt !== true || capture.eligible !== true || capture.finite !== true ||
             capture.overFullScaleSamples !== 0 || typeof capture.priorCaptureVerdict !== "string" ||
             !["incomplete", "pass"].includes(capture.priorCaptureVerdict) ||
-            capture.captureMethodSha256 !== meta.captureMethodSha256)
+            capture.captureMethodSha256 !== meta.captureMethodSha256 || capture.captureMethodSha256 !== fixture.methodSha256)
           problems.push("reference case " + key + " " + build + " lacks eligible first-attempt raw capture provenance");
       }
       actual.add(key);

@@ -516,15 +516,15 @@ for (const engine of ["chromium", "firefox", "webkit"]) {
           eventName: "pull_request", testedSha: CONTEXT.testedSha, matrixConfigSha256: "c".repeat(64),
           browserToolchain: TEST_TOOLCHAIN,
           selection: { specs: ["full-mix"], seed: MATRIX.seed }, buildSha256: { source: "a".repeat(64), min: "b".repeat(64) } },
-        captureReportSha256: "d".repeat(64), captureMethodSha256: "e".repeat(64),
-        captureToleranceSha256: "f".repeat(64),
+        captureReportSha256: "d".repeat(64), captureMethodSha256: fixture.methodSha256,
+        captureToleranceSha256: fixture.toleranceSha256,
       };
       const capture = (build) => ({ path: engine + "/full-mix/" + fixture.id + "-" + sampleRate + "-" + build + "-first.wav",
         sha256: (build === "source" ? "d" : "e").repeat(64), pcmSha256: (build === "source" ? "f" : "0").repeat(64),
         bytes: 44 + Math.ceil(fixture.renderDurationSec * sampleRate) * 8,
         frames: Math.ceil(fixture.renderDurationSec * sampleRate), sampleRate,
         attempt: 1, firstAttempt: true, eligible: true, finite: true, overFullScaleSamples: 0,
-        priorCaptureVerdict: "pass", captureMethodSha256: "e".repeat(64) });
+        priorCaptureVerdict: "pass", captureMethodSha256: fixture.methodSha256 });
       syntheticEngines[engine][fixture.id][sampleRate] = {
         metadata,
         source: { capture: capture("source"), metrics },
@@ -955,6 +955,39 @@ test("core and qualification artifacts cannot satisfy each other's independently
   });
   assert.equal(forgedReference.status, 1, forgedReference.out);
   assert.match(forgedReference.out, /full-mix reference provenance differs from the aggregate checkout/);
+});
+
+test("reference selection and coverage reject self-consistent prior capture method identities", () => {
+  assert.deepEqual(FULL_MIX.referenceCoverageProblems(TEST_REFERENCE), [],
+    "the synthetic current-method reference remains a valid positive fixture");
+  const fixture = FULL_MIX.FIXTURE_BY_ID["tinychip-ws-mid"];
+  const sampleRate = 44100;
+  const caseId = "chromium/" + fixture.id + "/" + sampleRate;
+  const mutations = [
+    ["historical metadata capture method", (entry) => {
+      const priorMethod = "e".repeat(64);
+      entry.metadata.captureMethodSha256 = priorMethod;
+      entry.source.capture.captureMethodSha256 = priorMethod;
+      entry.min.capture.captureMethodSha256 = priorMethod;
+    },
+      "captureMethodSha256 is not the current fixture method", "input, engine, version, method or historical capture identity"],
+    ["historical metadata capture tolerance", (entry) => { entry.metadata.captureToleranceSha256 = "f".repeat(64); },
+      "captureToleranceSha256 is not the current fixture tolerance", "input, engine, version, method or historical capture identity"],
+    ["historical source capture method", (entry) => { entry.source.capture.captureMethodSha256 = "e".repeat(64); },
+      "first-attempt capture eligibility", "source lacks eligible first-attempt raw capture provenance"],
+    ["historical min capture method", (entry) => { entry.min.capture.captureMethodSha256 = "e".repeat(64); },
+      "first-attempt capture eligibility", "min lacks eligible first-attempt raw capture provenance"],
+  ];
+  for (const [label, mutate, selectedReason, coverageReason] of mutations) {
+    const reference = structuredClone(TEST_REFERENCE);
+    const entry = reference.engines.chromium[fixture.id][sampleRate];
+    mutate(entry);
+    const selection = FULL_MIX.selectReference(reference, { ...entry.metadata }, label.includes(" min ") ? "min" : "source");
+    assert.equal(selection.status, "incomplete", label);
+    assert.match(selection.problems.join(" "), new RegExp(selectedReason));
+    assert.ok(FULL_MIX.referenceCoverageProblems(reference).some((problem) =>
+      problem.includes("reference case " + caseId) && problem.includes(coverageReason)), label);
+  }
 });
 
 test("qualification merge uses the same strict aggregate for render headroom and full-mix evidence", () => {

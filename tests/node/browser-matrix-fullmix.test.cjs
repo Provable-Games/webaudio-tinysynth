@@ -454,6 +454,7 @@ test("renderOne compares measured reference metrics, and rejects missing referen
     midiSha256: fixture.midiSha256, setupSha256: fixture.setupSha256,
     settingsSha256: fixture.settingsSha256, probePlanSha256: fixture.probePlanSha256,
     methodSha256: fixture.methodSha256, toleranceSha256: fixture.toleranceSha256,
+    captureMethodSha256: fixture.methodSha256, captureToleranceSha256: fixture.toleranceSha256,
     playbackOriginSec: fullMix.ORIGIN,
   });
   fullMix.REFERENCE.methodSha256 = fixture.methodSha256;
@@ -469,6 +470,7 @@ test("renderOne compares measured reference metrics, and rejects missing referen
     },
   };
   try {
+    row.source.capture = { ...originalCapture, captureMethodSha256: fixture.methodSha256 };
     row.source.metrics = metrics;
     const positive = await fullMix.renderOne(t, "source", { seed: 1592590337, overrides: {} }, fixture, sampleRate, {});
     assert.deepEqual(positive.comparisonProblems, []);
@@ -490,7 +492,7 @@ test("renderOne compares measured reference metrics, and rejects missing referen
     assert.equal(ineligibleReference.referenceStatus, "incomplete");
     assert.equal(ineligibleReference.reference, null);
     assert.match(ineligibleReference.comparisonProblems.join(" "), /first-attempt capture eligibility/);
-    row.source.capture = originalCapture;
+    row.source.capture = { ...originalCapture, captureMethodSha256: fixture.methodSha256 };
 
     row.source.metrics = null;
     const missing = await fullMix.renderOne(t, "source", { seed: 1592590337, overrides: {} }, fixture, sampleRate, {});
@@ -573,6 +575,17 @@ test("offline reference export re-derives first-attempt eligibility and validate
     assert.equal(rows[0].matrixSeed, MATRIX.seed);
     assert.equal(baseline.fixture.settingsForHash.matrixSeed, MATRIX.seed,
       "the independently pinned matrix seed participates in the fixture settings identity");
+    const firstSourceMinEvidence = rows[0].firstSourceMinPcmComparisonEvidence;
+    assert.equal(firstSourceMinEvidence.topLevel.matchesRecomputed, true);
+    assert.match(firstSourceMinEvidence.recomputedSha256, /^[a-f0-9]{64}$/);
+    for (const build of ["source", "min"]) {
+      assert.equal(firstSourceMinEvidence.builds[build].present, true);
+      assert.equal(firstSourceMinEvidence.builds[build].matchesRecomputed, true);
+      assert.match(firstSourceMinEvidence.builds[build].reportedSha256, /^[a-f0-9]{64}$/);
+      assert.deepEqual(firstSourceMinEvidence.builds[build].reported,
+        baseline.report.chromium.cases[0].observations.fullMix.builds[build].sourceMinPcmComparison);
+    }
+    assert.equal(rows[0].reportedFirstSourceMinPcmComparisonsMatch, true);
     for (const build of ["source", "min"]) {
       assert.equal(rows[0].builds[build].firstMetricsEvidence.status, "matched");
       assert.equal(rows[0].captureCheckEvidence[build].reportedFirstMetricsMatchRecomputedWav, true);
@@ -605,8 +618,32 @@ test("offline reference export re-derives first-attempt eligibility and validate
       methodSha256: baseline.fixture.methodSha256, toleranceSha256: baseline.fixture.toleranceSha256,
       playbackOriginSec: fullMix.ORIGIN,
     };
-    assert.equal(fullMix.selectReference(reference, referenceIdentity, "source").status, "measured",
-      "a current pinned-seed reference remains consumable");
+    for (const build of ["source", "min"])
+      assert.equal(fullMix.selectReference(reference, referenceIdentity, build).status, "measured",
+        "both current pinned-seed build rows remain consumable");
+    const captureIdentityMutations = [
+      ["historical original capture method", (entry) => {
+        const priorMethod = "e".repeat(64);
+        entry.metadata.captureMethodSha256 = priorMethod;
+        entry.source.capture.captureMethodSha256 = priorMethod;
+        entry.min.capture.captureMethodSha256 = priorMethod;
+      }, "captureMethodSha256 is not the current fixture method"],
+      ["historical original capture tolerance", (entry) => { entry.metadata.captureToleranceSha256 = "f".repeat(64); },
+        "captureToleranceSha256 is not the current fixture tolerance"],
+      ["historical source capture method", (entry) => { entry.source.capture.captureMethodSha256 = "e".repeat(64); },
+        "first-attempt capture eligibility"],
+      ["historical min capture method", (entry) => { entry.min.capture.captureMethodSha256 = "e".repeat(64); },
+        "first-attempt capture eligibility"],
+    ];
+    for (const [label, mutate, selectedReason] of captureIdentityMutations) {
+      const historical = structuredClone(reference);
+      const historicalEntry = historical.engines.chromium[baseline.fixture.id][baseline.sampleRate];
+      mutate(historicalEntry);
+      const selection = fullMix.selectReference(historical, { ...historicalEntry.metadata },
+        label.includes(" min ") ? "min" : "source");
+      assert.equal(selection.status, "incomplete", label);
+      assert.match(selection.problems.join(" "), new RegExp(selectedReason));
+    }
     for (const wrongSeed of [undefined, MATRIX.seed + 1, String(MATRIX.seed), null]) {
       assert.equal(fullMix.selectReference(reference, { ...referenceIdentity, seed: wrongSeed }, "source").status,
         "incomplete", "reference consumption rejects missing, alternate, or invalid requested seed values");
@@ -664,6 +701,62 @@ test("offline reference export re-derives first-attempt eligibility and validate
       const rejectedReference = reanalyzer.makeReference([forgedRow], sha256(Buffer.from(label)),
         wrongRun, linuxToolchain, linuxFixture.env, linuxFixture.root);
       assert.equal(rejectedReference.coverage.measuredCases.length, 0, label);
+    }
+
+    for (const [label, key, value] of [
+      ["missing original capture method", "captureMethodSha256", undefined],
+      ["historical original capture method", "captureMethodSha256", "e".repeat(64)],
+      ["missing original capture tolerance", "captureToleranceSha256", undefined],
+      ["historical original capture tolerance", "captureToleranceSha256", "f".repeat(64)],
+    ]) {
+      const forgedRow = structuredClone(rows[0]);
+      forgedRow.referenceExportEligible = true;
+      if (value === undefined) delete forgedRow.input[key];
+      else forgedRow.input[key] = value;
+      const rejectedReference = reanalyzer.makeReference([forgedRow], sha256(Buffer.from(label)),
+        baseline.matrixRun, linuxToolchain, linuxFixture.env, linuxFixture.root);
+      assert.equal(rejectedReference.coverage.measuredCases.length, 0, label);
+      assert.ok(rejectedReference.coverage.incompleteCases.some((row) =>
+        row.reason.includes("original capture method/tolerance identity differs from the current fixture contract")), label);
+    }
+
+    for (const build of ["source", "min"]) for (const [label, mutate] of [
+      ["missing", (row) => { delete row.sourceMinPcmComparison; }],
+      ["null", (row) => { row.sourceMinPcmComparison = null; }],
+      ["malformed", (row) => { row.sourceMinPcmComparison = "not-a-comparison"; }],
+      ["false", (row) => { row.sourceMinPcmComparison = { ...row.sourceMinPcmComparison, ok: false }; }],
+      ["contradictory", (row) => { row.sourceMinPcmComparison = { ...row.sourceMinPcmComparison,
+        maxDiff: row.sourceMinPcmComparison.maxDiff + 1e-6 }; }],
+    ]) {
+      const report = structuredClone(baseline.report);
+      const observation = report.chromium.cases[0].observations.fullMix;
+      const original = structuredClone(observation.builds[build].sourceMinPcmComparison);
+      mutate(observation.builds[build]);
+      const comparisonRows = reanalyzer.pairRows(report, temp, options);
+      const comparisonRow = comparisonRows[0];
+      const evidence = comparisonRow.firstSourceMinPcmComparisonEvidence;
+      const buildEvidence = evidence.builds[build];
+      const reported = observation.builds[build].sourceMinPcmComparison;
+      assert.equal(comparisonRow.referenceExportEligible, false, build + " first comparison " + label);
+      assert.equal(comparisonRow.preBaselineEligible, false, build + " first comparison " + label);
+      assert.equal(comparisonRow.reportedFirstSourceMinPcmComparisonsMatch, false, build + " first comparison " + label);
+      assert.equal(evidence.topLevel.matchesRecomputed, true, "the top-level summary and WAVs remain unchanged");
+      assert.equal(evidence.builds[build === "source" ? "min" : "source"].matchesRecomputed, true,
+        "the opposite build comparison remains valid");
+      assert.equal(buildEvidence.matchesRecomputed, false, build + " first comparison " + label);
+      assert.equal(buildEvidence.present, label !== "missing");
+      assert.deepEqual(buildEvidence.reported, reported === undefined ? null : reported,
+        "the original per-build comparison remains inspectable");
+      assert.equal(buildEvidence.reportedSha256, label === "missing" ? null
+        : sha256(Buffer.from(browserToolchain.canonical(reported))), "the original comparison digest is retained");
+      assert.equal(evidence.recomputedSha256, firstSourceMinEvidence.recomputedSha256,
+        "the recomputed comparison digest remains tied to the unchanged first WAV pair");
+      assert.equal(comparisonRow.builds.source.first.sha256, rows[0].builds.source.first.sha256);
+      assert.equal(comparisonRow.builds.min.first.sha256, rows[0].builds.min.first.sha256);
+      assert.notDeepEqual(reported, original, label === "missing" ? undefined : build + " comparison mutation");
+      const rejectedReference = reanalyzer.makeReference(comparisonRows, sha256(Buffer.from(build + label)),
+        baseline.matrixRun, linuxToolchain, linuxFixture.env, linuxFixture.root);
+      assert.equal(rejectedReference.coverage.measuredCases.length, 0, build + " first comparison " + label);
     }
 
     for (const build of ["source", "min"]) for (const [label, mutate, expectedStatus] of [
