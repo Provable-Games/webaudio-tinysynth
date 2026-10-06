@@ -480,3 +480,19 @@ The supervisor assessed #17's value as low for this project. It brings no change
 - **#17:** T7 is deferred, including types. #17 stays open with an explanatory comment.
 - **Next tasks:** T8 (#18, initialization cost; it never depended on T7 technically) and T1B (CI extensions: browser-matrix headroom, the AI-review malformed-output retry, and demos in CI) start in parallel.
 - **Amended plan order:** T8 and T1B → the T9 docs pass (#20) → T10 → G2 → #31 → v2.0.0.
+
+## D-042 Scope freeze: P1 only until the release (2026-10-06)
+
+The user said: "lets stick to only high priority issues. I want to get to a proper v1.0.0 release. In the past I have a tendancy to want to keep shipping feature forever".
+
+- **In scope until the release** (the P1 labels the triage agreed with):
+  - #91, the WebKit render slip and qualifying the noise path;
+  - #68, scheduling deadlines (B1);
+  - #79, release-gate integrity (A2);
+  - #76, certifying the production tracks and banks (A3, in onchain-midi-player);
+  - #80, device qualification;
+  - #89, the tracker.
+- **Then the release path:** T10 (independent final check; it also checks that README and NOTICE are accurate), G2, #31, the release PR, the tag and the GitHub Release (the checklist in `status.md`).
+- **Frozen until after the release:** every P2 and P3 issue (#66, #67, #69–#75, #77, #81–#88), #90 (push note API), #17 (refactor) and #20 (the separate docs pass; T10 covers accuracy instead).
+- **New features need explicit user approval during the freeze.** The supervisor flags any scope creep.
+- **#65 (T13.1) is accepted** (`72cede6`, merged by the user), and #78 is closed. It changed tests only, so no NOTICE entry.
