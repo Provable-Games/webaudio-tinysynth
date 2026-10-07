@@ -998,14 +998,15 @@ function parseFloatFirstAttemptWav(bytes, expectedSampleRate, expectedChannels, 
 }
 
 function firstAttemptPcmArtifactProblems(engine, rel, resultFile, c, classification) {
-  const noise = c && c.spec === "render" && classification &&
-    classification.failures.find((failure) => failure.splitMeasurementGroup);
-  if (!noise) return [];
+  const noises = c && c.spec === "render" && classification
+    ? classification.failures.filter((failure) => failure.splitMeasurementGroup) : [];
+  if (!noises.length) return [];
   const problems = [], seenPairs = new Set(), captures = new Map();
   const add = (message) => problems.push(rel + ": " + engine + " / " + c.id + " " + message);
   if (!resultFile) return [rel + ": " + engine + " / " + c.id + " known render exception requires retained first-attempt PCM WAVs"];
-  const scenario = SCENARIOS.find((item) => item.name === noise.splitMeasurementGroup);
-  for (const failure of noise.firstAttemptFailures) {
+  for (const { failure, group } of noises.flatMap((noise) => noise.firstAttemptFailures.map((failure) =>
+    ({ failure, group: noise.splitMeasurementGroup })))) {
+    const scenario = SCENARIOS.find((item) => item.name === group);
     const repeat = failure.item.endsWith(" repeat");
     const roles = repeat ? { a: "repeat", b: "kept source" } : { a: "source", b: "min" };
     const fixture = scenario && scenario.items.find((item) => failure.item === scenario.name + " " + item.label + (repeat ? " repeat" : " source/min"));

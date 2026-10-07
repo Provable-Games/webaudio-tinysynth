@@ -5,7 +5,7 @@ results, but allow the documented exceptions to be nonblocking in ordinary
 PR CI. These defects remain unresolved. Tests still execute with their
 existing tolerances; diagnostic rerenders cannot replace the first attempt.
 A dedicated diagnosis lab is deferred. [Issue #96](https://github.com/Provable-Games/webaudio-tinysynth/issues/96) is the
-starting brief for the next investigator, with exact tests, run/artifact
+starting brief for the next investigator; [issue #97](https://github.com/Provable-Games/webaudio-tinysynth/issues/97) covers the later program120/drum58 findings. They contain exact tests, run/artifact
 locations, capture hashes, prior analysis and remaining unknowns.
 
 Ordinary core CI explicitly uses `--accept-known-failures`. Local commands
@@ -21,11 +21,27 @@ The strict full-mix qualification mode rejects this option.
 | Failure | Accepted ordinary-CI scope | Tracking |
 | --- | --- | --- |
 | Stereo generated-buffer descriptor contradiction | A final `convBuf` descriptor says one channel, while browser and Node capture traces, independent expected dimensions, retained raw bytes and SHA-256 agree on stereo. Only this descriptor discrepancy and its derived checks are excepted. All three engines, quality 0/1, 44.1/48 kHz. | #79 |
-| WebKit noisy-program first PCM mismatch | `render q0 44100`: GM121/125; `render q0 48000`: GM127; `short-notes completed min`: q1/program126. Only the named parity/completed-attack assertion and its valid split-measurement layout are excepted. Other programs, fixtures, assertions and malformed evidence remain blocking. | #91 |
+| WebKit noisy-program first PCM mismatch | `render q0 44100`: GM121/125; `render q0 48000`: GM127; `short-notes completed min`: q1/program120 or program126 (including both in the same case). Only the named parity/completed-attack assertion and its valid split-measurement layout are excepted. Other programs, fixtures, assertions and malformed evidence remain blocking. | #91 |
 | WebKit drum-54 first PCM mismatch | `render q1 48000`, drum 54 only: both source/min parity and fresh-repeat/source checks, with valid 47-slot split measurements and original WAV pairs. Other drums, rates, qualities, checks and inconsistent capture roles/identity remain blocking. | [#96](https://github.com/Provable-Games/webaudio-tinysynth/issues/96) |
+| WebKit drum-58 first PCM mismatch | `render q0 48000`, drum 58 source/min parity only, valid 47-slot split measurements and its original WAV pair. An approved GM127 failure in the same case is independently validated, including both groups and every WAV pair. Repeat assertions and other drums/settings remain blocking. | [#97](https://github.com/Provable-Games/webaudio-tinysynth/issues/97) |
 | WebKit full-mix peak overshoot | Historical `ws-mid-default`, q1/48 kHz, first captures. Already outside ordinary PR CI in the manual strict qualification lane; its actual failed/incomplete verdict is retained. | #79, #91 |
 
 ## Retained evidence
+
+- x64 browser run `37667836399`, signed PR head `0a2cb88`, caught two
+  additional WebKit first failures. `short-notes completed min`, q1/program120,
+  differs by `9.68e-2` at the unchanged `0.000001` tolerance; its diagnostic
+  rerender was clean. This spec retains JSON facts, not first-attempt WAVs.
+  `render q0 48000`, drum58 source/min, differs by `1.542e-1`, first sample
+  18720; its diagnostic was also clean. Both original drum WAVs are finite
+  mono Float32, 48 kHz, 76,800 frames. Their hashes and recomputed canonical
+  comparison match the retained report. The user subsequently authorized
+  exactly these scopes as nonblocking ordinary-CI exceptions in policy v3;
+  every assertion, tolerance and failed raw verdict remains preserved.
+  [Issue #97](https://github.com/Provable-Games/webaudio-tinysynth/issues/97)
+  records exact jobs/artifacts, hashes, capture limits and investigator steps.
+  Evidence is under `_evidence/p1-pr95-step2/`; no new diagnosis was launched.
+
 
 - The first D-043 policy browser run `37560041890`, head `7c19c5f`,
   passed the ordinary CI gate while retaining three q0/44.1 kHz descriptor

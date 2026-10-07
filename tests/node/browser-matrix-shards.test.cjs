@@ -925,15 +925,14 @@ async function withFullMixReference(file, callback) {
 
 const first = (files, engine, spec) => Object.entries(files).find(([, data]) => data[engine] && data[engine].cases.some((c) => c.spec === spec));
 
-function mutateKnownRenderFailure(files, { descriptor = true } = {}) {
+function mutateKnownRenderFailure(files, { descriptor = true, caseId = "render q0 44100",
+  group = knownFailurePolicy.RENDER_GROUP, item = group + " program 121 source/min", pairIndex = 1 } = {}) {
   const found = Object.entries(files).find(([, report]) => report.webkit &&
-    report.webkit.cases.some((c) => c.id === "render q0 44100"));
+    report.webkit.cases.some((c) => c.id === caseId));
   assert.ok(found, "synthetic WebKit q0/44.1 kHz render report exists");
   const [rel, report] = found;
-  const c = report.webkit.cases.find((item) => item.id === "render q0 44100");
-  const group = knownFailurePolicy.RENDER_GROUP;
+  const c = report.webkit.cases.find((item) => item.id === caseId);
   const tolerance = tolerances("webkit").sameEngineSample;
-  const item = group + " program 121 source/min";
   const root = rel.split("/")[0];
   const sampleRate = c.dims.sampleRate;
   const frames = Math.floor(1.6 * sampleRate);
@@ -944,7 +943,7 @@ function mutateKnownRenderFailure(files, { descriptor = true } = {}) {
   const reason = FIRST_ATTEMPT.compareRenders({ channels: [samples] }, { channels: [minSamples] }, tolerance).reasons[0];
   const minPlanar = Buffer.from(minSamples.buffer, minSamples.byteOffset, minSamples.byteLength);
   const wavs = { a: testAnalysis.wav([samples], sampleRate), b: testAnalysis.wav([minSamples], sampleRate) };
-  const pairBase = "first-attempt-pcm/q" + c.dims.quality + "-" + sampleRate + "/pair-001";
+  const pairBase = "first-attempt-pcm/q" + c.dims.quality + "-" + sampleRate + "/pair-" + String(pairIndex).padStart(3, "0");
   const sides = {};
   for (const [key, role, suffix] of [["a", "source", "first-a.wav"], ["b", "min", "first-b.wav"]]) {
     const file = pairBase + "-" + suffix;
@@ -957,7 +956,7 @@ function mutateKnownRenderFailure(files, { descriptor = true } = {}) {
     };
   }
   const pcmRetention = {
-    schemaVersion: 1, pairIndex: 1, label: item,
+    schemaVersion: 1, pairIndex, label: item,
     planarPcmEncoding: "IEEE-754 binary32 little-endian; planar channel order",
     roles: { a: "source", b: "min" }, saved: true, status: "saved", a: sides.a, b: sides.b,
   };
@@ -1046,6 +1045,27 @@ function mutateKnownDrumFailure(files) {
   c.observations.measurements[group + "/source"] = structuredClone(row);
   c.observations.measurements[group + "/min"] = structuredClone(row);
   return { report: c, resultPath: rel };
+}
+
+function mutateKnownDrum58Failure(files, { withProgram127 = false } = {}) {
+  let gm;
+  if (withProgram127) {
+    gm = mutateKnownRenderFailure(files, { descriptor: false, caseId: "render q0 48000",
+      item: knownFailurePolicy.RENDER_GROUP + " program 127 source/min" });
+    gm.checks = structuredClone(gm.report.checks);
+    gm.summary = structuredClone(gm.report.observations[knownFailurePolicy.FAILURE_OBSERVATION]);
+  }
+  const drum = mutateKnownRenderFailure(files, { descriptor: false, caseId: "render q0 48000",
+    group: knownFailurePolicy.DRUM_GROUP, item: "gm-drums drum 58 source/min", pairIndex: withProgram127 ? 2 : 1 });
+  if (gm) {
+    const summary = drum.report.observations[knownFailurePolicy.FAILURE_OBSERVATION];
+    summary.failures.unshift(...gm.summary.failures);
+    summary.firstAttemptFailures = summary.intermittent = summary.diagnosticRenderAttempts = 2;
+    summary.rendersIncludingFirstAttempts = 270;
+    summary.diagnosticBudget.unspent = 4;
+    drum.report.checks.unshift(...gm.checks);
+  }
+  return drum;
 }
 
 function mutateKnownShortNotesFailure(files, item = "q1 126") {
@@ -1184,6 +1204,71 @@ test("short-notes q1/program126 is accepted without a nonexistent PCM retention 
     TEST_REFERENCE_BYTES, null, "core", "core", {}, true);
   assert.equal(unlisted.status, 1, unlisted.out);
   assert.match(unlisted.out, /failed check: every program with an attack/);
+});
+
+test("drum58 q0/48 kHz accepts only source/min with retained raw failures and strict-default rejection", () => {
+  const strict = merged((files) => { mutateKnownDrum58Failure(files); });
+  assert.equal(strict.status, 1, strict.out);
+  let rawCase;
+  const accepted = merged((files) => { rawCase = mutateKnownDrum58Failure(files).report; },
+    TEST_REFERENCE_BYTES, null, "core", "core", {}, true);
+  assert.equal(accepted.status, 0, accepted.out);
+  assert.match(accepted.out, /PASS WITH ACCEPTED KNOWN FAILURES/);
+  assert.equal(rawCase.status, "fail");
+  assert.equal(rawCase.checks[0].ok, false);
+  assert.match(accepted.out, /webkit-drum58-q0-48000-first-attempt/);
+  for (const mutate of [
+    (c) => { c.observations[knownFailurePolicy.FAILURE_OBSERVATION].failures[0].item = "gm-drums drum 59 source/min"; },
+    (c) => { c.dims.quality = 1; },
+    (c) => { c.dims.sampleRate = 44100; },
+    (c) => { c.checks[0].name = "gm-drums: a repeat render in a fresh page matches (max |diff| <= 0.000001)"; },
+    (c) => { c.observations.measurements["gm-drums/min"].peaks.pop(); },
+  ]) {
+    const rejected = merged((files) => { mutate(mutateKnownDrum58Failure(files).report); },
+      TEST_REFERENCE_BYTES, null, "core", "core", {}, true);
+    assert.equal(rejected.status, 1, rejected.out);
+  }
+});
+
+test("combined approved GM127 and drum58 failures validate both groups and every retained pair", () => {
+  const accepted = merged((files) => { mutateKnownDrum58Failure(files, { withProgram127: true }); },
+    TEST_REFERENCE_BYTES, null, "core", "core", {}, true);
+  assert.equal(accepted.status, 0, accepted.out);
+  assert.match(accepted.out, /PASS WITH ACCEPTED KNOWN FAILURES/);
+  let secondPair;
+  const missing = merged((files) => {
+    secondPair = mutateKnownDrum58Failure(files, { withProgram127: true }).wavPaths[1];
+  }, TEST_REFERENCE_BYTES, (dir) => { fs.rmSync(path.join(dir, secondPair)); }, "core", "core", {}, true);
+  assert.equal(missing.status, 1, missing.out);
+  assert.match(missing.out, /known first-attempt PCM WAV is missing or invalid/);
+});
+
+test("short-note q1/program120 keeps raw failure; approved 120/126 combinations cannot hide other programs", () => {
+  const strict = merged((files) => { mutateKnownShortNotesFailure(files, "q1 120"); });
+  assert.equal(strict.status, 1, strict.out);
+  let rawCase;
+  const accepted = merged((files) => { rawCase = mutateKnownShortNotesFailure(files, "q1 120").report; },
+    TEST_REFERENCE_BYTES, null, "core", "core", {}, true);
+  assert.equal(accepted.status, 0, accepted.out);
+  assert.equal(rawCase.status, "fail");
+  assert.equal(rawCase.checks[0].ok, false);
+  const combined = (files, other) => {
+    const { report } = mutateKnownShortNotesFailure(files, "q1 120");
+    const summary = report.observations[knownFailurePolicy.SHORT_FAILURE_OBSERVATION];
+    const second = structuredClone(summary.failures[0]); second.item = other;
+    summary.failures.push(second);
+    summary.firstAttemptFailures = summary.intermittent = summary.diagnosticRenderAttempts = 2;
+    summary.rendersIncludingFirstAttempts = 130;
+    summary.diagnosticBudget.unspent = 4;
+    report.checks[0].detail = summary.failures.map((f) => f.item + ": " + f.firstAttempt.reasons[0] +
+      " [" + FIRST_ATTEMPT.SHORT[f.outcome] + "]").join(", ");
+  };
+  const both = merged((files) => { combined(files, "q1 126"); }, TEST_REFERENCE_BYTES, null, "core", "core", {}, true);
+  assert.equal(both.status, 0, both.out);
+  for (const other of ["q1 121", "q0 120", "q1 120"]) {
+    const rejected = merged((files) => { combined(files, other); }, TEST_REFERENCE_BYTES, null, "core", "core", {}, true);
+    assert.equal(rejected.status, 1, rejected.out);
+  }
 });
 
 test("known-failure acceptance still blocks corrupt Float32 sidecars, stale provenance and non-finite retained PCM", () => {

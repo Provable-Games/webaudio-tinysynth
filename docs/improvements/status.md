@@ -45,8 +45,8 @@ and target devices are settled and their checks passed. This is the user's
 attestation; it does not substitute for the later formal release qualification
 and consumer certificate artifacts.
 
-PR #95 incorporates integration `e99c310` (user-merged #92). Its package-floor
-and contracts conflicts retain both L-18 and L-19; the combined suite passes
+At signed head `0a2cb88`, PR #95 incorporated integration `e99c310` (user-merged #92). Its package-floor
+and contracts conflicts retain both L-18 and L-19; the combined suite passed
 1,052 unit tests in 14 files, 272 Node tests in 18 files and all three playback
 regressions. The Node floor uses those observed counts. Lint, actionlint and
 79 review-helper tests pass (one optional Bun check skipped). No engine source,
@@ -61,6 +61,32 @@ credential, model-access or quota diagnosis is claimed. The updated workflow
 emits only fixed failure categories on the first runtime failure; it preserves
 the failed review gate and publishes no transcript. Fresh hosted checks are
 required for this updated head. Logs: `_evidence/p1-pr95-step2/`.
+
+### Additional approved first-failure deferrals (2026-10-07)
+
+The user authorized documenting and making two additional WebKit first
+failures nonblocking in ordinary CI: completed-short-note min/q1/program120
+(`0.0968` difference) and render q0/48 kHz/drum58 source/min (`0.1542`, first
+sample 18720). Both first failures and their diagnostic facts remain intact.
+[Issue #97](https://github.com/Provable-Games/webaudio-tinysynth/issues/97) is
+its focused handoff, linked from #96; no cause or audible impact is established.
+Policy v3 accepts only those settings/assertions, plus previously approved
+scopes. When approved GM/program and drum failures share a case, the gate
+validates every group and retained WAV pair. Strict qualification is unchanged.
+
+On `0a2cb88`, main CI, Review Helpers and both AI review gates passed; Claude
+returned `lgtm`, Codex only the two already-deferred qualification advisories.
+Browser CI retained the two unapproved-at-that-time failures. Three Firefox
+jobs timed out during slow Ubuntu package downloads, before running tests;
+another Firefox shard passed. The updated workflow removes the stalled Azure
+mirror from the ephemeral Firefox runner's existing mirror list, keeping the
+Ubuntu archive/security fallbacks and package signature checks. Fresh hosted
+validation is required for the authorized policy update. Full local validation
+passes: 1,052 unit tests in 14 files, 275 Node tests in 18 files, all three
+playback regressions, six focused policy controls, lint, actionlint and 79
+review-helper tests (one optional Bun check skipped). The floor uses the
+observed 18/275 count. Saved first reports retain their hashes. Receipts are under
+`_evidence/p1-known-failures/new-scopes-20261007/`.
 
 ## After every merge into improve/integration (supervisor checklist, D-040)
 

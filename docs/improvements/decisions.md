@@ -538,3 +538,13 @@ as they are pointing out a failure". A dedicated diagnosis lab is deferred.
   [Issue #96](https://github.com/Provable-Games/webaudio-tinysynth/issues/96) records the complete deferred investigation
   handoff. The user will assign its investigator; no new lab campaign is
   launched by the CI-policy follow-up.
+
+- Further authorization: on 2026-10-07 the user approved logging and ignoring
+  the two additional WebKit failures in ordinary CI: `short-notes completed
+  min`, q1/program120, and `render q0 48000`, drum58 source/min parity only.
+  [Issue #97](https://github.com/Provable-Games/webaudio-tinysynth/issues/97)
+  records the exact tests, raw first failures, artifacts and verified drum
+  WAVs. Policy v3 retains every assertion and tolerance; other settings,
+  programs/drums, repeat checks and invalid evidence remain blocking. Multiple
+  already-approved failures in one case are all independently validated;
+  strict full-mix qualification and raw first-attempt verdicts are unchanged.

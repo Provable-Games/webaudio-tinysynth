@@ -5,7 +5,7 @@ const { MATRIX } = require("../matrix");
 const { tolerances } = require("../tolerances");
 const FIRST_ATTEMPT = require("./first-attempt");
 
-const POLICY_ID = "p1-a2-known-failures-v2";
+const POLICY_ID = "p1-a2-known-failures-v3";
 const BUFFER_OBSERVATION = "generated buffer SHA-256 (first reverb-enabled attempt)";
 const FAILURE_OBSERVATION = "first-attempt same-engine failures and their diagnostic re-renders (the verdict is the first attempt's; a clean re-render does not clear it)";
 const SHORT_FAILURE_OBSERVATION = "first-attempt failures and their diagnostic re-renders (the verdict is the first attempt's; a clean re-render does not clear it)";
@@ -38,14 +38,18 @@ function validGmMeasurement(row, slots = 32) {
 }
 
 function expectedNoiseFor(engine, c) {
-  if (engine !== "webkit" || !c || c.spec !== "render" || !validRenderDims(c)) return null;
+  if (engine !== "webkit" || !c || c.spec !== "render" || !validRenderDims(c)) return [];
   if (c.id === "render q1 48000" && c.dims.quality === 1 && c.dims.sampleRate === 48000)
-    return { group: DRUM_GROUP, slots: 47, signature: "webkit-drum54-q1-48000-first-attempt",
-      items: [DRUM_GROUP + " drum 54 source/min", DRUM_GROUP + " drum 54 repeat"] };
-  const target = RENDER_NOISE.get(c.id);
-  return target && c.dims.quality === target.quality && c.dims.sampleRate === target.sampleRate
-    ? { group: RENDER_GROUP, slots: 32, signature: "webkit-noise-gm-first-attempt",
-      items: target.programs.map((program) => RENDER_GROUP + " program " + program + " source/min") } : null;
+    return [{ group: DRUM_GROUP, slots: 47, signature: "webkit-drum54-q1-48000-first-attempt", minimumFailures: 2,
+      items: [DRUM_GROUP + " drum 54 source/min", DRUM_GROUP + " drum 54 repeat"] }];
+  const targets = [], target = RENDER_NOISE.get(c.id);
+  if (target && c.dims.quality === target.quality && c.dims.sampleRate === target.sampleRate)
+    targets.push({ group: RENDER_GROUP, slots: 32, signature: "webkit-noise-gm-first-attempt", minimumFailures: 1,
+      items: target.programs.map((program) => RENDER_GROUP + " program " + program + " source/min") });
+  if (c.id === "render q0 48000" && c.dims.quality === 0 && c.dims.sampleRate === 48000)
+    targets.push({ group: DRUM_GROUP, slots: 47, signature: "webkit-drum58-q0-48000-first-attempt", minimumFailures: 1,
+      items: [DRUM_GROUP + " drum 58 source/min"] });
+  return targets;
 }
 
 function validOutcome(failure) {
@@ -101,34 +105,42 @@ function validSummary(summary, { items, minimumFailures, maximumFailures }) {
     counts[FIRST_ATTEMPT.OUTCOMES.NOT_RERENDERED] === summary.notRerendered;
 }
 
-function knownNoiseFailure(engine, c) {
+function knownNoiseFailures(engine, c) {
   if (engine !== "webkit" || !c || c.status !== "fail" || !Array.isArray(c.checks)) return null;
   const first = c.observations && c.observations[FAILURE_OBSERVATION];
-  const target = expectedNoiseFor(engine, c);
-  if (target) {
-    const { group, slots } = target;
-    if (!validSummary(first, { items: 268, minimumFailures: group === DRUM_GROUP ? 2 : 1, maximumFailures: target.items.length })) return null;
-    const allow = new Set(target.items);
+  const targets = expectedNoiseFor(engine, c);
+  if (targets.length) {
+    const allowedItems = targets.flatMap((target) => target.items);
+    if (!validSummary(first, { items: 268, minimumFailures: 1, maximumFailures: allowedItems.length })) return null;
+    const allow = new Set(allowedItems);
     if (new Set(first.failures.map((failure) => failure.item)).size !== first.failures.length ||
         !first.failures.every((failure) => allow.has(failure.item) && finiteDifferenceReason(
       failure.firstAttempt.reasons, tolerances(engine).sameEngineSample, "render"))) return null;
-    const checkFor = (failure) => group + (failure.item.endsWith(" repeat")
-      ? ": a repeat render in a fresh page matches (max |diff| <= "
-      : ": min renders the same PCM as source (max |diff| <= ") + String(tolerances(engine).sameEngineSample) + ")";
-    const checkNames = [...new Set(first.failures.map(checkFor))];
-    for (const checkName of checkNames) {
-      const matchingChecks = c.checks.filter((check) => check && check.ok === false && check.name === checkName);
-      const expectedDetail = first.failures.filter((failure) => checkFor(failure) === checkName)
-        .map((failure) => failure.item + ": " + failure.firstAttempt.reasons[0] +
-          " (first attempt; " + FIRST_ATTEMPT.SHORT[failure.outcome] + ")").join(" | ");
-      if (matchingChecks.length !== 1 || matchingChecks[0].detail !== expectedDetail) return null;
+    const classifications = [];
+    for (const target of targets) {
+      const { group, slots } = target;
+      const failures = first.failures.filter((failure) => target.items.includes(failure.item));
+      if (!failures.length) continue;
+      if (failures.length < target.minimumFailures) return null;
+      const checkFor = (failure) => group + (failure.item.endsWith(" repeat")
+        ? ": a repeat render in a fresh page matches (max |diff| <= "
+        : ": min renders the same PCM as source (max |diff| <= ") + String(tolerances(engine).sameEngineSample) + ")";
+      const checkNames = [...new Set(failures.map(checkFor))];
+      for (const checkName of checkNames) {
+        const matchingChecks = c.checks.filter((check) => check && check.ok === false && check.name === checkName);
+        const expectedDetail = failures.filter((failure) => checkFor(failure) === checkName)
+          .map((failure) => failure.item + ": " + failure.firstAttempt.reasons[0] +
+            " (first attempt; " + FIRST_ATTEMPT.SHORT[failure.outcome] + ")").join(" | ");
+        if (matchingChecks.length !== 1 || matchingChecks[0].detail !== expectedDetail) return null;
+      }
+      const measurements = c.observations && c.observations.measurements;
+      if (!isRecord(measurements) || Object.prototype.hasOwnProperty.call(measurements, group) ||
+          !validGmMeasurement(measurements[group + "/source"], slots) ||
+          !validGmMeasurement(measurements[group + "/min"], slots)) return null;
+      classifications.push({ signature: target.signature, checkNames, splitMeasurementGroup: group, splitMeasurementSlots: slots,
+        evidenceItems: failures.map((failure) => failure.item), firstAttemptFailures: failures });
     }
-    const measurements = c.observations && c.observations.measurements;
-    if (!isRecord(measurements) || Object.prototype.hasOwnProperty.call(measurements, group) ||
-        !validGmMeasurement(measurements[group + "/source"], slots) ||
-        !validGmMeasurement(measurements[group + "/min"], slots)) return null;
-    return { signature: target.signature, checkNames, splitMeasurementGroup: group, splitMeasurementSlots: slots,
-      evidenceItems: first.failures.map((failure) => failure.item), firstAttemptFailures: first.failures };
+    return classifications;
   }
 
   if (c.kind !== "assert" || c.spec !== "short-notes" || c.id !== SHORT_CASE ||
@@ -137,13 +149,15 @@ function knownNoiseFailure(engine, c) {
   const failedChecks = c.checks.filter((check) => check && check.ok === false);
   const matchingChecks = failedChecks.filter((check) => check.name === SHORT_CHECK);
   if (matchingChecks.length !== 1 ||
-      !validSummary(summary, { items: 128, minimumFailures: 1, maximumFailures: 1 })) return null;
-  const failure = summary.failures[0];
-  if (failure.item !== "q1 126" || !finiteDifferenceReason(failure.firstAttempt.reasons, tolerances(engine).sameEngineSample, "short")) return null;
-  const expectedDetail = "q1 126: " + failure.firstAttempt.reasons[0] + " [" + FIRST_ATTEMPT.SHORT[failure.outcome] + "]";
+      !validSummary(summary, { items: 128, minimumFailures: 1, maximumFailures: 2 })) return null;
+  if (new Set(summary.failures.map((failure) => failure.item)).size !== summary.failures.length ||
+      !summary.failures.every((failure) => ["q1 120", "q1 126"].includes(failure.item) &&
+        finiteDifferenceReason(failure.firstAttempt.reasons, tolerances(engine).sameEngineSample, "short"))) return null;
+  const expectedDetail = summary.failures.map((failure) => failure.item + ": " + failure.firstAttempt.reasons[0] +
+    " [" + FIRST_ATTEMPT.SHORT[failure.outcome] + "]").join(", ");
   if (matchingChecks[0].detail !== expectedDetail) return null;
-  return { signature: "webkit-short-notes-q1-126-first-attempt", checkNames: [SHORT_CHECK], evidenceItems: [failure.item],
-    firstAttemptFailures: summary.failures };
+  return [{ signature: "webkit-short-notes-q1-120-126-first-attempt", checkNames: [SHORT_CHECK],
+    evidenceItems: summary.failures.map((failure) => failure.item), firstAttemptFailures: summary.failures }];
 }
 
 function knownConvBufDescriptor(engine, c, bufferProblems, verifyNormalized) {
@@ -195,8 +209,8 @@ function classifyKnownCase(engine, c, { bufferProblems = [], rawBufferProblems =
   const failures = [];
   const descriptor = knownConvBufDescriptor(engine, c, bufferProblems, verifyNormalizedBuffer);
   if (descriptor) failures.push(descriptor);
-  const noise = knownNoiseFailure(engine, c);
-  if (noise) failures.push(noise);
+  const noise = knownNoiseFailures(engine, c);
+  if (noise) failures.push(...noise);
   if (!failures.length) return null;
   const allowedCheckNames = new Set(failures.flatMap((failure) => failure.checkNames));
   const failedChecks = c.checks.filter((check) => check && check.ok === false);
@@ -208,16 +222,17 @@ function classifyKnownCase(engine, c, { bufferProblems = [], rawBufferProblems =
 }
 
 function projectNoisyMeasurements(c, knownFailures) {
-  if (!knownFailures || !knownFailures.failures.some((failure) => failure.splitMeasurementGroup) || !c ||
-      !c.observations || !isRecord(c.observations.measurements)) return c;
-  const noise = knownFailures.failures.find((failure) => failure.splitMeasurementGroup);
-  const group = noise.splitMeasurementGroup, slots = noise.splitMeasurementSlots, m = c.observations.measurements;
-  const source = m[group + "/source"], min = m[group + "/min"];
-  if (Object.prototype.hasOwnProperty.call(m, group) || !validGmMeasurement(source, slots) || !validGmMeasurement(min, slots)) return c;
-  const projected = Object.assign({}, c, { observations: Object.assign({}, c.observations, {
-    measurements: Object.assign({}, m, { [group]: m[group + "/source"] }),
-  }) });
-  return projected;
+  if (!knownFailures || !c || !c.observations || !isRecord(c.observations.measurements)) return c;
+  const noises = knownFailures.failures.filter((failure) => failure.splitMeasurementGroup);
+  if (!noises.length) return c;
+  const m = c.observations.measurements, measurements = Object.assign({}, m);
+  for (const noise of noises) {
+    const group = noise.splitMeasurementGroup, slots = noise.splitMeasurementSlots;
+    const source = m[group + "/source"], min = m[group + "/min"];
+    if (Object.prototype.hasOwnProperty.call(m, group) || !validGmMeasurement(source, slots) || !validGmMeasurement(min, slots)) return c;
+    measurements[group] = source;
+  }
+  return Object.assign({}, c, { observations: Object.assign({}, c.observations, { measurements }) });
 }
 
 module.exports = {
@@ -232,7 +247,7 @@ module.exports = {
   DRUM_GROUP,
   classifyKnownCase,
   knownConvBufDescriptor,
-  knownNoiseFailure,
+  knownNoiseFailures,
   projectNoisyMeasurements,
   validGmMeasurement,
 };

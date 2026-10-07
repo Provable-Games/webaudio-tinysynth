@@ -88,6 +88,12 @@ jobs:
       # (dist.yml regenerates it after merging); the matrix tests a fresh build.
       - name: Fresh build of the current source into .build/
         run: node scripts/test-build.js
+      - name: Use Ubuntu archives for Firefox dependencies
+        if: matrix.engine == 'firefox'
+        run: |
+          # The hosted runner's preferred Azure mirror stalled past the job deadline.
+          # Keep its existing signed Ubuntu archive/security fallbacks.
+          sudo sed -i '\|^http://azure\.archive\.ubuntu\.com/ubuntu/|d' /etc/apt/apt-mirrors.txt
       - name: Install the pinned Playwright's browser and system libraries
         run: |
           read -r -a args <<< "$INSTALL"
@@ -153,6 +159,12 @@ jobs:
       - run: npm ci
       - name: Build the source and minified identities
         run: node scripts/test-build.js
+      - name: Use Ubuntu archives for Firefox dependencies
+        if: matrix.engine == 'firefox'
+        run: |
+          # The hosted runner's preferred Azure mirror stalled past the job deadline.
+          # Keep its existing signed Ubuntu archive/security fallbacks.
+          sudo sed -i '\|^http://azure\.archive\.ubuntu\.com/ubuntu/|d' /etc/apt/apt-mirrors.txt
       - name: Install the pinned Playwright's browser and system libraries
         run: |
           read -r -a args <<< "$INSTALL"
@@ -204,6 +216,12 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
       - run: npm ci
+      - name: Use Ubuntu archives for Firefox dependencies
+        if: matrix.engine == 'firefox'
+        run: |
+          # The hosted runner's preferred Azure mirror stalled past the job deadline.
+          # Keep its existing signed Ubuntu archive/security fallbacks.
+          sudo sed -i '\|^http://azure\.archive\.ubuntu\.com/ubuntu/|d' /etc/apt/apt-mirrors.txt
       - name: Install the pinned Playwright's browser and system libraries
         run: |
           read -r -a args <<< "$INSTALL"
