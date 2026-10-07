@@ -12,12 +12,14 @@ name: Browser matrix
 #   browser matrix         the aggregate to require: it fails unless every
 #                          shard and demos job passed and, from the uploaded
 #                          results, every engine ran every declared spec exactly
-#                          once with every case passing. Its summary lists the
-#                          measured times per shard and per spec.
+#                          once and raw failures satisfy the ordinary-core
+#                          known-failure policy. Its summary lists measured
+#                          times per shard and per spec.
 #
 # A browser that cannot be installed or launched fails its job; nothing is
-# skipped. To change the shard count, change the shard list, SHARD and the job
-# name together; the aggregate fails if a shard is missing.
+# skipped. Core CI opts into the documented known-failure policy; the strict
+# full-mix qualification job below does not. To change the shard count, change
+# the shard list, SHARD and the job name together; the aggregate requires each.
 
 on:
   pull_request:
@@ -103,7 +105,7 @@ jobs:
       # A shard with no spec of a step's selection passes that step without
       # launching a browser; the aggregate checks that every spec ran.
       - name: Browser matrix (this shard's assert specs)
-        run: npm run "test:browser:${ENGINE}" -- --shard="$SHARD" --out="$RUNNER_TEMP/browser-matrix"
+        run: npm run "test:browser:${ENGINE}" -- --accept-known-failures --shard="$SHARD" --out="$RUNNER_TEMP/browser-matrix"
       - name: Observe-only specs in this shard (hangs under deadlines, run-to-run variation)
         if: ${{ !cancelled() }}
         run: npm run test:browser:observe -- --engines="$ENGINE" --shard="$SHARD" --out="$RUNNER_TEMP/browser-observe"
@@ -244,8 +246,8 @@ jobs:
         with:
           pattern: browser-results-*
           path: ${{ runner.temp }}/results
-      - name: Every engine ran every declared spec once, and every case passed
-        run: node scripts/browser-matrix.js --merge="$RUNNER_TEMP/results" --expected-context=github
+      - name: Every engine ran every declared spec once; cases passed or were accepted
+        run: node scripts/browser-matrix.js --accept-known-failures --merge="$RUNNER_TEMP/results" --expected-context=github
       - name: Every shard and demos job passed
         if: ${{ !cancelled() }}
         env:

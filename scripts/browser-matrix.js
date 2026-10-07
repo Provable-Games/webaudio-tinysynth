@@ -6,6 +6,7 @@
  *
  * Usage: node scripts/browser-matrix.js [options]
  *   --mode=core|full-mix-qualification  select the ordinary matrix or the strict fixture qualifier
+ *   --accept-known-failures             accept only documented exceptions in ordinary core CI
  *   --engines=chromium,firefox,webkit   engines to run (default: all declared)
  *   --specs=embed,render,...            specs to run (default: every "assert" spec)
  *   --observe                           also run the observe-only specs (hang, variation)
@@ -51,7 +52,9 @@ const crypto = require("crypto");
 const { runWithDeadline, describeFailure } = require("./run-with-deadline");
 const browserToolchainSpec = require("./browser-toolchain");
 const { MATRIX } = require("../tests/browser/matrix");
+const knownFailurePolicy = require("../tests/browser/lib/known-failures");
 const analysis = require("../tests/browser/lib/analysis");
+const { SCENARIOS } = require("../tests/browser/lib/scenarios");
 const { SEED_EXPECTED } = require("../tests/browser/specs/seed-expected");
 const fullMixSpec = require("../tests/browser/specs/full-mix");
 const FULL_MIX_CASES = new Map(fullMixSpec.expectedCases().map((c) => [c.id, c]));
@@ -332,12 +335,13 @@ function readArtifactUnderShard(shardRoot, relativePath, expectedByteLength) {
   return fs.readFileSync(realTarget);
 }
 
-function generatedBufferArtifactProblems(engine, rel, resultFile, c, want, problems) {
+function generatedBufferArtifactProblems(engine, rel, resultFile, c, want, problems = []) {
+  const start = problems.length;
   const obs = c && c.observations && c.observations[RENDER_BUFFER_SHA_OBSERVATION];
-  if (!isRecord(obs) || !isRecord(obs.builds)) return;
+  if (!isRecord(obs) || !isRecord(obs.builds)) return problems.slice(start);
   if (!want || stableJson(c.dims) !== stableJson(want.dims)) {
     problems.push(rel + ": " + engine + " / " + (c && c.id || "render case") + " generated-buffer artifacts were not read because downloaded dimensions differ from the independent manifest");
-    return;
+    return problems.slice(start);
   }
   const shardRoot = path.dirname(resultFile);
   const captured = { source: {}, min: {} };
@@ -376,10 +380,80 @@ function generatedBufferArtifactProblems(engine, rel, resultFile, c, want, probl
     if (source && min && !source.equals(min))
       problems.push(rel + ": " + engine + " / " + c.id + " source/min " + name + " raw Float32 bytes differ");
   }
+  return problems.slice(start);
+}
+
+function inspectKnownFailure(engine, c, want, { seed = MATRIX.seed, resultFile = null, rel = "results", rawBufferProblems: retainedProblems = null } = {}) {
+  const bufferObservation = c && c.observations && c.observations[RENDER_BUFFER_SHA_OBSERVATION];
+  const bufferProblems = c && c.spec === "render"
+    ? renderBufferShaProblems(c, bufferObservation, engine + " " + c.id, { expectedSeed: seed, requireSaved: !!resultFile })
+    : [];
+  const rawBufferProblems = retainedProblems ? retainedProblems.slice() : c && c.spec === "render" && resultFile
+    ? generatedBufferArtifactProblems(engine, rel, resultFile, c, want, []) : [];
+  if (c && c.spec === "render" && !resultFile)
+    rawBufferProblems.push(engine + " / " + c.id + " known render exceptions require retained raw Float32 sidecars (--out)");
+  let classification = knownFailurePolicy.classifyKnownCase(engine, c, {
+    bufferProblems,
+    rawBufferProblems,
+    verifyNormalizedBuffer: (normalized) => renderBufferShaProblems(c, normalized, engine + " " + c.id,
+      { expectedSeed: seed, requireSaved: !!resultFile }),
+  });
+  if (classification) {
+    rawBufferProblems.push(...firstAttemptPcmArtifactProblems(engine, rel, resultFile, c, classification));
+    if (rawBufferProblems.length) classification = null;
+  }
+  return { classification, bufferProblems, rawBufferProblems };
+}
+
+function assessKnownFailures(engine, cases, { enabled = false, mode = "core", specs = [], seed = MATRIX.seed, resultFile = null, rel = "results" } = {}) {
+  const manifest = new Map(caseManifest(engine, specs).map((c) => [c.id, c]));
+  const accepted = [], blockingCases = [], artifactProblems = [], byCase = new Map();
+  for (const c of Array.isArray(cases) ? cases : []) {
+    const want = c && manifest.get(c.id);
+    const rawForCase = c && c.spec === "render" && resultFile
+      ? generatedBufferArtifactProblems(engine, rel, resultFile, c, want, []) : [];
+    artifactProblems.push(...rawForCase);
+    if (!c || c.status !== "fail") continue;
+    let evidence = { classification: null };
+    if (enabled && mode === "core" && want && want.kind === "assert")
+      evidence = inspectKnownFailure(engine, c, want, { seed, resultFile, rel, rawBufferProblems: rawForCase });
+    const classification = evidence.classification;
+    if (classification) {
+      const summary = {
+        engine, caseId: c.id,
+        signatures: classification.failures.map((failure) => failure.signature),
+        checkNames: c.checks.filter((check) => check && check.ok === false).map((check) => check.name),
+        evidenceItems: classification.failures.flatMap((failure) => failure.evidenceItems || []),
+      };
+      accepted.push(summary);
+      byCase.set(engine + "/" + c.id, classification);
+    } else blockingCases.push(engine + " / " + (c && c.id || "malformed case") + " remains a blocking raw failure");
+  }
+  const blockers = [...blockingCases, ...artifactProblems];
+  return { accepted, blockingCases, artifactProblems, blockers, byCase, ok: blockers.length === 0 };
+}
+
+function projectAcceptedKnownCases(all, acceptedByCase) {
+  const projected = {};
+  for (const [engine, report] of Object.entries(all || {})) {
+    projected[engine] = Object.assign({}, report, { cases: (report.cases || []).map((c) => {
+      const classification = acceptedByCase && acceptedByCase.get(engine + "/" + c.id);
+      if (!classification) return c;
+      let next = knownFailurePolicy.projectNoisyMeasurements(c, classification);
+      const normalized = classification.failures.find((failure) => failure.normalizedObservation);
+      if (normalized && next && next.observations) {
+        next = Object.assign({}, next, { observations: Object.assign({}, next.observations, {
+          [RENDER_BUFFER_SHA_OBSERVATION]: normalized.normalizedObservation,
+        }) });
+      }
+      return next;
+    }) });
+  }
+  return projected;
 }
 
 function parseArgs(argv) {
-  const o = { mode: "core", engines: null, specs: null, observe: false, seed: MATRIX.seed, overrides: {}, out: null, list: false, engine: null, results: null, orchestrator: false, shard: null, merge: null, runContext: null, expectedContext: null };
+  const o = { mode: "core", engines: null, specs: null, observe: false, acceptKnownFailures: false, seed: MATRIX.seed, overrides: {}, out: null, list: false, engine: null, results: null, orchestrator: false, shard: null, merge: null, runContext: null, expectedContext: null };
   // A list option must name at least one entry: "--engines=," or "--specs=" would
   // otherwise select nothing and pass without running a browser.
   const list = (name, value) => {
@@ -393,6 +467,7 @@ function parseArgs(argv) {
     else if ((m = /^--engines=(.*)$/.exec(a))) o.engines = list("engines", m[1]);
     else if ((m = /^--specs=(.*)$/.exec(a))) o.specs = list("specs", m[1]);
     else if (a === "--observe") o.observe = true;
+    else if (a === "--accept-known-failures") o.acceptKnownFailures = true;
     else if ((m = /^--seed=(.*)$/.exec(a))) {
       if (!/^\d+$/.test(m[1]) || Number(m[1]) > 0xffffffff) throw new Error("--seed must be an integer from 0 to 4294967295");
       o.seed = Number(m[1]);
@@ -421,6 +496,8 @@ function parseArgs(argv) {
   if (o.mode === "full-mix-qualification" && (o.observe || (o.specs &&
       stableJson([...o.specs].sort()) !== stableJson([...QUALIFICATION_SPECS].sort()))))
     throw new Error("full-mix-qualification mode selects only the render and full-mix assert specs");
+  if (o.acceptKnownFailures && o.mode !== "core")
+    throw new Error("--accept-known-failures is available only in ordinary core mode");
   if (o.merge && !o.expectedContext) throw new Error("--merge requires --expected-context=github or an explicit JSON context file");
   return o;
 }
@@ -457,6 +534,7 @@ function shardLayout(n) {
 function printMatrix(o) {
   console.log("Declared matrix (tests/browser/matrix.js):");
   console.log("  mode:         " + o.mode);
+  console.log("  known failures: " + (o.acceptKnownFailures ? "documented exceptions enabled for ordinary core mode" : "strict (default)"));
   console.log("  engines:      " + MATRIX.engines.join(", ") + (o.engines ? "   (this run: " + o.engines.join(", ") + ")" : ""));
   console.log("  builds:       " + MATRIX.builds.map((b) => b + (o.overrides[b] ? " = " + o.overrides[b] : "")).join(", "));
   console.log("  qualities:    " + MATRIX.qualities.join(", "));
@@ -547,14 +625,23 @@ async function worker(o) {
     console.log("FAIL: " + engine + " " + session.version + ": no case ran");
     return 1;
   }
-  const fail = failed || results.fatal;
-  console.log((fail ? "FAIL: " : "PASS: ") + engine + " " + session.version + ": " + (n - failed) + " of " + n + " cases passed");
+  const assessment = assessKnownFailures(engine, results.cases, {
+    enabled: o.acceptKnownFailures, mode: o.mode, specs: selectedSpecs(o), seed: o.seed,
+    resultFile: o.out ? path.join(o.out, "results.json") : null, rel: "worker " + engine,
+  });
+  for (const item of assessment.accepted)
+    console.log("WARN: accepted known failure; raw checks and case status remain failed: " + item.caseId + " (" + item.signatures.join(", ") + ")");
+  for (const problem of assessment.artifactProblems) console.log("FAIL: " + problem);
+  const fail = assessment.blockingCases.length > 0 || assessment.artifactProblems.length > 0 || !!results.fatal;
+  const resultLine = fail ? "FAIL: " : assessment.accepted.length ? "PASS WITH ACCEPTED KNOWN FAILURES: " : "PASS: ";
+  console.log(resultLine + engine + " " + session.version + ": " + n + " cases, " + failed + " raw failures, " +
+    assessment.accepted.length + " accepted known failures");
   return fail ? 1 : 0;
 }
 
 /* ---------------- orchestrator ---------------- */
 
-function summarize(all, o) {
+function summarize(all, o, acceptedByCase = new Map()) {
   console.log("\n== Results (" + Object.keys(all).length + " engines)");
   printMatrix(o);
   const specs = selectedSpecs(o);
@@ -569,9 +656,12 @@ function summarize(all, o) {
     for (const s of specs) {
       const cs = r.cases.filter((c) => c.spec === s);
       const failedCases = cs.filter((c) => c.status === "fail").length;
+      const known = cs.filter((c) => acceptedByCase.has(engine + "/" + c.id)).length;
+      const blocking = failedCases - known;
       const checks = cs.reduce((a, c) => a + c.checks.length, 0);
       const okChecks = cs.reduce((a, c) => a + c.checks.filter((k) => k.ok).length, 0);
-      line += (cs.length ? (failedCases ? "FAIL " : "ok ") + okChecks + "/" + checks : "missing").padEnd(14);
+      const state = !cs.length ? "missing" : blocking ? "FAIL " : known ? "known " + known + " raw " : "ok ";
+      line += (cs.length ? state + okChecks + "/" + checks : "missing").padEnd(20);
     }
     console.log(line);
   }
@@ -653,7 +743,7 @@ function crossEngine(all, mode = "core", { expectedSeed = MATRIX.seed, requireSa
 }
 
 /* Markdown summary for a GitHub Actions job (GITHUB_STEP_SUMMARY), when set. */
-function stepSummary(all, cross, o, status) {
+function stepSummary(all, cross, o, status, acceptedByCase = new Map(), rawCross = []) {
   const file = process.env.GITHUB_STEP_SUMMARY;
   if (!file) return;
   const specs = selectedSpecs(o);
@@ -663,11 +753,18 @@ function stepSummary(all, cross, o, status) {
     lines.push("| " + engine + " " + r.version + " (" + r.platform + ") | " + specs.map((sp) => {
       const cs = r.cases.filter((c) => c.spec === sp);
       const failedCases = cs.filter((c) => c.status === "fail").length;
+      const known = cs.filter((c) => acceptedByCase.has(engine + "/" + c.id)).length;
       const checks = cs.reduce((a, c) => a + c.checks.length, 0), ok = cs.reduce((a, c) => a + c.checks.filter((k) => k.ok).length, 0);
-      return cs.length ? (failedCases ? "FAIL " : "ok ") + ok + "/" + checks + " checks, " + cs.length + " cases" : "missing";
+      return cs.length ? (failedCases > known ? "FAIL " : known ? "KNOWN " + known + " RAW " : "ok ") + ok + "/" + checks + " checks, " + cs.length + " cases" : "missing";
     }).join(" | ") + " |");
   }
   for (const c of cross) lines.push("", (c.ok ? "ok" : "FAIL") + ": " + c.name + " (" + c.detail + ")");
+  const accepted = [...acceptedByCase.entries()];
+  if (accepted.length) lines.push("", "Accepted known failures (raw case/check verdicts remain failed):",
+    ...accepted.map(([key, value]) => "- " + key + ": " + value.failures.map((failure) => failure.signature).join(", ")));
+  const acceptedRawCross = rawCross.filter((raw) => !raw.ok && cross.some((current) => current.name === raw.name && current.ok));
+  if (acceptedRawCross.length) lines.push("", "Raw cross-engine failures cleared only in the temporary validated view:",
+    ...acceptedRawCross.map((item) => "- " + item.name + " (" + item.detail + ")"));
   const failedChecks = [];
   for (const r of Object.values(all)) for (const c of r.cases || []) for (const k of c.checks) if (!k.ok) failedChecks.push("- " + r.engine + " / " + c.id + ": " + k.name + " (" + k.detail + ")");
   if (failedChecks.length) lines.push("", "Failed checks:", ...failedChecks.slice(0, 50));
@@ -702,6 +799,7 @@ async function orchestrate(o) {
   // Workers run with cwd = repository root, so pass them the values already
   // normalized here (absolute paths), never the caller's raw arguments.
   const forward = ["--mode=" + o.mode, "--seed=" + o.seed];
+  if (o.acceptKnownFailures) forward.push("--accept-known-failures");
   if (o.specs) forward.push("--specs=" + o.specs.join(","));
   if (o.shard) forward.push("--shard=" + o.shard.k + "/" + o.shard.n);
   if (o.observe) forward.push("--observe");
@@ -709,6 +807,7 @@ async function orchestrate(o) {
   if (o.overrides.min) forward.push("--min=" + o.overrides.min);
   if (o.out) forward.push("--out=" + o.out);
   const all = {};
+  const acceptedByCase = new Map();
   let failed = 0;
   for (const engine of engines) {
     const resultsFile = path.join(tmp, engine + ".json");
@@ -719,15 +818,34 @@ async function orchestrate(o) {
     try { res = JSON.parse(fs.readFileSync(resultsFile, "utf8")); } catch { res = { engine, version: null, cases: [] }; }
     if (failure) { ++failed; res.failure = failure; console.log("-- worker " + engine + ": FAILED, " + failure); }
     if (o.shard) res.shard = o.shard.k + "/" + o.shard.n;
+    const assessment = assessKnownFailures(engine, res.cases, {
+      enabled: o.acceptKnownFailures, mode: o.mode, specs: selectedSpecs(o), seed: o.seed,
+      resultFile: o.out ? path.join(o.out, "results.json") : null, rel: "orchestrator " + engine,
+    });
+    for (const item of assessment.accepted) {
+      acceptedByCase.set(engine + "/" + item.caseId, assessment.byCase.get(engine + "/" + item.caseId));
+      console.log("WARN: accepted known failure; raw checks and case status remain failed: " + item.caseId + " (" + item.signatures.join(", ") + ")");
+    }
+    if (!assessment.ok && !failure) {
+      ++failed;
+      for (const problem of assessment.blockers) console.log("FAIL: " + problem);
+    }
     all[engine] = res;
   }
-  const cross = crossEngine(all, o.mode, { expectedSeed: o.seed, requireSaved: !!o.out });
+  const rawCross = crossEngine(all, o.mode, { expectedSeed: o.seed, requireSaved: !!o.out });
+  const cross = crossEngine(projectAcceptedKnownCases(all, acceptedByCase), o.mode, { expectedSeed: o.seed, requireSaved: !!o.out });
   if (o.out) {
-    const report = Object.assign({ matrixRun: reportProvenance(o, engines, runContext) }, all, { crossEngine: cross });
+    const knownFailureSummary = { policy: acceptedByCase.size ? knownFailurePolicy.POLICY_ID : null,
+      accepted: [...acceptedByCase.entries()].map(([engineCase, value]) => ({ engineCase,
+        signatures: value.failures.map((failure) => failure.signature) })) };
+    const report = Object.assign({ matrixRun: reportProvenance(o, engines, runContext) }, all,
+      { crossEngine: rawCross, knownFailureCrossEngine: cross, knownFailureSummary });
     fs.writeFileSync(path.join(o.out, "results.json"), JSON.stringify(report, null, 1));
   }
   fs.rmSync(tmp, { recursive: true, force: true });
-  summarize(all, o);
+  summarize(all, o, acceptedByCase);
+  for (const c of rawCross) if (!c.ok && cross.some((current) => current.name === c.name && current.ok))
+    console.log("WARN: raw cross-engine failure retained; temporary validated known-failure view passes: " + c.name + " (" + c.detail + ")");
   if (cross.length) {
     console.log("\n== Cross-engine comparison (" + Object.keys(all).join(", ") + ")");
     for (const c of cross) console.log("  " + (c.ok ? "ok  " : "FAIL") + " " + c.name + " (" + c.detail + ")");
@@ -738,13 +856,18 @@ async function orchestrate(o) {
   const failedCases = Object.values(all).reduce((a, r) => a + r.cases.filter((c) => c.status === "fail").length, 0);
   if (o.out) console.log("results: " + path.join(o.out, "results.json"));
   if (failed || launched !== engines.length || !engines.length || !cases) {
-    const msg = "browser matrix: " + launched + " of " + engines.length + " engines launched, " + failedCases + " of " + cases + " cases failed";
-    stepSummary(all, cross, o, "FAIL (" + msg + ")");
+    const msg = "browser matrix: " + launched + " of " + engines.length + " engines launched, " + failedCases + " raw case failures, " + acceptedByCase.size + " accepted known failures";
+    stepSummary(all, cross, o, "FAIL (" + msg + ")", acceptedByCase, rawCross);
     console.log("FAIL: " + msg);
     return 1;
   }
-  stepSummary(all, cross, o, "PASS (" + cases + " cases)");
-  console.log("PASS: browser matrix: " + engines.join(", ") + "; " + cases + " cases");
+  const status = acceptedByCase.size
+    ? "PASS WITH ACCEPTED KNOWN FAILURES (" + acceptedByCase.size + " accepted; raw case failures retained)"
+    : "PASS (" + cases + " cases)";
+  stepSummary(all, cross, o, status, acceptedByCase, rawCross);
+  console.log(acceptedByCase.size
+    ? "PASS WITH ACCEPTED KNOWN FAILURES: browser matrix; " + acceptedByCase.size + " accepted; " + failedCases + " raw case failures retained"
+    : "PASS: browser matrix: " + engines.join(", ") + "; " + cases + " cases");
   return 0;
 }
 
@@ -852,6 +975,94 @@ function parseFloatStereoWav(bytes, expectedSampleRate, expectedFrames) {
     channels[1][i] = bytes.readFloatLE(48 + i * 8);
   }
   return { bytes, channels };
+}
+
+function parseFloatFirstAttemptWav(bytes, expectedSampleRate, expectedChannels, expectedFrames) {
+  if (!Buffer.isBuffer(bytes) || ![1, 2].includes(expectedChannels) ||
+      !Number.isSafeInteger(expectedFrames) || expectedFrames < 1 || bytes.length !== 44 + expectedFrames * expectedChannels * 4)
+    throw new Error("raw WAV byte length does not match retained dimensions");
+  if (bytes.toString("ascii", 0, 4) !== "RIFF" || bytes.toString("ascii", 8, 12) !== "WAVE" ||
+      bytes.readUInt32LE(4) !== bytes.length - 8 || bytes.toString("ascii", 12, 16) !== "fmt " ||
+      bytes.readUInt32LE(16) !== 16 || bytes.readUInt16LE(20) !== 3 || bytes.readUInt16LE(22) !== expectedChannels ||
+      bytes.readUInt32LE(24) !== expectedSampleRate || bytes.readUInt32LE(28) !== expectedSampleRate * expectedChannels * 4 ||
+      bytes.readUInt16LE(32) !== expectedChannels * 4 || bytes.readUInt16LE(34) !== 32 ||
+      bytes.toString("ascii", 36, 40) !== "data" || bytes.readUInt32LE(40) !== bytes.length - 44)
+    throw new Error("raw WAV is not a complete IEEE-float PCM capture at the retained dimensions");
+  const channels = Array.from({ length: expectedChannels }, () => new Float32Array(expectedFrames));
+  for (let i = 0; i < expectedFrames; ++i)
+    for (let channel = 0; channel < expectedChannels; ++channel)
+      channels[channel][i] = bytes.readFloatLE(44 + (i * expectedChannels + channel) * 4);
+  return { bytes, channels };
+}
+
+function firstAttemptPcmArtifactProblems(engine, rel, resultFile, c, classification) {
+  const noise = c && c.spec === "render" && classification &&
+    classification.failures.find((failure) => failure.signature === "webkit-noise-gm-first-attempt");
+  if (!noise) return [];
+  const problems = [], seenPairs = new Set();
+  const add = (message) => problems.push(rel + ": " + engine + " / " + c.id + " " + message);
+  if (!resultFile) return [rel + ": " + engine + " / " + c.id + " known render exception requires retained first-attempt PCM WAVs"];
+  const scenario = SCENARIOS.find((item) => item.name === knownFailurePolicy.RENDER_GROUP);
+  for (const failure of noise.firstAttemptFailures) {
+    const fixture = scenario && scenario.items.find((item) => failure.item === scenario.name + " " + item.label + " source/min");
+    if (!fixture || fixture.spec.pcm !== "L") {
+      add("known first-attempt GM fixture is missing or changed");
+      continue;
+    }
+    const expectedFrames = Math.ceil(fixture.spec.duration * c.dims.sampleRate);
+    const retention = failure.firstAttempt && failure.firstAttempt.pcmRetention;
+    if (!isRecord(retention)) {
+      add("known first-attempt PCM retention record is missing or malformed for " + failure.item);
+      continue;
+    }
+    const pairKeys = ["a", "b", "label", "pairIndex", "planarPcmEncoding", "roles", "saved", "schemaVersion", "status"];
+    if (stableJson(Object.keys(retention).sort()) !== stableJson(pairKeys.sort()) || retention.schemaVersion !== 1 ||
+        retention.label !== failure.item || retention.planarPcmEncoding !== "IEEE-754 binary32 little-endian; planar channel order" ||
+        retention.saved !== true || retention.status !== "saved" || !Number.isSafeInteger(retention.pairIndex) ||
+        retention.pairIndex < 1 || retention.pairIndex > 6 || stableJson(retention.roles) !== stableJson({ a: "source", b: "min" }) ||
+        seenPairs.has(retention.pairIndex)) {
+      add("known first-attempt PCM retention record is incomplete or contradictory for " + failure.item);
+      continue;
+    }
+    seenPairs.add(retention.pairIndex);
+    const pairBase = "first-attempt-pcm/q" + c.dims.quality + "-" + c.dims.sampleRate + "/pair-" + String(retention.pairIndex).padStart(3, "0");
+    const sides = [];
+    for (const [key, role, suffix] of [["a", "source", "first-a.wav"], ["b", "min", "first-b.wav"]]) {
+      const side = retention[key];
+      const sideKeys = ["channelFrames", "channels", "frames", "path", "pcmBytes", "planarPcmSha256", "role", "sampleRate", "saved", "wavBytes", "wavSha256"];
+      if (!isRecord(side) || stableJson(Object.keys(side).sort()) !== stableJson(sideKeys.sort()) || side.role !== role ||
+          side.path !== pairBase + "-" + suffix || side.channels !== 1 || side.frames !== expectedFrames ||
+          !Array.isArray(side.channelFrames) || stableJson(side.channelFrames) !== stableJson(Array(side.channels).fill(side.frames)) ||
+          side.sampleRate !== c.dims.sampleRate || side.pcmBytes !== side.channels * side.frames * 4 ||
+          side.wavBytes !== 44 + side.frames * side.channels * 4 || !/^[a-f0-9]{64}$/.test(side.wavSha256 || "") ||
+          !/^[a-f0-9]{64}$/.test(side.planarPcmSha256 || "") || side.saved !== true) {
+        add("known first-attempt PCM WAV descriptor is incomplete or contradictory for " + failure.item + " " + role);
+        continue;
+      }
+      let parsed;
+      try {
+        const bytes = readArtifactUnderShard(path.dirname(resultFile), path.join(engine, side.path), side.wavBytes);
+        if (sha256(bytes) !== side.wavSha256) throw new Error("WAV SHA-256 differs from retained descriptor");
+        parsed = parseFloatFirstAttemptWav(bytes, side.sampleRate, side.channels, side.frames);
+        const planar = Buffer.alloc(side.pcmBytes);
+        for (let i = 0; i < side.frames; ++i) {
+          for (let channel = 0; channel < side.channels; ++channel) {
+            const sample = parsed.channels[channel][i];
+            if (!Number.isFinite(sample)) throw new Error("raw first-attempt PCM contains a non-finite sample");
+            planar.writeFloatLE(sample, (channel * side.frames + i) * 4);
+          }
+        }
+        if (sha256(planar) !== side.planarPcmSha256) throw new Error("planar PCM SHA-256 differs from retained descriptor");
+      } catch (error) {
+        add("known first-attempt PCM WAV is missing or invalid for " + failure.item + " " + role + ": " + error.message);
+        continue;
+      }
+      sides.push(side);
+    }
+    if (sides.length === 2 && (sides[0].frames !== sides[1].frames || sides[0].sampleRate !== sides[1].sampleRate || sides[0].channels !== sides[1].channels))
+      add("known source/min first-attempt PCM WAV dimensions differ for " + failure.item);
+  }
+  return problems;
 }
 
 function readFloatStereoWav(file, expectedSampleRate, expectedFrames) {
@@ -1162,7 +1373,8 @@ function validateFullMixCase(engine, browserVersion, platform, currentBundle, re
     problems.push(where + " fixture setup provenance is missing or mismatched");
 }
 
-function validateCases(engine, rel, resultFile, actual, expected, mode, problems) {
+function validateCases(engine, rel, resultFile, actual, expected, mode, problems,
+  { acceptKnownFailures = false, acceptedByCase = new Map(), expectedSeed = MATRIX.seed } = {}) {
   if (!Array.isArray(actual)) {
     problems.push(rel + ": " + engine + " cases must be an array");
     return;
@@ -1189,23 +1401,41 @@ function validateCases(engine, rel, resultFile, actual, expected, mode, problems
     if (typeof c.seconds !== "number" || !Number.isFinite(c.seconds) || c.seconds < 0)
       problems.push(where + " seconds must be a finite non-negative number");
     const statuses = want.kind === "assert" ? ["pass"] : ["pass", "observed"];
-    if (!statuses.includes(c.status)) problems.push(where + " has invalid status " + String(c.status));
+    let bufferProblems = [], rawArtifactProblems = [], classification = null;
+    if (want.spec === "render") {
+      const observations = c.observations && typeof c.observations === "object" ? c.observations : {};
+      bufferProblems = renderBufferShaProblems(c, observations[RENDER_BUFFER_SHA_OBSERVATION], engine + " " + c.id,
+        { expectedSeed, requireSaved: true });
+      rawArtifactProblems = generatedBufferArtifactProblems(engine, rel, resultFile, c, want, []);
+      if (rawArtifactProblems.length) problems.push(...rawArtifactProblems);
+    }
+    if (acceptKnownFailures && mode === "core" && want.kind === "assert" && c.status === "fail") {
+      const evidence = inspectKnownFailure(engine, c, want, { seed: expectedSeed, resultFile, rel, rawBufferProblems: rawArtifactProblems });
+      classification = evidence.classification;
+      const extraRawProblems = evidence.rawBufferProblems.filter((item) => !rawArtifactProblems.includes(item));
+      if (extraRawProblems.length) problems.push(...extraRawProblems);
+      if (classification) acceptedByCase.set(engine + "/" + c.id, classification);
+    }
+    if (!statuses.includes(c.status) && !(classification && c.status === "fail"))
+      problems.push(where + " has invalid status " + String(c.status));
     if (!Array.isArray(c.checks)) problems.push(where + " checks must be an array");
     else {
       if (want.kind === "assert" && !c.checks.length) problems.push(where + " has no asserted checks");
       for (const [i, check] of c.checks.entries()) {
         if (!check || typeof check.name !== "string" || typeof check.ok !== "boolean" || typeof check.detail !== "string")
           problems.push(where + " check " + i + " is malformed");
-        else if (!check.ok) problems.push(where + " failed check: " + check.name);
+        else if (!check.ok && !(classification && classification.allowedCheckNames.has(check.name)))
+          problems.push(where + " failed check: " + check.name);
       }
     }
     if (!c.observations || typeof c.observations !== "object" || Array.isArray(c.observations))
       problems.push(where + " observations must be an object");
     if (want.spec === "render") {
-      const observations = c.observations && typeof c.observations === "object" ? c.observations : {};
-      problems.push(...renderBufferShaProblems(c, observations[RENDER_BUFFER_SHA_OBSERVATION], engine + " " + c.id));
-      generatedBufferArtifactProblems(engine, rel, resultFile, c, want, problems);
-      const m = observations.measurements;
+      const allowedBufferProblems = classification && classification.allowedBufferProblems || [];
+      for (const problem of bufferProblems)
+        if (!allowedBufferProblems.includes(problem)) problems.push(problem);
+      const projected = classification ? knownFailurePolicy.projectNoisyMeasurements(c, classification) : c;
+      const m = projected && projected.observations && projected.observations.measurements;
       const groups = ["gm-programs-0-31", "gm-programs-32-63", "gm-programs-64-95", "gm-programs-96-127", "gm-drums"];
       if (!m || typeof m !== "object" || Array.isArray(m)) problems.push(where + " is missing render measurements");
       else {
@@ -1252,6 +1482,7 @@ function merge(o) {
   try { expectedBuilds = buildSha256(); } catch (e) { problems.push("cannot identify current source/min builds: " + e.message); }
   try { expectedBrowserToolchain = resolveBrowserToolchain(); } catch (e) { problems.push("cannot independently resolve current browser toolchain: " + e.message); }
   const all = {};
+  const acceptedByCase = new Map();
   const shards = [], expectedPaths = expectedResultPaths(o.mode), foundPaths = new Map(), seenCases = new Map();
   const versions = {}, platforms = {};
   for (const file of files) {
@@ -1296,7 +1527,7 @@ function merge(o) {
           problems.push(rel + ": declared selection does not match the required shard configuration");
       }
     }
-    const engineKeys = Object.keys(data).filter((key) => key !== "matrixRun" && key !== "crossEngine");
+    const engineKeys = Object.keys(data).filter((key) => !["matrixRun", "crossEngine", "knownFailureCrossEngine", "knownFailureSummary"].includes(key));
     if (engineKeys.length !== 1) {
       problems.push(rel + ": expected exactly one engine result, found " + engineKeys.join(", "));
       continue;
@@ -1317,7 +1548,8 @@ function merge(o) {
     }
     const expectedSpecs = expectedPath ? expectedPath.specs : [];
     const manifest = caseManifest(reportEngine, expectedSpecs);
-    validateCases(reportEngine, rel, file, r && r.cases, manifest, o.mode, problems);
+    validateCases(reportEngine, rel, file, r && r.cases, manifest, o.mode, problems,
+      { acceptKnownFailures: o.acceptKnownFailures, acceptedByCase, expectedSeed: MATRIX.seed });
     if (Array.isArray(r.cases)) for (const c of r.cases) if (c && c.spec === "full-mix" && typeof c.id === "string")
       validateFullMixCase(reportEngine, r.version, r.platform, currentBundle, rel, file, c, FULL_MIX_CASES.get(c.id), problems);
     if (typeof r.version !== "string" || !r.version) problems.push(rel + ": " + reportEngine + " did not launch: " + String(r.launchError || "no browser version").split("\n")[0]);
@@ -1357,11 +1589,13 @@ function merge(o) {
     if (!all[engine]) problems.push(engine + ": no valid shard results");
     else if (!all[engine].cases.length) problems.push(engine + ": no cases were reported");
   }
-  const cross = crossEngine(all, o.mode, { expectedSeed: MATRIX.seed, requireSaved: true });
+  const rawCross = crossEngine(all, o.mode, { expectedSeed: MATRIX.seed, requireSaved: true });
+  const cross = crossEngine(projectAcceptedKnownCases(all, acceptedByCase), o.mode, { expectedSeed: MATRIX.seed, requireSaved: true });
   for (const c of cross) if (!c.ok) problems.push("cross-engine: " + c.name + " (" + c.detail + ")");
   const declared = Object.keys(MATRIX.specs);
-  const view = { mode: o.mode, specs: selectedSpecs(o), engines: null, overrides: {}, seed: MATRIX.seed };
-  summarize(all, view);
+  const view = { mode: o.mode, specs: selectedSpecs(o), engines: null, overrides: {}, seed: MATRIX.seed,
+    acceptKnownFailures: o.acceptKnownFailures };
+  summarize(all, view, acceptedByCase);
   console.log("\n== Shards (case time; each job also spends ~1 min on setup and launches)");
   for (const x of shards) console.log("  " + (x.engine + " " + x.shard).padEnd(16) + Math.round(x.seconds).toString().padStart(5) + " s  " + x.specs.join(", ") + "  (" + x.file + ")");
   console.log("\n== Measured seconds per spec (sum of case times) vs declared in tests/browser/matrix.js");
@@ -1373,8 +1607,14 @@ function merge(o) {
   }
   console.log("\n== Cross-engine comparison (merged shards)");
   for (const c of cross) console.log("  " + (c.ok ? "ok  " : "FAIL") + " " + c.name + " (" + c.detail + ")");
-  const status = problems.length ? "FAIL (" + problems.length + " problems)" : "PASS (" + Object.values(all).reduce((a, r) => a + r.cases.length, 0) + " cases, " + files.length + " result files)";
-  stepSummary(all, cross, view, status);
+  for (const c of rawCross) if (!c.ok && cross.some((current) => current.name === c.name && current.ok))
+    console.log("WARN: raw cross-engine failure retained; temporary validated known-failure view passes: " + c.name + " (" + c.detail + ")");
+  for (const [key, classification] of acceptedByCase)
+    console.log("WARN: accepted known failure; raw checks and case status remain failed: " + key + " (" + classification.failures.map((failure) => failure.signature).join(", ") + ")");
+  const status = problems.length ? "FAIL (" + problems.length + " problems)" : acceptedByCase.size
+    ? "PASS WITH ACCEPTED KNOWN FAILURES (" + acceptedByCase.size + " accepted; raw case failures retained)"
+    : "PASS (" + Object.values(all).reduce((a, r) => a + r.cases.length, 0) + " cases, " + files.length + " result files)";
+  stepSummary(all, cross, view, status, acceptedByCase, rawCross);
   if (process.env.GITHUB_STEP_SUMMARY) {
     const lines = ["", "| engine | shard | case seconds | specs |", "| --- | --- | ---: | --- |",
       ...shards.map((x) => "| " + x.engine + " | " + x.shard + " | " + Math.round(x.seconds) + " | " + x.specs.join(", ") + " |"),
@@ -1388,7 +1628,9 @@ function merge(o) {
     console.log("FAIL: browser matrix shards: " + problems.length + " problems in " + files.length + " result files");
     return 1;
   }
-  console.log("PASS: browser matrix shards: every declared spec ran once per engine (" + MATRIX.engines.join(", ") + ") and every case passed");
+  console.log(acceptedByCase.size
+    ? "PASS WITH ACCEPTED KNOWN FAILURES: browser matrix shards: every declared spec ran once per engine (" + MATRIX.engines.join(", ") + "); " + acceptedByCase.size + " accepted; raw case failures retained"
+    : "PASS: browser matrix shards: every declared spec ran once per engine (" + MATRIX.engines.join(", ") + ") and every case passed");
   return 0;
 }
 
@@ -1474,5 +1716,8 @@ module.exports = {
   crossEngine,
   renderBufferShaProblems,
   generatedBufferArtifactProblems,
+  assessKnownFailures,
+  inspectKnownFailure,
+  projectAcceptedKnownCases,
   merge,
 };

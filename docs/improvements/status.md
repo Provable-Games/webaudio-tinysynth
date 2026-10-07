@@ -2,6 +2,34 @@
 
 Supervisor-owned. **On 2026-10-06 supervision passed to a GPT-6.1 Sol supervisor: start with [HANDOVER.md](HANDOVER.md).** After a context reset, read this file, then [contracts.md](contracts.md), then the newest entries of [decisions.md](decisions.md).
 
+## Current policy checkpoint (2026-10-07, D-043)
+
+The user authorized making the documented known failures nonblocking for
+ordinary PR CI while keeping their tests, raw failed verdicts and retained
+first captures. PR #95 adds the narrow exceptions; it is not merged. Unknown failures and artifact/provenance corruption remain blocking.
+Known-defect diagnosis and a dedicated lab are deferred; #91 and the #79
+producer investigation stay unresolved and open.
+
+On signed head `346968e`, the completed x64 Browser Matrix run `37553984962`
+passed 339/342 core cases. Firefox and WebKit q0/44.1 kHz min reported mono
+convBuf descriptors despite valid stereo captures; WebKit q0/48 kHz GM127
+had a first PCM mismatch with a retained 128-sample zero interval. ARM is not
+necessary for either failure. Main CI `37553984882` passed 1,052 unit tests,
+236 Node tests and all three regressions, plus lint/build/smoke. Claude review
+failed before a verdict; that service error is separate from the tests.
+
+Strict manual full-mix results, including historical peak overshoot and
+incomplete references, retain their actual verdicts. This policy does not
+claim production or physical-device qualification. #68 timing adoption,
+Casey's final inputs/settings and the remaining P1 release work continue.
+
+The D-043 patch passed all 242 Node tests in 17 files. The six focused
+policy controls also passed after supervisor review, along with lint and
+workflow validation. Read-only checks against all 342 retained x64 core
+cases and the historical short-note failure accepted only the documented
+failures and preserved their raw verdicts. Fresh hosted CI is required for
+the published patch; historical browser failures are not relabeled as passes.
+
 ## After every merge into improve/integration (supervisor checklist, D-040)
 
 Do these in order, as soon as a merge is seen. Fetch first: the user merges on GitHub.

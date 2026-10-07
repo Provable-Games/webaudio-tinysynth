@@ -32,6 +32,9 @@ const renderSpec = require("../browser/specs/render");
 const gestureSpec = require("../browser/specs/gesture");
 const { SCENARIOS } = require("../browser/lib/scenarios");
 const testAnalysis = require("../browser/lib/analysis");
+const knownFailurePolicy = require("../browser/lib/known-failures");
+const FIRST_ATTEMPT = require("../browser/lib/first-attempt");
+const { tolerances } = require("../browser/tolerances");
 const float32Digest = require("../browser/lib/float32-digest");
 const { SEED_EXPECTED } = require("../browser/specs/seed-expected");
 const browserToolchain = require("../../scripts/browser-toolchain");
@@ -849,7 +852,7 @@ function result(engine, index, step, specs, mode = "core") {
 }
 
 /* Results directory laid out exactly as actions/download-artifact produces it. */
-function merged(change, expectedReferenceBytes = TEST_REFERENCE_BYTES, afterWrite = null, reportMode = "core", mergeMode = reportMode, childEnv = {}) {
+function merged(change, expectedReferenceBytes = TEST_REFERENCE_BYTES, afterWrite = null, reportMode = "core", mergeMode = reportMode, childEnv = {}, acceptKnownFailures = false) {
   ATTACHMENTS.clear();
   fs.writeFileSync(TEST_REFERENCE_FILE, expectedReferenceBytes);
   delete require.cache[require.resolve("../browser/specs/full-mix")];
@@ -881,7 +884,9 @@ function merged(change, expectedReferenceBytes = TEST_REFERENCE_BYTES, afterWrit
     fs.writeFileSync(file, data);
   }
   if (afterWrite) afterWrite(dir);
-  const r = node(["--mode=" + mergeMode, "--merge=" + dir, "--expected-context=" + contextFile], childEnv);
+  const args = ["--mode=" + mergeMode, "--merge=" + dir, "--expected-context=" + contextFile];
+  if (acceptKnownFailures) args.unshift("--accept-known-failures");
+  const r = node(args, childEnv);
   fs.rmSync(dir, { recursive: true, force: true });
   return r;
 }
@@ -920,6 +925,106 @@ async function withFullMixReference(file, callback) {
 
 const first = (files, engine, spec) => Object.entries(files).find(([, data]) => data[engine] && data[engine].cases.some((c) => c.spec === spec));
 
+function mutateKnownRenderFailure(files, { descriptor = true } = {}) {
+  const found = Object.entries(files).find(([, report]) => report.webkit &&
+    report.webkit.cases.some((c) => c.id === "render q0 44100"));
+  assert.ok(found, "synthetic WebKit q0/44.1 kHz render report exists");
+  const [rel, report] = found;
+  const c = report.webkit.cases.find((item) => item.id === "render q0 44100");
+  const group = knownFailurePolicy.RENDER_GROUP;
+  const tolerance = tolerances("webkit").sameEngineSample;
+  const reason = "max |diff| 0.001 at sample 14112 (tolerance " + String(tolerance) + ")";
+  const item = group + " program 121 source/min";
+  const root = rel.split("/")[0];
+  const sampleRate = c.dims.sampleRate;
+  const frames = Math.floor(1.6 * sampleRate);
+  const samples = Float32Array.from({ length: frames }, (_, i) => i % 2 ? 0.125 : -0.125);
+  const sourcePlanar = Buffer.from(samples.buffer, samples.byteOffset, samples.byteLength);
+  const minSamples = Float32Array.from(samples);
+  minSamples[14112] += 0.001;
+  const minPlanar = Buffer.from(minSamples.buffer, minSamples.byteOffset, minSamples.byteLength);
+  const wavs = { a: testAnalysis.wav([samples], sampleRate), b: testAnalysis.wav([minSamples], sampleRate) };
+  const pairBase = "first-attempt-pcm/q" + c.dims.quality + "-" + sampleRate + "/pair-001";
+  const sides = {};
+  for (const [key, role, suffix] of [["a", "source", "first-a.wav"], ["b", "min", "first-b.wav"]]) {
+    const file = pairBase + "-" + suffix;
+    ATTACHMENTS.set(path.posix.join(root, "browser-matrix", "webkit", file), wavs[key]);
+    const planar = key === "a" ? sourcePlanar : minPlanar;
+    sides[key] = {
+      channelFrames: [frames], channels: 1, frames, path: file, pcmBytes: planar.length,
+      planarPcmSha256: stableSha256(planar), role, sampleRate, saved: true,
+      wavBytes: wavs[key].length, wavSha256: stableSha256(wavs[key]),
+    };
+  }
+  const pcmRetention = {
+    schemaVersion: 1, pairIndex: 1, label: item,
+    planarPcmEncoding: "IEEE-754 binary32 little-endian; planar channel order",
+    roles: { a: "source", b: "min" }, saved: true, status: "saved", a: sides.a, b: sides.b,
+  };
+  const outcome = {
+    item,
+    firstAttempt: { reasons: [reason], pcmRetention },
+    outcome: FIRST_ATTEMPT.OUTCOMES.INTERMITTENT,
+    attempts: 2,
+    diagnostics: [{ attempt: 2, ok: true, reasons: [] }],
+  };
+  const summary = {
+    items: 268, firstAttemptFailures: 1, intermittent: 1, reproduced: 0, notRerendered: 0,
+    diagnosticRenderAttempts: 1, rendersIncludingFirstAttempts: 269,
+    diagnosticBudget: { total: 6, unspent: 5 }, failures: [outcome],
+  };
+  c.observations[knownFailurePolicy.FAILURE_OBSERVATION] = summary;
+  const measurements = c.observations.measurements;
+  const row = measurements[group];
+  delete measurements[group];
+  measurements[group + "/source"] = structuredClone(row);
+  measurements[group + "/min"] = structuredClone(row);
+  const groupCheck = group + ": min renders the same PCM as source (max |diff| <= " + String(tolerance) + ")";
+  c.checks = [
+    { name: knownFailurePolicy.BUFFER_CHECK, ok: false, detail: "synthetic final convBuf channel metadata contradiction" },
+    { name: knownFailurePolicy.SEED_CHECK, ok: false, detail: "generated-buffer integrity prerequisite failed" },
+    { name: groupCheck, ok: false,
+      detail: item + ": " + reason + " (first attempt; " + FIRST_ATTEMPT.SHORT[outcome.outcome] + ")" },
+  ];
+  c.status = "fail";
+  if (descriptor) {
+    c.observations[knownFailurePolicy.BUFFER_OBSERVATION].builds.source.convBuf.channels = 1;
+  } else {
+    c.checks = c.checks.filter((check) => check.name !== knownFailurePolicy.BUFFER_CHECK && check.name !== knownFailurePolicy.SEED_CHECK);
+  }
+  return {
+    report: c, resultPath: rel,
+    wavPaths: [sides.a.path, sides.b.path].map((file) => path.posix.join(root, "browser-matrix", "webkit", file)),
+    attachmentPaths: [sides.a.path, sides.b.path].map((file) => path.posix.join(root, "browser-matrix", "webkit", file)),
+  };
+}
+
+function mutateKnownShortNotesFailure(files, item = "q1 126") {
+  const found = Object.entries(files).find(([, report]) => report.webkit &&
+    report.webkit.cases.some((c) => c.id === "short-notes completed min"));
+  assert.ok(found, "synthetic WebKit completed-min report exists");
+  const [rel, report] = found;
+  const c = report.webkit.cases.find((row) => row.id === "short-notes completed min");
+  const tolerance = tolerances("webkit").sameEngineSample;
+  const reason = "max |diff| 0.001 > " + String(tolerance);
+  const failure = {
+    item,
+    firstAttempt: { reasons: [reason] },
+    outcome: FIRST_ATTEMPT.OUTCOMES.INTERMITTENT,
+    attempts: 2,
+    diagnostics: [{ attempt: 2, ok: true, reasons: [] }],
+  };
+  c.observations[knownFailurePolicy.SHORT_FAILURE_OBSERVATION] = {
+    items: 128, firstAttemptFailures: 1, intermittent: 1, reproduced: 0, notRerendered: 0,
+    diagnosticRenderAttempts: 1, rendersIncludingFirstAttempts: 129,
+    diagnosticBudget: { total: 6, unspent: 5 }, failures: [failure],
+  };
+  c.status = "fail";
+  c.checks = [{ name: knownFailurePolicy.SHORT_CHECK, ok: false,
+    detail: item + ": " + reason + " [" + FIRST_ATTEMPT.SHORT[failure.outcome] + "]" }];
+  return { report: c, resultPath: rel };
+}
+
 test("core merge preserves the existing assert matrix without requiring unfinished full-mix references", () => {
   const partial = JSON.parse(TEST_REFERENCE_BYTES.toString("utf8"));
   delete partial.engines.webkit["ws-mid-default"][48000];
@@ -932,6 +1037,125 @@ test("core merge preserves the existing assert matrix without requiring unfinish
   assert.match(r.out, /GM per-slot energy spread/);
   assert.match(r.out, /PASS: browser matrix shards/);
   assert.equal([...ATTACHMENTS.keys()].some((key) => key.includes("chromium/full-mix/")), false);
+});
+
+test("opt-in core merge accepts the exact combined descriptor and first-GM failure while keeping raw verdicts", () => {
+  const strict = merged((files) => { mutateKnownRenderFailure(files); });
+  assert.equal(strict.status, 1, strict.out);
+
+  let rawCase;
+  const accepted = merged((files) => { rawCase = mutateKnownRenderFailure(files).report; },
+    TEST_REFERENCE_BYTES, null, "core", "core", {}, true);
+  assert.equal(accepted.status, 0, accepted.out);
+  assert.match(accepted.out, /PASS WITH ACCEPTED KNOWN FAILURES/);
+  assert.match(accepted.out, /known failures: documented exceptions enabled for ordinary core mode/);
+  assert.match(accepted.out, /raw case failures retained/);
+  assert.match(accepted.out, /WARN: accepted known failure; raw checks and case status remain failed: webkit\/render q0 44100/);
+  assert.equal(rawCase.status, "fail");
+  assert.equal(rawCase.checks.filter((check) => check.ok === false).length, 3);
+
+  const unknown = merged((files) => {
+    const fixture = mutateKnownRenderFailure(files);
+    fixture.report.checks.push({ name: "unrecognized synthetic failure", ok: false, detail: "must remain blocking" });
+  }, TEST_REFERENCE_BYTES, null, "core", "core", {}, true);
+  assert.equal(unknown.status, 1, unknown.out);
+  assert.match(unknown.out, /unrecognized synthetic failure|remains a blocking raw failure/);
+});
+
+test("known render exceptions reject malformed or empty intermittent diagnostics", () => {
+  for (const mutateSummary of [
+    (summary) => {
+      const failure = summary.failures[0];
+      failure.attempts = 1;
+      failure.diagnostics = [];
+      summary.diagnosticRenderAttempts = 0;
+      summary.rendersIncludingFirstAttempts = summary.items;
+    },
+    (summary) => { summary.failures[0].diagnostics[0].reasons = ["contradicts ok=true"]; },
+  ]) {
+    const rejected = merged((files) => {
+      const fixture = mutateKnownRenderFailure(files);
+      mutateSummary(fixture.report.observations[knownFailurePolicy.FAILURE_OBSERVATION]);
+    }, TEST_REFERENCE_BYTES, null, "core", "core", {}, true);
+    assert.equal(rejected.status, 1, rejected.out);
+    assert.match(rejected.out, /failed check: .*same PCM as source|remains a blocking raw failure/);
+  }
+});
+
+test("known render exceptions require present, hash-matching retained first-attempt WAVs", () => {
+  for (const corruption of ["missing", "tampered"]) {
+    let wavPath;
+    const rejected = merged((files) => { wavPath = mutateKnownRenderFailure(files).wavPaths[0]; },
+      TEST_REFERENCE_BYTES,
+      (dir) => {
+        const file = path.join(dir, wavPath);
+        if (corruption === "missing") fs.rmSync(file);
+        else {
+          const bytes = fs.readFileSync(file);
+          bytes[44] ^= 1;
+          fs.writeFileSync(file, bytes);
+        }
+      }, "core", "core", {}, true);
+    assert.equal(rejected.status, 1, rejected.out);
+    assert.match(rejected.out, /known first-attempt PCM WAV is missing or invalid/);
+  }
+});
+
+test("short-notes q1/program126 is accepted without a nonexistent PCM retention schema", () => {
+  let rawCase;
+  const accepted = merged((files) => { rawCase = mutateKnownShortNotesFailure(files).report; },
+    TEST_REFERENCE_BYTES, null, "core", "core", {}, true);
+  assert.equal(accepted.status, 0, accepted.out);
+  assert.match(accepted.out, /PASS WITH ACCEPTED KNOWN FAILURES/);
+  assert.equal(rawCase.status, "fail");
+  assert.equal(rawCase.checks[0].ok, false);
+
+  const unlisted = merged((files) => { mutateKnownShortNotesFailure(files, "q1 127"); },
+    TEST_REFERENCE_BYTES, null, "core", "core", {}, true);
+  assert.equal(unlisted.status, 1, unlisted.out);
+  assert.match(unlisted.out, /failed check: every program with an attack/);
+});
+
+test("known-failure acceptance still blocks corrupt Float32 sidecars, stale provenance and non-finite retained PCM", () => {
+  const corruptSidecar = merged((files) => {
+    const fixture = mutateKnownRenderFailure(files);
+    const row = fixture.report.observations[knownFailurePolicy.BUFFER_OBSERVATION].builds.source.n0;
+    const attachment = path.posix.join(fixture.resultPath.split("/")[0], "browser-matrix", "webkit", row.artifact.path);
+    const bytes = Buffer.from(ATTACHMENTS.get(attachment));
+    bytes[0] ^= 1;
+    ATTACHMENTS.set(attachment, bytes);
+  }, TEST_REFERENCE_BYTES, null, "core", "core", {}, true);
+  assert.equal(corruptSidecar.status, 1, corruptSidecar.out);
+  assert.match(corruptSidecar.out, /raw byte SHA-256|raw Float32 bytes differ/);
+
+  const staleProvenance = merged((files) => {
+    const fixture = mutateKnownRenderFailure(files);
+    files[fixture.resultPath].matrixRun.testedSha = "a".repeat(40);
+  }, TEST_REFERENCE_BYTES, null, "core", "core", {}, true);
+  assert.equal(staleProvenance.status, 1, staleProvenance.out);
+  assert.match(staleProvenance.out, /stale or forged testedSha/);
+
+  const nonFiniteRetainedPcm = merged((files) => {
+    const fixture = mutateKnownRenderFailure(files);
+    const retention = fixture.report.observations[knownFailurePolicy.FAILURE_OBSERVATION].failures[0].firstAttempt.pcmRetention;
+    const attachment = fixture.attachmentPaths[0];
+    const bytes = Buffer.from(ATTACHMENTS.get(attachment));
+    bytes.writeFloatLE(NaN, 44);
+    retention.a.wavSha256 = stableSha256(bytes);
+    retention.a.planarPcmSha256 = stableSha256(bytes.subarray(44));
+    ATTACHMENTS.set(attachment, bytes);
+  }, TEST_REFERENCE_BYTES, null, "core", "core", {}, true);
+  assert.equal(nonFiniteRetainedPcm.status, 1, nonFiniteRetainedPcm.out);
+  assert.match(nonFiniteRetainedPcm.out, /raw first-attempt PCM contains a non-finite sample/);
+});
+
+test("known-failure opt-in is core-only and full-mix qualification remains strict", () => {
+  assert.equal(parseArgs(["--accept-known-failures"]).acceptKnownFailures, true);
+  assert.throws(() => parseArgs(["--mode=full-mix-qualification", "--accept-known-failures"]),
+    /available only in ordinary core mode/);
+  const cli = node(["--mode=full-mix-qualification", "--accept-known-failures"]);
+  assert.equal(cli.status, 2);
+  assert.match(cli.out, /available only in ordinary core mode/);
 });
 
 test("core and qualification artifacts cannot satisfy each other's independently expected mode", () => {

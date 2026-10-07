@@ -496,3 +496,35 @@ The user said: "lets stick to only high priority issues. I want to get to a prop
 - **Frozen until after the release:** every P2 and P3 issue (#66, #67, #69–#75, #77, #81–#88), #90 (push note API), #17 (refactor) and #20 (the separate docs pass; T10 covers accuracy instead).
 - **New features need explicit user approval during the freeze.** The supervisor flags any scope creep.
 - **#65 (T13.1) is accepted** (`72cede6`, merged by the user), and #78 is closed. It changed tests only, so no NOTICE entry.
+
+
+## D-043 Retain known failures without blocking ordinary CI (2026-10-07)
+
+The user chose to document the specific unresolved failures and ignore their
+blocking effect so the project can move forward: "we want to keep those tests
+as they are pointing out a failure". A dedicated diagnosis lab is deferred.
+
+- Ordinary PR CI may accept the documented generated-buffer stereo descriptor
+  contradiction and narrowly identified WebKit noisy-voice first-capture
+  mismatches. Every test still runs; original failed checks, case verdicts,
+  measurements and retained first-attempt artifacts remain visible. Accepted
+  known failures are reported separately from passing tests.
+- Unknown failed checks, missing or malformed evidence, stale provenance,
+  invalid raw buffer bytes, nonfinite samples, launch failures, timeouts and
+  cleanup failures still block. The aggregate independently rechecks the
+  known-failure scope; producer labels alone cannot waive a failure.
+- This does not change a tolerance, normalize stored descriptors, replace a
+  failed first attempt with a clean rerender, or establish a browser/runtime
+  cause. A future defect within an excepted assertion could also be
+  nonblocking until diagnosis removes that exception.
+- The historical WebKit full-mix peak overshoot remains documented and
+  deferred. The manual strict full-mix lane keeps its actual verdict;
+  incomplete references or production inputs are not certified by this
+  ordinary-CI policy.
+- Known-defect diagnosis under #91 and the associated #79 producer investigation
+  move out of the immediate release work into the deferred lab. The issues
+  remain open. Other P1 work and the D-042 feature freeze continue. Physical
+  device and production qualification retain their actual evidence state.
+- Implementation is reviewed in PR #95. The user still controls every merge,
+  release and repository administration change. No lab, new diagnostic
+  framework, ruleset change or review-gate bypass is authorized here.
