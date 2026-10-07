@@ -88,6 +88,29 @@ review-helper tests (one optional Bun check skipped). The floor uses the
 observed 18/275 count. Saved first reports retain their hashes. Receipts are under
 `_evidence/p1-known-failures/new-scopes-20261007/`.
 
+### Autonomous CI follow-up and reference cleanup (2026-10-07)
+
+The user directed the supervisor to investigate and attempt fixes for failed
+PR CI, then log unresolved failures in GitHub and make their tests nonblocking
+without another permission round. Fresh `fa4bfc9` main CI, Review Helpers,
+Claude review and Codex review passed. All nine engine shards and three demos
+finished; only WebKit shard 3 failed, on held-source q1/program119 at 0.0700 s.
+Its `1.11e+0` relative difference is about 5,550 times the `0.0002` threshold;
+normal measured WebKit held-comparison variation is `1.7e-5`. This is not a
+small rounding excess; browser/harness/library causality remains unresolved.
+Issue #97 retains the JSON and investigation limits. Policy v4 preserves
+its exact failed comparison as nonblocking while other checks remain strict.
+Broad GM/drum test-family quarantine was rejected by automatic approval review
+and was not applied. No audio assertion, tolerance or engine source changed.
+
+The Codex cleanup-eligibility advisory was independently reproduced: a valid
+retained first WAV could remain exportable after a failed case resource cleanup.
+The offline reference exporter now rejects failed execution/cleanup assertions
+and fatal/launch-error engine state, while retaining clean missing-reference
+bootstrap eligibility. Focused controls fail before the fix and pass after it.
+Full validation passed: 1,052 unit tests in 14 files, 276 Node tests in 18 files, all three playback regressions, seven focused policy controls, lint and actionlint. The floor uses the observed 18/276 count. Saved-evidence replay accepts the three documented reports while strict mode rejects them; original bytes/hashes remain unchanged. Fresh hosted checks are required for this follow-up.
+Evidence: `_evidence/p1-known-failures/new-scopes-20261007/`.
+
 ## After every merge into improve/integration (supervisor checklist, D-040)
 
 Do these in order, as soon as a merge is seen. Fetch first: the user merges on GitHub.

@@ -5,7 +5,7 @@ const { MATRIX } = require("../matrix");
 const { tolerances } = require("../tolerances");
 const FIRST_ATTEMPT = require("./first-attempt");
 
-const POLICY_ID = "p1-a2-known-failures-v3";
+const POLICY_ID = "p1-a2-known-failures-v4";
 const BUFFER_OBSERVATION = "generated buffer SHA-256 (first reverb-enabled attempt)";
 const FAILURE_OBSERVATION = "first-attempt same-engine failures and their diagnostic re-renders (the verdict is the first attempt's; a clean re-render does not clear it)";
 const SHORT_FAILURE_OBSERVATION = "first-attempt failures and their diagnostic re-renders (the verdict is the first attempt's; a clean re-render does not clear it)";
@@ -18,6 +18,9 @@ const RENDER_NOISE = new Map([
 const RENDER_GROUP = "gm-programs-96-127";
 const DRUM_GROUP = "gm-drums";
 const SHORT_CASE = "short-notes completed min";
+const HELD_CASE = "short-notes held source";
+const HELD_FOLLOW = 0.0002;
+const HELD_CHECK = "until the note-off the short note renders as the uncut note (max |diff| <= " + HELD_FOLLOW + " of the peak)";
 const SHORT_CHECK = "every program with an attack, released after its attacks end, renders as with upstream's release (128 programs, max |diff| <= " + String(tolerances("webkit").sameEngineSample) + ")";
 
 function isRecord(value) { return !!value && typeof value === "object" && !Array.isArray(value); }
@@ -143,6 +146,21 @@ function knownNoiseFailures(engine, c) {
     return classifications;
   }
 
+  if (c.kind === "assert" && c.spec === "short-notes" && c.id === HELD_CASE &&
+      exactKeys(c.dims, ["build"]) && c.dims.build === "source") {
+    const summary = c.observations && c.observations[SHORT_FAILURE_OBSERVATION];
+    const checks = c.checks.filter((check) => check && check.ok === false && check.name === HELD_CHECK);
+    if (checks.length !== 1 || !validSummary(summary, { items: 768, minimumFailures: 1, maximumFailures: 1 })) return null;
+    const failure = summary.failures[0];
+    if (failure.item !== "q1 119 @0.0700 s") return null;
+    const match = /^differs from the uncut note before the note-off \(([0-9]+(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?) of the peak > 0\.0002\)$/i
+      .exec(failure.firstAttempt.reasons[0]);
+    if (!match || !Number.isFinite(Number(match[1])) || Number(match[1]) <= HELD_FOLLOW ||
+        checks[0].detail !== failure.item + ": " + match[1] + " [" + FIRST_ATTEMPT.SHORT[failure.outcome] + "]") return null;
+    return [{ signature: "webkit-held-source-q1-119-070-first-attempt", checkNames: [HELD_CHECK],
+      evidenceItems: [failure.item], firstAttemptFailures: summary.failures }];
+  }
+
   if (c.kind !== "assert" || c.spec !== "short-notes" || c.id !== SHORT_CASE ||
       !exactKeys(c.dims, ["build"]) || c.dims.build !== "min") return null;
   const summary = c.observations && c.observations[SHORT_FAILURE_OBSERVATION];
@@ -243,6 +261,7 @@ module.exports = {
   BUFFER_CHECK,
   SEED_CHECK,
   SHORT_CHECK,
+  HELD_CHECK,
   RENDER_GROUP,
   DRUM_GROUP,
   classifyKnownCase,

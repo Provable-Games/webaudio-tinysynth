@@ -400,6 +400,13 @@ function pairRows(report, reportDir, { env = process.env, root = path.resolve(__
       const currentBundleIdentity = toolchainMatches && sameJson(obs.browserBundle, expectedBundle) &&
         expectedBundle.engine === engine && browserToolchain.isPinnedBrowserBundle(expectedBundle, env, root) &&
         browserToolchain.matchesBrowserVersion(expectedBundle, engineReport.version);
+      // Missing-reference comparisons may bootstrap a reference; failed execution,
+      // cleanup or other assertions cannot. Cleanup is recorded after the capture.
+      const noCaseExecutionOrCleanupError = !engineReport.fatal && !engineReport.launchError &&
+        Array.isArray(c.checks) && c.status === (c.checks.some((check) => check.ok === false) ? "fail" : "pass") &&
+        c.checks.every((check) => check.ok === true || (check.ok === false && ["source", "min"].some((build) =>
+          check.name === build + " first attempt agrees with measured engine/build song and probe reference" &&
+          obs.builds[build].result === "incomplete" && obs.builds[build].referenceStatus === "incomplete")));
       const captureCheckEvidence = Object.fromEntries(["source", "min"].map((build) => {
         const capture = obs.builds[build], first = builds[build].first;
         const probes = first.metrics.probes;
@@ -415,6 +422,7 @@ function pairRows(report, reportDir, { env = process.env, root = path.resolve(__
         const reportedFaultSha256 = reportedFault === undefined ? null : hash(Buffer.from(canonical(reportedFault)));
         const checks = {
           pinnedMatrixSeed,
+          noCaseExecutionOrCleanupError,
           currentFixtureIdentity: currentFixtureIdentity(obs, fixture, engine, engineReport),
           reportedFirstMetricsMatchRecomputedWav: builds[build].firstMetricsEvidence.matchesCurrentMethodWav,
           reportedFirstSourceMinPcmComparisonMatchesRecomputed:

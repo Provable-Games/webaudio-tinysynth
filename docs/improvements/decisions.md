@@ -548,3 +548,14 @@ as they are pointing out a failure". A dedicated diagnosis lab is deferred.
   programs/drums, repeat checks and invalid evidence remain blocking. Multiple
   already-approved failures in one case are all independently validated;
   strict full-mix qualification and raw first-attempt verdicts are unchanged.
+
+- Supervisor-process clarification (2026-10-07): the user instructed the
+  supervisor to investigate failing PR CI, attempt a fix, and, if diagnosis
+  remains unresolved, log a detailed GitHub issue and make the failing test
+  nonblocking without returning for another decision. The latest retained
+  WebKit held-source q1/program119/0.0700 s comparison is documented in
+  issue #97 and accepted narrowly by policy v4. Every original assertion,
+  tolerance and first verdict remains. All other comparisons and integrity,
+  audibility, finite-output, execution and cleanup checks still block.
+  Broader GM/drum test-family quarantine was rejected by automatic approval
+  review and was not applied. The dedicated diagnosis lab remains deferred.

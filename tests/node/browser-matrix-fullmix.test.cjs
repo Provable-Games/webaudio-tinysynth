@@ -609,6 +609,32 @@ test("offline reference export re-derives first-attempt eligibility and validate
     assert.equal(reference.coverage.measuredCases.length, 1);
     assert.ok(reference.engines.chromium[baseline.fixture.id][baseline.sampleRate]);
 
+    for (const name of ["every resource the case created was closed", "every browser the case started was closed",
+      "the wedged browser was closed", "ran without an exception", "finished before the 900 s deadline"]) {
+      const failedCleanup = structuredClone(baseline.report);
+      failedCleanup.chromium.cases[0].checks.push({ name, ok: false, detail: "retained capture preceded this failure" });
+      failedCleanup.chromium.cases[0].status = "fail";
+      const failedRows = reanalyzer.pairRows(failedCleanup, temp, options);
+      assert.equal(failedRows[0].referenceExportEligible, false, name + " must prevent reference export");
+      assert.match(failedRows[0].eligibilityReasons.join(" "), /noCaseExecutionOrCleanupError/);
+    }
+    for (const field of ["fatal", "launchError"]) {
+      const stoppedEngine = structuredClone(baseline.report);
+      stoppedEngine.chromium[field] = "worker could not continue";
+      assert.equal(reanalyzer.pairRows(stoppedEngine, temp, options)[0].referenceExportEligible, false,
+        field + " must prevent reference export");
+    }
+    const missingReference = structuredClone(baseline.report);
+    for (const build of ["source", "min"])
+      missingReference.chromium.cases[0].checks.push({
+        name: build + " first attempt agrees with measured engine/build song and probe reference", ok: false,
+        detail: "incomplete-no-reference",
+      });
+    missingReference.chromium.cases[0].status = "fail";
+    missingReference.chromium.failure = "exited with status 1";
+    assert.equal(reanalyzer.pairRows(missingReference, temp, options)[0].referenceExportEligible, true,
+      "missing reference comparisons still allow a clean first capture to bootstrap the reference");
+
     const referenceIdentity = {
       scope: "fixture", fixtureId: baseline.fixture.id, profileKind: baseline.fixture.profileKind, quality: 1,
       engine: "chromium", browserVersion: rows[0].browserVersion, platform: rows[0].platform,

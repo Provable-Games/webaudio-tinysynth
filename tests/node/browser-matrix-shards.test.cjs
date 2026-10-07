@@ -1271,6 +1271,55 @@ test("short-note q1/program120 keeps raw failure; approved 120/126 combinations 
   }
 });
 
+test("held-source q1/program119 at 0.07 s remains failed while its exact comparison is nonblocking", () => {
+  const mutateHeld = (files) => {
+    const [, report] = Object.entries(files).find(([, row]) => row.webkit &&
+      row.webkit.cases.some((c) => c.id === "short-notes held source"));
+    const c = report.webkit.cases.find((row) => row.id === "short-notes held source");
+    c.status = "fail";
+    c.checks = [{ name: knownFailurePolicy.HELD_CHECK, ok: false,
+      detail: "q1 119 @0.0700 s: 1.11e+0 [diagnostic: a re-render was clean]" }];
+    c.observations[knownFailurePolicy.SHORT_FAILURE_OBSERVATION] = {
+      firstAttemptRenders: 1024, diagnosticRenders: 2, items: 768, firstAttemptFailures: 1,
+      intermittent: 1, reproduced: 0, notRerendered: 0, diagnosticRenderAttempts: 1,
+      rendersIncludingFirstAttempts: 769, diagnosticBudget: { total: 6, unspent: 5 },
+      failures: [{ item: "q1 119 @0.0700 s", firstAttempt: {
+        reasons: ["differs from the uncut note before the note-off (1.11e+0 of the peak > 0.0002)"],
+      }, outcome: FIRST_ATTEMPT.OUTCOMES.INTERMITTENT, attempts: 2,
+      diagnostics: [{ attempt: 2, ok: true, reasons: [] }] }],
+    };
+    return c;
+  };
+  const strict = merged((files) => { mutateHeld(files); });
+  assert.equal(strict.status, 1, strict.out);
+  let rawCase, rawJson;
+  const accepted = merged((files) => { rawCase = mutateHeld(files); rawJson = JSON.stringify(rawCase); },
+    TEST_REFERENCE_BYTES, null, "core", "core", {}, true);
+  assert.equal(accepted.status, 0, accepted.out);
+  assert.match(accepted.out, /webkit-held-source-q1-119-070-first-attempt/);
+  assert.equal(JSON.stringify(rawCase), rawJson);
+  assert.equal(rawCase.status, "fail");
+  assert.equal(rawCase.checks[0].ok, false);
+  for (const mutate of [
+    (c) => { c.id = "short-notes held min"; c.dims.build = "min"; },
+    (c) => { c.observations[knownFailurePolicy.SHORT_FAILURE_OBSERVATION].failures[0].item = "q1 120 @0.0700 s"; },
+    (c) => { c.observations[knownFailurePolicy.SHORT_FAILURE_OBSERVATION].failures[0].item = "q1 119 @0.0250 s"; },
+    (c) => { c.observations[knownFailurePolicy.SHORT_FAILURE_OBSERVATION].failures[0].item = "q0 119 @0.0700 s"; },
+    (c) => { c.observations[knownFailurePolicy.SHORT_FAILURE_OBSERVATION].items = 128; },
+    (c) => { c.observations[knownFailurePolicy.SHORT_FAILURE_OBSERVATION].failures[0].firstAttempt.reasons[0] = "non-finite samples"; },
+    (c) => { c.observations[knownFailurePolicy.SHORT_FAILURE_OBSERVATION].failures[0].firstAttempt.reasons.push("silent while held"); },
+    (c) => { c.checks.push({ name: "every held render is finite (no NaN or Infinity)", ok: false }); },
+    (c) => { c.checks.push({ name: "every program sounds while held", ok: false }); },
+    (c) => { c.checks.push({ name: "every browser the case started was closed", ok: false }); },
+    (c) => { c.checks.push({ name: "no page errors", ok: false }); },
+  ]) {
+    const c = structuredClone(rawCase); mutate(c);
+    assert.equal(knownFailurePolicy.classifyKnownCase("webkit", c), null);
+  }
+  assert.equal(knownFailurePolicy.classifyKnownCase("firefox", rawCase), null);
+  assert.equal(knownFailurePolicy.classifyKnownCase("chromium", rawCase), null);
+});
+
 test("known-failure acceptance still blocks corrupt Float32 sidecars, stale provenance and non-finite retained PCM", () => {
   const corruptSidecar = merged((files) => {
     const fixture = mutateKnownRenderFailure(files);
