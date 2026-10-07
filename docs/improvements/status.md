@@ -24,20 +24,43 @@ that service failure remains separate and is not approval.
 The user subsequently approved deferring exactly that drum-54 scope. The
 current PR follow-up preserves both assertions and first captures, checks
 comparison roles and kept-source identity, and documents the signature in
-[known-failures.md](known-failures.md). All 243 Node tests in 17 files and seven focused controls pass; the
+[known-failures.md](known-failures.md). At the drum-54 follow-up, all 243 Node tests in 17 files and seven focused controls passed; the
 test floor uses those observed counts. Lint and workflow validation pass. A
 read-only replay of all 342 saved `1db92fa` core cases accepts exactly four
 known failed cases, preserves raw reports/hashes and three raw cross-engine
 failures, and has zero failures in its separate validated comparison view.
-This replay does not relabel the historical run or qualify audio. Fresh hosted CI is required for the published follow-up; receipts are under `_evidence/p1-known-failures/`.
+This replay does not relabel the historical run or qualify audio. On signed head `7d2d0a5`, main CI `37564223651`, Browser Matrix `37564223539`, Codex review `37564223592` and Review Helpers passed. Claude review `37564223538` failed before a verdict; receipts are under `_evidence/p1-known-failures/`.
 
 [Issue #96](https://github.com/Provable-Games/webaudio-tinysynth/issues/96) is the investigation handoff with exact failing
 tests, runs, artifacts, WAV hashes, prior analysis, unknowns and concurrency
 rules. The user plans to assign its new investigator. The dedicated lab is
 deferred; #91 and the #79 producer investigation remain unresolved. Both
 metadata and a first PCM mismatch recurred on x64: ARM is not necessary,
-but no cause has been isolated. #68 timing adoption, Casey's final approved
-score/settings/bank pairs and other P1 work continue under the D-042 freeze.
+but no cause has been isolated. #68 timing adoption and other P1 work continue under the D-042 freeze.
+
+### Launch sequence, step 2 (2026-10-07)
+
+The user confirmed step 1 complete: Casey's launch tracks, banks, settings
+and target devices are settled and their checks passed. This is the user's
+attestation; it does not substitute for the later formal release qualification
+and consumer certificate artifacts.
+
+PR #95 incorporates integration `e99c310` (user-merged #92). Its package-floor
+and contracts conflicts retain both L-18 and L-19; the combined suite passes
+1,052 unit tests in 14 files, 272 Node tests in 18 files and all three playback
+regressions. The Node floor uses those observed counts. Lint, actionlint and
+79 review-helper tests pass (one optional Bun check skipped). No engine source,
+generated distribution, audio assertion, tolerance or known-failure scope
+changed. Strict full-mix qualification remains separate from ordinary CI.
+
+The Claude log at `7d2d0a5` ends in 385 ms, one turn, zero cost and no model
+usage, with `is_error: true`. Inspection of the pinned action shows it throws
+before exporting the session ID on that failure; the session-validation error
+is secondary. The underlying error text was hidden by the action, so no
+credential, model-access or quota diagnosis is claimed. The updated workflow
+emits only fixed failure categories on the first runtime failure; it preserves
+the failed review gate and publishes no transcript. Fresh hosted checks are
+required for this updated head. Logs: `_evidence/p1-pr95-step2/`.
 
 ## After every merge into improve/integration (supervisor checklist, D-040)
 
