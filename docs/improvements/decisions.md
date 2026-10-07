@@ -528,3 +528,13 @@ as they are pointing out a failure". A dedicated diagnosis lab is deferred.
 - Implementation is reviewed in PR #95. The user still controls every merge,
   release and repository administration change. No lab, new diagnostic
   framework, ruleset change or review-gate bypass is authorized here.
+
+- Follow-up authorization: the user approved deferring exactly the newly
+  observed WebKit `render q1 48000` drum-54 first source/min and
+  fresh-repeat/source failures. Their assertions, tolerance, failed raw
+  verdicts and original WAV pairs are preserved; the extension requires
+  valid roles, recomputed comparisons and consistent kept-source identity.
+  Other drums, qualities, sample rates and checks remain outside the scope.
+  [Issue #96](https://github.com/Provable-Games/webaudio-tinysynth/issues/96) records the complete deferred investigation
+  handoff. The user will assign its investigator; no new lab campaign is
+  launched by the CI-policy follow-up.

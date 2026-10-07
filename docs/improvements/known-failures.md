@@ -4,19 +4,25 @@ The user authorized D-043: keep these tests and their original failed
 results, but allow the documented exceptions to be nonblocking in ordinary
 PR CI. These defects remain unresolved. Tests still execute with their
 existing tolerances; diagnostic rerenders cannot replace the first attempt.
-A dedicated diagnosis lab is deferred.
+A dedicated diagnosis lab is deferred. [Issue #96](https://github.com/Provable-Games/webaudio-tinysynth/issues/96) is the
+starting brief for the next investigator, with exact tests, run/artifact
+locations, capture hashes, prior analysis and remaining unknowns.
 
 Ordinary core CI explicitly uses `--accept-known-failures`. Local commands
 default to strict behavior; accepting a known render failure requires `--out`
 and valid retained Float32 sidecars and first-failure WAVs when applicable.
-For GM failures the gate also recomputes the original WAV pair comparison
-and requires the reported difference and first-divergence index to match.
+For GM and drum failures the gate also recomputes each original WAV pair
+comparison and requires the reported difference and first-divergence index
+to match. Drum repeat roles must be `repeat` and `kept source`; the kept
+source must match the first source capture. Both original pairs are
+required for the drum-54 exception.
 The strict full-mix qualification mode rejects this option.
 
 | Failure | Accepted ordinary-CI scope | Tracking |
 | --- | --- | --- |
 | Stereo generated-buffer descriptor contradiction | A final `convBuf` descriptor says one channel, while browser and Node capture traces, independent expected dimensions, retained raw bytes and SHA-256 agree on stereo. Only this descriptor discrepancy and its derived checks are excepted. All three engines, quality 0/1, 44.1/48 kHz. | #79 |
 | WebKit noisy-program first PCM mismatch | `render q0 44100`: GM121/125; `render q0 48000`: GM127; `short-notes completed min`: q1/program126. Only the named parity/completed-attack assertion and its valid split-measurement layout are excepted. Other programs, fixtures, assertions and malformed evidence remain blocking. | #91 |
+| WebKit drum-54 first PCM mismatch | `render q1 48000`, drum 54 only: both source/min parity and fresh-repeat/source checks, with valid 47-slot split measurements and original WAV pairs. Other drums, rates, qualities, checks and inconsistent capture roles/identity remain blocking. | [#96](https://github.com/Provable-Games/webaudio-tinysynth/issues/96) |
 | WebKit full-mix peak overshoot | Historical `ws-mid-default`, q1/48 kHz, first captures. Already outside ordinary PR CI in the manual strict qualification lane; its actual failed/incomplete verdict is retained. | #79, #91 |
 
 ## Retained evidence
@@ -26,6 +32,19 @@ The strict full-mix qualification mode rejects this option.
   failures (339/342 core cases passed normally). All first-capture records
   remain unchanged. Main CI `37560041984` passed.
 
+- x64 browser run `37561194431`, signed head `1db92fa`, retained
+  WebKit q1/48 kHz drum-54 first source/min and fresh-repeat/source
+  mismatches: both `max |diff| 6.789e-3 at sample 20512` with tolerance
+  `0.000001`. Both diagnostic rerenders were clean; both first checks and
+  original WAV pairs stay failed/retained. Pair 1 roles are `source`/`min`;
+  pair 2 roles are `repeat`/`kept source`, with the same kept source.
+  Captures are mono Float32, 76,800 frames each. Source WAV SHA-256:
+  `786812b4023ad6c5fb656e3051080791c5d20940cc4cf1631e4d9f3e53c0538a`;
+  min/repeat SHA-256:
+  `51478c33a9de6c51413cec5ac191576b5906b189463b163ab07be99bd063fd0a`.
+  Raw results were 338/342 passing cases, 5,061/5,069 passing checks.
+  The user subsequently authorized deferring only this exact additional
+  scope. No drum-54 zero-gap, cause or audibility claim has been established.
 - ARM browser run `37529210736`, PR head `9ab3af6`: 336/342 core cases
   passed. Five descriptor failures and a WebKit completed-short-note first
   mismatch were recorded; the clean diagnostic did not clear the first
@@ -54,7 +73,8 @@ The strict full-mix qualification mode rejects this option.
 
 The downloaded reports, original WAVs, Float32 sidecars and audit receipts
 are preserved under `_evidence/p1-supervision/x64-comparison-20261006/` and
-`_evidence/p1-noise-path/` outside the repository. GitHub artifacts have
+`_evidence/p1-noise-path/` outside the repository. The new original drum
+records and captures are in `_evidence/p1-known-failures/ci-1db92fa/`. GitHub artifacts have
 limited retention; these local copies are the evidence for the deferred lab.
 
 ## Limits and removal

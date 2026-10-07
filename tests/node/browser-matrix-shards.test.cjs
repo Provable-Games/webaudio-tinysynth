@@ -999,6 +999,55 @@ function mutateKnownRenderFailure(files, { descriptor = true } = {}) {
   };
 }
 
+function mutateKnownDrumFailure(files) {
+  const [rel, report] = Object.entries(files).find(([, row]) => row.webkit &&
+    row.webkit.cases.some((c) => c.id === "render q1 48000"));
+  const c = report.webkit.cases.find((row) => row.id === "render q1 48000");
+  const frames = 76800, sampleRate = 48000, group = knownFailurePolicy.DRUM_GROUP;
+  const source = Float32Array.from({ length: frames }, (_, i) => i % 2 ? 0.125 : -0.125);
+  const min = Float32Array.from(source);
+  min[20512] += 0.006789;
+  const pairs = [
+    { suffix: "source/min", roles: { a: "source", b: "min" }, channels: { a: source, b: min },
+      assertion: "min renders the same PCM as source" },
+    { suffix: "repeat", roles: { a: "repeat", b: "kept source" }, channels: { a: min, b: source },
+      assertion: "a repeat render in a fresh page matches" },
+  ];
+  c.status = "fail";
+  c.checks = [];
+  const failures = pairs.map((pair, i) => {
+    const item = group + " drum 54 " + pair.suffix, pairIndex = i + 1;
+    const pcmRetention = { schemaVersion: 1, pairIndex, label: item,
+      planarPcmEncoding: "IEEE-754 binary32 little-endian; planar channel order",
+      roles: pair.roles, saved: true, status: "saved" };
+    for (const key of ["a", "b"]) {
+      const samples = pair.channels[key], bytes = testAnalysis.wav([samples], sampleRate);
+      const file = "first-attempt-pcm/q1-48000/pair-" + String(pairIndex).padStart(3, "0") + "-first-" + key + ".wav";
+      ATTACHMENTS.set(path.posix.join(rel.split("/")[0], "browser-matrix", "webkit", file), bytes);
+      pcmRetention[key] = { channelFrames: [frames], channels: 1, frames, path: file,
+        pcmBytes: frames * 4, planarPcmSha256: stableSha256(bytes.subarray(44)), role: pair.roles[key],
+        sampleRate, saved: true, wavBytes: bytes.length, wavSha256: stableSha256(bytes) };
+    }
+    const reasons = FIRST_ATTEMPT.compareRenders({ channels: [pair.channels.a] },
+      { channels: [pair.channels.b] }, tolerances("webkit").sameEngineSample).reasons;
+    const failure = { item, firstAttempt: { reasons, pcmRetention }, outcome: FIRST_ATTEMPT.OUTCOMES.INTERMITTENT,
+      attempts: 2, diagnostics: [{ attempt: 2, ok: true, reasons: [] }] };
+    c.checks.push({ name: group + ": " + pair.assertion + " (max |diff| <= 0.000001)", ok: false,
+      detail: item + ": " + reasons[0] + " (first attempt; " + FIRST_ATTEMPT.SHORT[failure.outcome] + ")" });
+    return failure;
+  });
+  c.observations[knownFailurePolicy.FAILURE_OBSERVATION] = {
+    items: 268, firstAttemptFailures: 2, intermittent: 2, reproduced: 0, notRerendered: 0,
+    diagnosticRenderAttempts: 2, rendersIncludingFirstAttempts: 270,
+    diagnosticBudget: { total: 6, unspent: 4 }, failures,
+  };
+  const row = c.observations.measurements[group];
+  delete c.observations.measurements[group];
+  c.observations.measurements[group + "/source"] = structuredClone(row);
+  c.observations.measurements[group + "/min"] = structuredClone(row);
+  return { report: c, resultPath: rel };
+}
+
 function mutateKnownShortNotesFailure(files, item = "q1 126") {
   const found = Object.entries(files).find(([, report]) => report.webkit &&
     report.webkit.cases.some((c) => c.id === "short-notes completed min"));
@@ -1168,6 +1217,53 @@ test("known-failure acceptance still blocks corrupt Float32 sidecars, stale prov
   }, TEST_REFERENCE_BYTES, null, "core", "core", {}, true);
   assert.equal(nonFiniteRetainedPcm.status, 1, nonFiniteRetainedPcm.out);
   assert.match(nonFiniteRetainedPcm.out, /raw first-attempt PCM contains a non-finite sample/);
+});
+
+test("drum-54 exception preserves both first failures and rejects other scopes or contradictory repeat captures", () => {
+  const strict = merged((files) => { mutateKnownDrumFailure(files); });
+  assert.equal(strict.status, 1, strict.out);
+  let rawCase, rawJson;
+  const accepted = merged((files) => {
+    rawCase = mutateKnownDrumFailure(files).report;
+    rawJson = JSON.stringify(rawCase);
+  }, TEST_REFERENCE_BYTES, null, "core", "core", {}, true);
+  assert.equal(accepted.status, 0, accepted.out);
+  assert.match(accepted.out, /PASS WITH ACCEPTED KNOWN FAILURES/);
+  assert.equal(JSON.stringify(rawCase), rawJson);
+  assert.equal(rawCase.status, "fail");
+  assert.equal(rawCase.checks.filter((check) => check.ok === false).length, 2);
+  const classify = (engine, c) => knownFailurePolicy.classifyKnownCase(engine, c);
+  for (const scope of ["drum", "quality", "rate", "engine", "check", "measurement-count"]) {
+    const c = structuredClone(rawCase);
+    let engine = "webkit";
+    if (scope === "drum") c.observations[knownFailurePolicy.FAILURE_OBSERVATION].failures[0].item = "gm-drums drum 55 source/min";
+    if (scope === "quality") { c.dims.quality = 0; c.id = "render q0 48000"; }
+    if (scope === "rate") { c.dims.sampleRate = 44100; c.id = "render q1 44100"; }
+    if (scope === "engine") engine = "firefox";
+    if (scope === "check") c.checks.push({ name: "new drum regression", ok: false });
+    if (scope === "measurement-count") c.observations.measurements["gm-drums/min"].rms.pop();
+    assert.equal(classify(engine, c), null, scope + " must remain blocking");
+  }
+  for (const corruption of ["roles", "missing", "kept-source"]) {
+    const rejected = merged((files) => {
+      const fixture = mutateKnownDrumFailure(files);
+      const c = fixture.report, failure = c.observations[knownFailurePolicy.FAILURE_OBSERVATION].failures[1];
+      const retention = failure.firstAttempt.pcmRetention;
+      const file = path.posix.join(fixture.resultPath.split("/")[0], "browser-matrix", "webkit", retention.b.path);
+      if (corruption === "roles") retention.roles.b = "min";
+      if (corruption === "missing") ATTACHMENTS.delete(file);
+      if (corruption === "kept-source") {
+        const bytes = Buffer.from(ATTACHMENTS.get(file));
+        bytes.writeFloatLE(bytes.readFloatLE(44 + 20513 * 4) + 0.001, 44 + 20513 * 4);
+        ATTACHMENTS.set(file, bytes);
+        retention.b.wavSha256 = stableSha256(bytes);
+        retention.b.planarPcmSha256 = stableSha256(bytes.subarray(44));
+        // The maximum and first-difference index are unchanged: only the independent kept-source identity detects this.
+      }
+    }, TEST_REFERENCE_BYTES, null, "core", "core", {}, true);
+    assert.equal(rejected.status, 1, rejected.out);
+    assert.match(rejected.out, /PCM retention record|PCM WAV is missing or invalid|does not compare against the kept first source/);
+  }
 });
 
 test("known-failure opt-in is core-only and full-mix qualification remains strict", () => {

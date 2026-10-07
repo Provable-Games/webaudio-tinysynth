@@ -999,14 +999,16 @@ function parseFloatFirstAttemptWav(bytes, expectedSampleRate, expectedChannels, 
 
 function firstAttemptPcmArtifactProblems(engine, rel, resultFile, c, classification) {
   const noise = c && c.spec === "render" && classification &&
-    classification.failures.find((failure) => failure.signature === "webkit-noise-gm-first-attempt");
+    classification.failures.find((failure) => failure.splitMeasurementGroup);
   if (!noise) return [];
-  const problems = [], seenPairs = new Set();
+  const problems = [], seenPairs = new Set(), captures = new Map();
   const add = (message) => problems.push(rel + ": " + engine + " / " + c.id + " " + message);
   if (!resultFile) return [rel + ": " + engine + " / " + c.id + " known render exception requires retained first-attempt PCM WAVs"];
-  const scenario = SCENARIOS.find((item) => item.name === knownFailurePolicy.RENDER_GROUP);
+  const scenario = SCENARIOS.find((item) => item.name === noise.splitMeasurementGroup);
   for (const failure of noise.firstAttemptFailures) {
-    const fixture = scenario && scenario.items.find((item) => failure.item === scenario.name + " " + item.label + " source/min");
+    const repeat = failure.item.endsWith(" repeat");
+    const roles = repeat ? { a: "repeat", b: "kept source" } : { a: "source", b: "min" };
+    const fixture = scenario && scenario.items.find((item) => failure.item === scenario.name + " " + item.label + (repeat ? " repeat" : " source/min"));
     if (!fixture || fixture.spec.pcm !== "L") {
       add("known first-attempt GM fixture is missing or changed");
       continue;
@@ -1021,7 +1023,7 @@ function firstAttemptPcmArtifactProblems(engine, rel, resultFile, c, classificat
     if (stableJson(Object.keys(retention).sort()) !== stableJson(pairKeys.sort()) || retention.schemaVersion !== 1 ||
         retention.label !== failure.item || retention.planarPcmEncoding !== "IEEE-754 binary32 little-endian; planar channel order" ||
         retention.saved !== true || retention.status !== "saved" || !Number.isSafeInteger(retention.pairIndex) ||
-        retention.pairIndex < 1 || retention.pairIndex > 6 || stableJson(retention.roles) !== stableJson({ a: "source", b: "min" }) ||
+        retention.pairIndex < 1 || retention.pairIndex > 6 || stableJson(retention.roles) !== stableJson(roles) ||
         seenPairs.has(retention.pairIndex)) {
       add("known first-attempt PCM retention record is incomplete or contradictory for " + failure.item);
       continue;
@@ -1029,7 +1031,7 @@ function firstAttemptPcmArtifactProblems(engine, rel, resultFile, c, classificat
     seenPairs.add(retention.pairIndex);
     const pairBase = "first-attempt-pcm/q" + c.dims.quality + "-" + c.dims.sampleRate + "/pair-" + String(retention.pairIndex).padStart(3, "0");
     const sides = [];
-    for (const [key, role, suffix] of [["a", "source", "first-a.wav"], ["b", "min", "first-b.wav"]]) {
+    for (const [key, role, suffix] of [["a", roles.a, "first-a.wav"], ["b", roles.b, "first-b.wav"]]) {
       const side = retention[key];
       const sideKeys = ["channelFrames", "channels", "frames", "path", "pcmBytes", "planarPcmSha256", "role", "sampleRate", "saved", "wavBytes", "wavSha256"];
       if (!isRecord(side) || stableJson(Object.keys(side).sort()) !== stableJson(sideKeys.sort()) || side.role !== role ||
@@ -1062,6 +1064,7 @@ function firstAttemptPcmArtifactProblems(engine, rel, resultFile, c, classificat
       sides.push({ side, pcm: parsed });
     }
     if (sides.length === 2) {
+      captures.set(failure.item, sides);
       const [source, min] = sides;
       if (source.side.frames !== min.side.frames || source.side.sampleRate !== min.side.sampleRate || source.side.channels !== min.side.channels) {
         add("known source/min first-attempt PCM WAV dimensions differ for " + failure.item);
@@ -1072,6 +1075,10 @@ function firstAttemptPcmArtifactProblems(engine, rel, resultFile, c, classificat
         add("reported first failure differs from recomputed raw PCM comparison for " + failure.item);
     }
   }
+  const drumSource = captures.get("gm-drums drum 54 source/min");
+  const drumRepeat = captures.get("gm-drums drum 54 repeat");
+  if (drumSource && drumRepeat && drumSource[0].side.planarPcmSha256 !== drumRepeat[1].side.planarPcmSha256)
+    add("retained drum-54 repeat does not compare against the kept first source capture");
   return problems;
 }
 

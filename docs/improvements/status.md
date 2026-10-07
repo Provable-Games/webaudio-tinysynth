@@ -5,39 +5,39 @@ Supervisor-owned. **On 2026-10-06 supervision passed to a GPT-6.1 Sol supervisor
 ## Current policy checkpoint (2026-10-07, D-043)
 
 The user authorized making the documented known failures nonblocking for
-ordinary PR CI while keeping their tests, raw failed verdicts and retained
-first captures. PR #95 adds the narrow exceptions; it is not merged. Unknown failures and artifact/provenance corruption remain blocking.
-Known-defect diagnosis and a dedicated lab are deferred; #91 and the #79
-producer investigation stay unresolved and open.
+ordinary PR CI while preserving tests, raw failed verdicts and first captures.
+PR #95 adds narrow exceptions and is not merged. Unknown failures and
+artifact/provenance corruption remain blocking. Strict qualification retains
+its actual failed/incomplete verdicts; no production/device approval follows.
 
-On signed head `346968e`, the completed x64 Browser Matrix run `37553984962`
-passed 339/342 core cases. Firefox and WebKit q0/44.1 kHz min reported mono
-convBuf descriptors despite valid stereo captures; WebKit q0/48 kHz GM127
-had a first PCM mismatch with a retained 128-sample zero interval. ARM is not
-necessary for either failure. Main CI `37553984882` passed 1,052 unit tests,
-236 Node tests and all three regressions, plus lint/build/smoke. Claude review
-failed before a verdict; that service error is separate from the tests.
+The first policy head `7c19c5f` passed Browser Matrix `37560041890` while
+retaining three descriptor failures (339/342 raw cases passed). The follow-up
+`1db92fa` fixed the newly reviewed first-WAV comparison-integrity gap; main
+CI `37561194467` and Codex review `37561194491` passed. Its Browser Matrix
+`37561194431` exposed a new, initially unexcepted WebKit q1/48 kHz drum-54
+source/min and fresh-repeat/source mismatch: both `6.789e-3`, first divergence
+sample 20512, with clean diagnostics and both original pairs retained.
+Raw results were 338/342 cases and 5,061/5,069 checks passing. Claude review
+`37561194327` failed before a verdict with an execution/session mismatch;
+that service failure remains separate and is not approval.
 
-Strict manual full-mix results, including historical peak overshoot and
-incomplete references, retain their actual verdicts. This policy does not
-claim production or physical-device qualification. #68 timing adoption,
-Casey's final inputs/settings and the remaining P1 release work continue.
+The user subsequently approved deferring exactly that drum-54 scope. The
+current PR follow-up preserves both assertions and first captures, checks
+comparison roles and kept-source identity, and documents the signature in
+[known-failures.md](known-failures.md). All 243 Node tests in 17 files and seven focused controls pass; the
+test floor uses those observed counts. Lint and workflow validation pass. A
+read-only replay of all 342 saved `1db92fa` core cases accepts exactly four
+known failed cases, preserves raw reports/hashes and three raw cross-engine
+failures, and has zero failures in its separate validated comparison view.
+This replay does not relabel the historical run or qualify audio. Fresh hosted CI is required for the published follow-up; receipts are under `_evidence/p1-known-failures/`.
 
-The D-043 patch passed all 242 Node tests in 17 files. The six focused
-policy controls also passed after supervisor review, along with lint and
-workflow validation. Read-only checks against all 342 retained x64 core
-cases and the historical short-note failure accepted only the documented
-failures and preserved their raw verdicts. Fresh hosted CI is required for
-the published patch; historical browser failures are not relabeled as passes.
-
-The first D-043 hosted Browser Matrix run `37560041890` at signed head
-`7c19c5f` passed the gate while preserving three q0/44.1 kHz descriptor
-failures (339/342 core cases passed normally). Main CI `37560041984` passed.
-Codex review completed with advisory findings; its newly identified PCM
-comparison integrity gap is corrected in the follow-up and the expanded six
-focused controls pass. The older qualifier advisories remain deferred.
-Claude run `37560041892` failed before a verdict; its execution error remains
-separate. Fresh hosted CI is required for the comparison follow-up.
+[Issue #96](https://github.com/Provable-Games/webaudio-tinysynth/issues/96) is the investigation handoff with exact failing
+tests, runs, artifacts, WAV hashes, prior analysis, unknowns and concurrency
+rules. The user plans to assign its new investigator. The dedicated lab is
+deferred; #91 and the #79 producer investigation remain unresolved. Both
+metadata and a first PCM mismatch recurred on x64: ARM is not necessary,
+but no cause has been isolated. #68 timing adoption, Casey's final approved
+score/settings/bank pairs and other P1 work continue under the D-042 freeze.
 
 ## After every merge into improve/integration (supervisor checklist, D-040)
 
