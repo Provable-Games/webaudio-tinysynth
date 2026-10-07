@@ -49,10 +49,10 @@ jobs:
   browser:
     name: browser (${{ matrix.engine }}, ${{ matrix.shard }}/3)
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.mode == 'core' }}
-    # Playwright 1.63.0 publishes linux-arm64 builds of all three engines
-    # (Chromium 153, Firefox 155, WebKit 26.6; see docs/improvements/tasks/T6.md).
-    # An x64 exception for one engine needs recorded evidence; never drop an engine.
-    runs-on: ubuntu-24.04-arm
+    # User-authorized x64 comparison for PR #95's hosted ARM failures.
+    # Keep all three engines, pinned browser versions and strict checks unchanged.
+    # A clean x64 run alone does not establish an ARM cause (see P1-A2.md).
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -124,7 +124,7 @@ jobs:
   full-mix-qualification:
     name: full-mix qualification (${{ matrix.engine }})
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'full-mix-qualification' }}
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -177,7 +177,7 @@ jobs:
   demos:
     name: demos (${{ matrix.engine }})
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.mode == 'core' }}
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -223,7 +223,7 @@ jobs:
     name: browser matrix
     needs: [browser, demos]
     if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.mode == 'core') }}
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -262,7 +262,7 @@ jobs:
     name: full-mix qualification aggregate
     needs: [full-mix-qualification]
     if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.mode == 'full-mix-qualification' }}
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
