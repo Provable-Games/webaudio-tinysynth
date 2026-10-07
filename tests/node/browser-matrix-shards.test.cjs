@@ -933,7 +933,6 @@ function mutateKnownRenderFailure(files, { descriptor = true } = {}) {
   const c = report.webkit.cases.find((item) => item.id === "render q0 44100");
   const group = knownFailurePolicy.RENDER_GROUP;
   const tolerance = tolerances("webkit").sameEngineSample;
-  const reason = "max |diff| 0.001 at sample 14112 (tolerance " + String(tolerance) + ")";
   const item = group + " program 121 source/min";
   const root = rel.split("/")[0];
   const sampleRate = c.dims.sampleRate;
@@ -942,6 +941,7 @@ function mutateKnownRenderFailure(files, { descriptor = true } = {}) {
   const sourcePlanar = Buffer.from(samples.buffer, samples.byteOffset, samples.byteLength);
   const minSamples = Float32Array.from(samples);
   minSamples[14112] += 0.001;
+  const reason = FIRST_ATTEMPT.compareRenders({ channels: [samples] }, { channels: [minSamples] }, tolerance).reasons[0];
   const minPlanar = Buffer.from(minSamples.buffer, minSamples.byteOffset, minSamples.byteLength);
   const wavs = { a: testAnalysis.wav([samples], sampleRate), b: testAnalysis.wav([minSamples], sampleRate) };
   const pairBase = "first-attempt-pcm/q" + c.dims.quality + "-" + sampleRate + "/pair-001";
@@ -1098,6 +1098,27 @@ test("known render exceptions require present, hash-matching retained first-atte
       }, "core", "core", {}, true);
     assert.equal(rejected.status, 1, rejected.out);
     assert.match(rejected.out, /known first-attempt PCM WAV is missing or invalid/);
+  }
+  for (const contradiction of ["identical", "wrong-difference", "wrong-index"]) {
+    const rejected = merged((files) => {
+      const fixture = mutateKnownRenderFailure(files, { descriptor: false });
+      const failure = fixture.report.observations[knownFailurePolicy.FAILURE_OBSERVATION].failures[0];
+      if (contradiction === "identical") {
+        const bytes = Buffer.from(ATTACHMENTS.get(fixture.attachmentPaths[0]));
+        ATTACHMENTS.set(fixture.attachmentPaths[1], bytes);
+        failure.firstAttempt.pcmRetention.b.wavSha256 = stableSha256(bytes);
+        failure.firstAttempt.pcmRetention.b.planarPcmSha256 = stableSha256(bytes.subarray(44));
+      } else {
+        const reason = failure.firstAttempt.reasons[0];
+        failure.firstAttempt.reasons[0] = contradiction === "wrong-difference"
+          ? reason.replace("1.000e-3", "2.000e-3") : reason.replace("sample 14112", "sample 14113");
+        assert.notEqual(failure.firstAttempt.reasons[0], reason);
+        fixture.report.checks[0].detail = failure.item + ": " + failure.firstAttempt.reasons[0] +
+          " (first attempt; " + FIRST_ATTEMPT.SHORT[failure.outcome] + ")";
+      }
+    }, TEST_REFERENCE_BYTES, null, "core", "core", {}, true);
+    assert.equal(rejected.status, 1, rejected.out);
+    assert.match(rejected.out, /reported first failure differs from recomputed raw PCM comparison/);
   }
 });
 

@@ -30,6 +30,15 @@ cases and the historical short-note failure accepted only the documented
 failures and preserved their raw verdicts. Fresh hosted CI is required for
 the published patch; historical browser failures are not relabeled as passes.
 
+The first D-043 hosted Browser Matrix run `37560041890` at signed head
+`7c19c5f` passed the gate while preserving three q0/44.1 kHz descriptor
+failures (339/342 core cases passed normally). Main CI `37560041984` passed.
+Codex review completed with advisory findings; its newly identified PCM
+comparison integrity gap is corrected in the follow-up and the expanded six
+focused controls pass. The older qualifier advisories remain deferred.
+Claude run `37560041892` failed before a verdict; its execution error remains
+separate. Fresh hosted CI is required for the comparison follow-up.
+
 ## After every merge into improve/integration (supervisor checklist, D-040)
 
 Do these in order, as soon as a merge is seen. Fetch first: the user merges on GitHub.

@@ -9,6 +9,8 @@ A dedicated diagnosis lab is deferred.
 Ordinary core CI explicitly uses `--accept-known-failures`. Local commands
 default to strict behavior; accepting a known render failure requires `--out`
 and valid retained Float32 sidecars and first-failure WAVs when applicable.
+For GM failures the gate also recomputes the original WAV pair comparison
+and requires the reported difference and first-divergence index to match.
 The strict full-mix qualification mode rejects this option.
 
 | Failure | Accepted ordinary-CI scope | Tracking |
@@ -18,6 +20,11 @@ The strict full-mix qualification mode rejects this option.
 | WebKit full-mix peak overshoot | Historical `ws-mid-default`, q1/48 kHz, first captures. Already outside ordinary PR CI in the manual strict qualification lane; its actual failed/incomplete verdict is retained. | #79, #91 |
 
 ## Retained evidence
+
+- The first D-043 policy browser run `37560041890`, head `7c19c5f`,
+  passed the ordinary CI gate while retaining three q0/44.1 kHz descriptor
+  failures (339/342 core cases passed normally). All first-capture records
+  remain unchanged. Main CI `37560041984` passed.
 
 - ARM browser run `37529210736`, PR head `9ab3af6`: 336/342 core cases
   passed. Five descriptor failures and a WebKit completed-short-note first

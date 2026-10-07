@@ -54,6 +54,8 @@ const browserToolchainSpec = require("./browser-toolchain");
 const { MATRIX } = require("../tests/browser/matrix");
 const knownFailurePolicy = require("../tests/browser/lib/known-failures");
 const analysis = require("../tests/browser/lib/analysis");
+const FIRST_ATTEMPT = require("../tests/browser/lib/first-attempt");
+const { tolerances } = require("../tests/browser/tolerances");
 const { SCENARIOS } = require("../tests/browser/lib/scenarios");
 const { SEED_EXPECTED } = require("../tests/browser/specs/seed-expected");
 const fullMixSpec = require("../tests/browser/specs/full-mix");
@@ -1057,10 +1059,18 @@ function firstAttemptPcmArtifactProblems(engine, rel, resultFile, c, classificat
         add("known first-attempt PCM WAV is missing or invalid for " + failure.item + " " + role + ": " + error.message);
         continue;
       }
-      sides.push(side);
+      sides.push({ side, pcm: parsed });
     }
-    if (sides.length === 2 && (sides[0].frames !== sides[1].frames || sides[0].sampleRate !== sides[1].sampleRate || sides[0].channels !== sides[1].channels))
-      add("known source/min first-attempt PCM WAV dimensions differ for " + failure.item);
+    if (sides.length === 2) {
+      const [source, min] = sides;
+      if (source.side.frames !== min.side.frames || source.side.sampleRate !== min.side.sampleRate || source.side.channels !== min.side.channels) {
+        add("known source/min first-attempt PCM WAV dimensions differ for " + failure.item);
+        continue;
+      }
+      const comparison = FIRST_ATTEMPT.compareRenders(source.pcm, min.pcm, tolerances(engine).sameEngineSample);
+      if (comparison.ok || stableJson(comparison.reasons) !== stableJson(failure.firstAttempt.reasons))
+        add("reported first failure differs from recomputed raw PCM comparison for " + failure.item);
+    }
   }
   return problems;
 }
