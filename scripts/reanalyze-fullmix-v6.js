@@ -402,11 +402,14 @@ function pairRows(report, reportDir, { env = process.env, root = path.resolve(__
         browserToolchain.matchesBrowserVersion(expectedBundle, engineReport.version);
       // Missing-reference comparisons may bootstrap a reference; failed execution,
       // cleanup or other assertions cannot. Cleanup is recorded after the capture.
-      const noCaseExecutionOrCleanupError = !engineReport.fatal && !engineReport.launchError &&
-        Array.isArray(c.checks) && c.status === (c.checks.some((check) => check.ok === false) ? "fail" : "pass") &&
-        c.checks.every((check) => check.ok === true || (check.ok === false && ["source", "min"].some((build) =>
-          check.name === build + " first attempt agrees with measured engine/build song and probe reference" &&
-          obs.builds[build].result === "incomplete" && obs.builds[build].referenceStatus === "incomplete")));
+      const missingReferenceComparison = (check) => check.ok === false && ["source", "min"].some((build) =>
+        check.name === build + " first attempt agrees with measured engine/build song and probe reference" &&
+        obs.builds[build].result === "incomplete" && obs.builds[build].referenceStatus === "incomplete");
+      const checksClean = Array.isArray(c.checks) && c.checks.every((check) => check.ok === true || missingReferenceComparison(check));
+      const workerCompleted = !engineReport.failure || (engineReport.failure === "exited with status 1" &&
+        checksClean && c.checks.some(missingReferenceComparison));
+      const noCaseExecutionOrCleanupError = !engineReport.fatal && !engineReport.launchError && workerCompleted &&
+        checksClean && c.status === (c.checks.some((check) => check.ok === false) ? "fail" : "pass");
       const captureCheckEvidence = Object.fromEntries(["source", "min"].map((build) => {
         const capture = obs.builds[build], first = builds[build].first;
         const probes = first.metrics.probes;

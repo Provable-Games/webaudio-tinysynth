@@ -111,6 +111,16 @@ bootstrap eligibility. Focused controls fail before the fix and pass after it.
 Full validation passed: 1,052 unit tests in 14 files, 276 Node tests in 18 files, all three playback regressions, seven focused policy controls, lint and actionlint. The floor uses the observed 18/276 count. Saved-evidence replay accepts the three documented reports while strict mode rejects them; original bytes/hashes remain unchanged. Fresh hosted checks are required for this follow-up.
 Evidence: `_evidence/p1-known-failures/new-scopes-20261007/`.
 
+The fresh `1e55134` reviews completed: Claude `lgtm`, Codex only advisory
+findings. All WebKit shards and demos passed. Codex's additional worker-error
+eligibility finding was independently reproduced: a timed-out worker's saved
+case could export despite its execution failure. The exporter now rejects
+worker timeouts, signals and unexpected exits; only exact exit status 1 with
+validated missing-reference comparison failures can bootstrap a reference.
+All 15 affected full-mix Node tests pass, including the before/after control;
+lint and diff checks pass. Audio tests, exceptions and tolerances are unchanged.
+Fresh hosted checks are required for the final signed exporter follow-up.
+
 ## After every merge into improve/integration (supervisor checklist, D-040)
 
 Do these in order, as soon as a merge is seen. Fetch first: the user merges on GitHub.

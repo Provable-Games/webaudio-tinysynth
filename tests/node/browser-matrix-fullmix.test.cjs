@@ -624,6 +624,13 @@ test("offline reference export re-derives first-attempt eligibility and validate
       assert.equal(reanalyzer.pairRows(stoppedEngine, temp, options)[0].referenceExportEligible, false,
         field + " must prevent reference export");
     }
+    for (const failure of ["timed out after 1800 s; its process group was killed", "ended by SIGKILL",
+      "exited with status 2", "exited with status 1"]) {
+      const interrupted = structuredClone(baseline.report);
+      interrupted.chromium.failure = failure;
+      assert.equal(reanalyzer.pairRows(interrupted, temp, options)[0].referenceExportEligible, false,
+        failure + " without validated missing-reference checks must prevent export");
+    }
     const missingReference = structuredClone(baseline.report);
     for (const build of ["source", "min"])
       missingReference.chromium.cases[0].checks.push({
