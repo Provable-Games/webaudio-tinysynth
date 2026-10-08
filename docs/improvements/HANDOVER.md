@@ -5,13 +5,15 @@ From the Claude Opus 5.5 supervisor (session `webaudio-tinysynth-a0`) to a GPT-6
 **Read these, in order:**
 1. this file;
 2. [status.md](status.md): the post-merge checklist, the release checklist, the task table and the consumer log;
-3. the newest entries in [decisions.md](decisions.md): D-036 to D-042;
+3. the newest entries in [decisions.md](decisions.md): D-036 onward, including D-043;
 4. `/workspace/webaudio-tinysynth-worktrees/_evidence/assignments/CONCURRENCY.md`: rules 1–14 for every agent.
 
 ## Goal and the user's priorities
 
 - **The goal:** Casey Wescott's MIDI scores play accurately and consistently on all modern devices, through the onchain player. Quality and consistency come first. Startup speed, size and simplicity come second.
 - **Scope freeze (D-042):** P1 issues only until the release ships. The user says they "keep shipping features forever", so flag scope creep. New ideas get logged as issues and deferred.
+- **Known-failure policy (D-043, 2026-10-07):** the user authorized keeping the documented failing tests and their first-attempt evidence while making those specific failures nonblocking in ordinary CI. PR #95 implements the exceptions; unknown failures still block. Known-defect diagnosis and a dedicated lab are deferred. The user also authorized exactly WebKit q1/48 kHz drum-54 source/min and repeat failures; [issue #96](https://github.com/Provable-Games/webaudio-tinysynth/issues/96) contains the next investigator's evidence brief. The user also approved q1/program120 completed-short-note and q0/48 kHz/drum58 source/min deferrals, tracked in [issue #97](https://github.com/Provable-Games/webaudio-tinysynth/issues/97). The latest investigate/fix/issue/defer instruction also authorizes autonomous resolution of failing PR CI; policy v4 narrowly defers held-source q1/program119 at 0.0700 s in #97. Do not ask again for each already-authorized CI follow-up. Read the current checkpoint in status.md; the original state below is historical.
+- **Launch inputs (2026-10-07):** the user confirmed launch-sequence step 1 complete and its checks passing. Proceed with #95 conflict/CI readiness as step 2; formal final qualification and certification artifacts remain later steps.
 - **Who merges:** the user squash-merges every PR on GitHub. The supervisor never merges.
 - **Reporting style:** the user prefers short status updates, honest trade-offs, and a recommendation rather than a survey of options.
 
@@ -37,12 +39,12 @@ From the Claude Opus 5.5 supervisor (session `webaudio-tinysynth-a0`) to a GPT-6
   3. update the records;
   4. send the consumer the new pin and a behaviour summary.
 - **Signing:** every commit is signed through the forwarded GPG agent. Never run `gpg-agent` or `gpgconf`, because that breaks forwarding (rule 9).
-- **CI** (ARM runners):
+- **CI** (browser-workflow x64 comparison in PR #95; other workflows retain ARM runners):
   - `lint`, `test`, `build-verify` and `browser-smoke`;
   - `browser matrix`: 3 shards per engine plus an aggregate;
   - `demos (ENGINE)`;
   - Claude and Codex AI review gates, with the model and effort set in org variables.
-- **The #78 policy (merged in #65):** the first render attempt decides the verdict. Until #91 is fixed, expect a red WebKit shard in about 1 in 3–4 PR runs. The job's diagnostics show whether a re-render was clean.
+- **The #78 policy (merged in #65):** the first render attempt decides the raw verdict. D-043 permits documented known first failures to be nonblocking for ordinary CI; clean diagnostic rerenders still cannot clear or replace them.
 - **Safety:**
   - Never load pre-fix builds with malformed or looping MIDI in a browser. Earlier runs used 18–35 GB per WebKit process and crashed the container (rule 10).
   - Run heavy browser work through `_evidence/locks/heavy-run.sh` (two slots, with a memory check).
@@ -61,7 +63,7 @@ From the Claude Opus 5.5 supervisor (session `webaudio-tinysynth-a0`) to a GPT-6
 | Wave | Item | Notes |
 | --- | --- | --- |
 | 1 | **#91**: the WebKit render slip on looped, low-rate buffers | It is inherited from upstream (same rate in `3d75aee`) and has never been reproduced without the library. It sometimes reaches audible levels (0.38 on q0 program 127). Bisection plan: `tasks/T13.1.md` §4. Also stress-render the TinyChip bank in WebKit, since every TinyChip voice is a looped buffer. |
-| 1 | **#68**: scheduling deadlines (B1) | The revised design is S–M. The first downbeat has only 40–100 ms of lead. Keep the first-pass art origin (`startTime`) and the housekeeping cadence; a naive synchronous tick moves the origin a whole loop later. Record the timing trade-off as a new decision (D-043, because D-042 is the freeze) with a contracts row. Flag the timing change to the consumer. |
+| 1 | **#68**: scheduling deadlines (B1) | The revised design is S–M. The first downbeat has only 40–100 ms of lead. Keep the first-pass art origin (`startTime`) and the housekeeping cadence; a naive synchronous tick moves the origin a whole loop later. Record the timing trade-off as a new decision (D-044 or later; D-043 records the known-failure policy) with a contracts row. Flag the timing change to the consumer. |
 | 1 | **#79**: release-gate integrity (A2) | Cross-engine checks after the shard merge, and full-mix baselines. Then the user makes `browser matrix` required on `main`. |
 | 1 | **#76**: certifying production tracks and banks (A3) | Belongs in the consumer repo. The triage prototype `_evidence/review-triage/probes/certify-mock.cjs` has a confirmed false pass (a tuning SysEx), so certification needs independent pitch and state checks and a blocking result. Size M. |
 | 2 | **#80**: device qualification | Real devices, run by the user and Casey: iPhone (speaker, AirPods, silent switch), iPad, mid-range and low-end Android, macOS Safari, desktop Chrome and Firefox. The 8-step checklist is in `_evidence/review-triage/TRIAGE.md` §5. Casey signs off. |

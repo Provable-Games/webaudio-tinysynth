@@ -21,7 +21,8 @@ const path = require("path");
 const pages = require("../lib/pages");
 
 const GESTURE_WAIT_MS = 10000;
-const PRE_GESTURE_MS = 1200;
+const PRE_GESTURE_REPORTS = 5;
+const PRE_GESTURE_WAIT_MS = 5000;
 // Measured: Chromium 153, Firefox 155 and WebKit 26.6 all keep a context
 // created at load from running at an http://127.0.0.1 origin until a
 // gesture. Chromium and Firefox report "suspended". WebKit (WPE, Linux)
@@ -41,6 +42,17 @@ async function waitFor(rec, pred, ms) {
   for (;;) {
     const s = states(rec).find(pred);
     if (s || Date.now() > end) return s || null;
+    await sleep(50);
+  }
+}
+
+async function waitForReports(rec, minReports, ms) {
+  const started = Date.now();
+  const end = started + ms;
+  for (;;) {
+    const reports = states(rec);
+    if (reports.length >= minReports || Date.now() >= end)
+      return { reports, elapsedMs: Date.now() - started, timedOut: reports.length < minReports };
     await sleep(50);
   }
 }
@@ -67,12 +79,13 @@ function cases(shared) {
           }));
           const rec = await t.newPage();
           await rec.page.goto(server.origin + "/html/" + id);
-          await sleep(PRE_GESTURE_MS);
-          const pre = states(rec);
+          const readiness = await waitForReports(rec, PRE_GESTURE_REPORTS, PRE_GESTURE_WAIT_MS);
+          const pre = readiness.reports;
           const assert = ASSERTED.includes(variant);
           const label = variant + ": ";
           // Before any input: no activation, no running context, no time.
-          t.check(label + "page reported its state before the gesture", pre.length >= 5, pre.length + " reports");
+          t.check(label + "page reported its state before the gesture", !readiness.timedOut,
+            pre.length + " reports in " + readiness.elapsedMs + " ms" + (readiness.timedOut ? " (timed out waiting for " + PRE_GESTURE_REPORTS + ")" : ""));
           t.check(label + "no user activation before the gesture", pre.every((s) => s.hasBeenActive === false || s.hasBeenActive === null),
             "hasBeenActive " + [...new Set(pre.map((s) => s.hasBeenActive))].join(","));
           if (POLICY_ENFORCED[engine]) {
@@ -123,4 +136,4 @@ function cases(shared) {
   return out;
 }
 
-module.exports = { cases, POLICY_ENFORCED };
+module.exports = { cases, POLICY_ENFORCED, waitForReports };

@@ -2,6 +2,125 @@
 
 Supervisor-owned. **On 2026-10-06 supervision passed to a GPT-6.1 Sol supervisor: start with [HANDOVER.md](HANDOVER.md).** After a context reset, read this file, then [contracts.md](contracts.md), then the newest entries of [decisions.md](decisions.md).
 
+## Current policy checkpoint (2026-10-07, D-043)
+
+The user authorized making the documented known failures nonblocking for
+ordinary PR CI while preserving tests, raw failed verdicts and first captures.
+PR #95 adds narrow exceptions and is not merged. Unknown failures and
+artifact/provenance corruption remain blocking. Strict qualification retains
+its actual failed/incomplete verdicts; no production/device approval follows.
+
+The first policy head `7c19c5f` passed Browser Matrix `37560041890` while
+retaining three descriptor failures (339/342 raw cases passed). The follow-up
+`1db92fa` fixed the newly reviewed first-WAV comparison-integrity gap; main
+CI `37561194467` and Codex review `37561194491` passed. Its Browser Matrix
+`37561194431` exposed a new, initially unexcepted WebKit q1/48 kHz drum-54
+source/min and fresh-repeat/source mismatch: both `6.789e-3`, first divergence
+sample 20512, with clean diagnostics and both original pairs retained.
+Raw results were 338/342 cases and 5,061/5,069 checks passing. Claude review
+`37561194327` failed before a verdict with an execution/session mismatch;
+that service failure remains separate and is not approval.
+
+The user subsequently approved deferring exactly that drum-54 scope. The
+current PR follow-up preserves both assertions and first captures, checks
+comparison roles and kept-source identity, and documents the signature in
+[known-failures.md](known-failures.md). At the drum-54 follow-up, all 243 Node tests in 17 files and seven focused controls passed; the
+test floor uses those observed counts. Lint and workflow validation pass. A
+read-only replay of all 342 saved `1db92fa` core cases accepts exactly four
+known failed cases, preserves raw reports/hashes and three raw cross-engine
+failures, and has zero failures in its separate validated comparison view.
+This replay does not relabel the historical run or qualify audio. On signed head `7d2d0a5`, main CI `37564223651`, Browser Matrix `37564223539`, Codex review `37564223592` and Review Helpers passed. Claude review `37564223538` failed before a verdict; receipts are under `_evidence/p1-known-failures/`.
+
+[Issue #96](https://github.com/Provable-Games/webaudio-tinysynth/issues/96) is the investigation handoff with exact failing
+tests, runs, artifacts, WAV hashes, prior analysis, unknowns and concurrency
+rules. The user plans to assign its new investigator. The dedicated lab is
+deferred; #91 and the #79 producer investigation remain unresolved. Both
+metadata and a first PCM mismatch recurred on x64: ARM is not necessary,
+but no cause has been isolated. #68 timing adoption and other P1 work continue under the D-042 freeze.
+
+### Launch sequence, step 2 (2026-10-07)
+
+The user confirmed step 1 complete: Casey's launch tracks, banks, settings
+and target devices are settled and their checks passed. This is the user's
+attestation; it does not substitute for the later formal release qualification
+and consumer certificate artifacts.
+
+At signed head `0a2cb88`, PR #95 incorporated integration `e99c310` (user-merged #92). Its package-floor
+and contracts conflicts retain both L-18 and L-19; the combined suite passed
+1,052 unit tests in 14 files, 272 Node tests in 18 files and all three playback
+regressions. The Node floor uses those observed counts. Lint, actionlint and
+79 review-helper tests pass (one optional Bun check skipped). No engine source,
+generated distribution, audio assertion, tolerance or known-failure scope
+changed. Strict full-mix qualification remains separate from ordinary CI.
+
+The Claude log at `7d2d0a5` ends in 385 ms, one turn, zero cost and no model
+usage, with `is_error: true`. Inspection of the pinned action shows it throws
+before exporting the session ID on that failure; the session-validation error
+is secondary. The underlying error text was hidden by the action, so no
+credential, model-access or quota diagnosis is claimed. The updated workflow
+emits only fixed failure categories on the first runtime failure; it preserves
+the failed review gate and publishes no transcript. Fresh hosted checks are
+required for this updated head. Logs: `_evidence/p1-pr95-step2/`.
+
+### Additional approved first-failure deferrals (2026-10-07)
+
+The user authorized documenting and making two additional WebKit first
+failures nonblocking in ordinary CI: completed-short-note min/q1/program120
+(`0.0968` difference) and render q0/48 kHz/drum58 source/min (`0.1542`, first
+sample 18720). Both first failures and their diagnostic facts remain intact.
+[Issue #97](https://github.com/Provable-Games/webaudio-tinysynth/issues/97) is
+its focused handoff, linked from #96; no cause or audible impact is established.
+Policy v3 accepts only those settings/assertions, plus previously approved
+scopes. When approved GM/program and drum failures share a case, the gate
+validates every group and retained WAV pair. Strict qualification is unchanged.
+
+On `0a2cb88`, main CI, Review Helpers and both AI review gates passed; Claude
+returned `lgtm`, Codex only the two already-deferred qualification advisories.
+Browser CI retained the two unapproved-at-that-time failures. Three Firefox
+jobs timed out during slow Ubuntu package downloads, before running tests;
+another Firefox shard passed. The updated workflow removes the stalled Azure
+mirror from the ephemeral Firefox runner's existing mirror list, keeping the
+Ubuntu archive/security fallbacks and package signature checks. Fresh hosted
+validation is required for the authorized policy update. Full local validation
+passes: 1,052 unit tests in 14 files, 275 Node tests in 18 files, all three
+playback regressions, six focused policy controls, lint, actionlint and 79
+review-helper tests (one optional Bun check skipped). The floor uses the
+observed 18/275 count. Saved first reports retain their hashes. Receipts are under
+`_evidence/p1-known-failures/new-scopes-20261007/`.
+
+### Autonomous CI follow-up and reference cleanup (2026-10-07)
+
+The user directed the supervisor to investigate and attempt fixes for failed
+PR CI, then log unresolved failures in GitHub and make their tests nonblocking
+without another permission round. Fresh `fa4bfc9` main CI, Review Helpers,
+Claude review and Codex review passed. All nine engine shards and three demos
+finished; only WebKit shard 3 failed, on held-source q1/program119 at 0.0700 s.
+Its `1.11e+0` relative difference is about 5,550 times the `0.0002` threshold;
+normal measured WebKit held-comparison variation is `1.7e-5`. This is not a
+small rounding excess; browser/harness/library causality remains unresolved.
+Issue #97 retains the JSON and investigation limits. Policy v4 preserves
+its exact failed comparison as nonblocking while other checks remain strict.
+Broad GM/drum test-family quarantine was rejected by automatic approval review
+and was not applied. No audio assertion, tolerance or engine source changed.
+
+The Codex cleanup-eligibility advisory was independently reproduced: a valid
+retained first WAV could remain exportable after a failed case resource cleanup.
+The offline reference exporter now rejects failed execution/cleanup assertions
+and fatal/launch-error engine state, while retaining clean missing-reference
+bootstrap eligibility. Focused controls fail before the fix and pass after it.
+Full validation passed: 1,052 unit tests in 14 files, 276 Node tests in 18 files, all three playback regressions, seven focused policy controls, lint and actionlint. The floor uses the observed 18/276 count. Saved-evidence replay accepts the three documented reports while strict mode rejects them; original bytes/hashes remain unchanged. Fresh hosted checks are required for this follow-up.
+Evidence: `_evidence/p1-known-failures/new-scopes-20261007/`.
+
+The fresh `1e55134` reviews completed: Claude `lgtm`, Codex only advisory
+findings. All WebKit shards and demos passed. Codex's additional worker-error
+eligibility finding was independently reproduced: a timed-out worker's saved
+case could export despite its execution failure. The exporter now rejects
+worker timeouts, signals and unexpected exits; only exact exit status 1 with
+validated missing-reference comparison failures can bootstrap a reference.
+All 15 affected full-mix Node tests pass, including the before/after control;
+lint and diff checks pass. Audio tests, exceptions and tolerances are unchanged.
+Fresh hosted checks are required for the final signed exporter follow-up.
+
 ## After every merge into improve/integration (supervisor checklist, D-040)
 
 Do these in order, as soon as a merge is seen. Fetch first: the user merges on GitHub.
