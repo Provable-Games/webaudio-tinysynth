@@ -4,7 +4,8 @@
  *
  * Modified by Provable Games (https://github.com/Provable-Games/webaudio-tinysynth);
  * see NOTICE for the changes. Issue #68 schedules the first 0.5 s horizon after
- * preparation and exposes a stable `initialStartTime` run origin in play status.
+ * preparation and exposes a stable `initialStartTime` run origin in play status. Timestamped
+ * controller and voice-cap cuts keep future attacks intact until their requested AudioContext time.
  */
 ( function(window){
 "use strict";
@@ -593,6 +594,11 @@ function WebAudioTinySynthCore(target) {
                 this.notetab.splice(i,1);
               }
             }
+            /* A voice-count eviction is already out of notetab, but remains owned until its
+               scheduled stop. Retire it on the same phase once the release bookkeeping ends. */
+            for(const nt of this._gone)
+              if(nt._stopAt>c.currentTime && c.currentTime>nt.e)
+                this._pruneNote(nt);
             this._src=this._src.filter(v=>v.e>=c.currentTime);
           }
           /* Housekeeping cadence is independent of how often the scheduler is entered. */
@@ -755,8 +761,9 @@ function WebAudioTinySynthCore(target) {
       this.voices=this._num("voices",v,0xffffffff,1,1);
     },
     getPlayStatus:()=>{
-      /* startTime (D-023) is the tick-0 time of the pass currently held by the scheduler. It
-         follows scheduling, so it can move ahead of audible playback and includes any rest up
+      /* `play` and `curTick` describe scheduler progress, not audible completion. `startTime`
+         (D-023) is the tick-0 time of the pass currently held by the scheduler. It follows
+         scheduling, so it can move ahead of audible playback and includes any rest up
          to loopEnd. initialStartTime (#68) is the origin set by the most recent playMIDI() call;
          it stays stable across that run and is cleared by stop, load, seek, context replacement
          or dispose. Read it for the first visual sync, then follow startTime for later passes. */
@@ -920,6 +927,10 @@ function WebAudioTinySynthCore(target) {
       if(this._off)
         throw CodedError("AUDIO_CONTEXT_OFFLINE");
       if(!s || !s.ev.some(e=>e.m[0]!=0xff51))
+        return;
+      /* A second call while the scheduler is active is an idempotent no-op. The scheduler may
+         finish before its queued notes and release tails have finished sounding. */
+      if(this.playing)
         return;
       /* Before the song clock is anchored (#18, #68): build a first n1 note before choosing one
          shared start time for the whole first batch. */
@@ -1179,7 +1190,53 @@ function WebAudioTinySynthCore(target) {
       }
       return c;
     },
-    _pruneNote:(nt)=>{
+    _pruneNote:(nt,t)=>{
+      const now=this.actx.currentTime;
+      if(nt._stopAt!=undefined){
+        if(t>now){
+          if(t<nt._stopAt){
+            nt._stopAt=t;
+            for(let k=nt.o.length-1;k>=0;--k){
+              try { nt.o[k].stop(t); } catch (e) { /* already ended */ }
+            }
+          }
+        }
+        else if(nt._stopAt>now){
+          nt._stopAt=now;
+          for(let k=nt.o.length-1;k>=0;--k){
+            if(nt.o[k].frequency)
+              nt.o[k].frequency.cancelScheduledValues(0);
+            else
+              nt.o[k].playbackRate.cancelScheduledValues(0);
+            nt.g[k].gain.cancelScheduledValues(0);
+            try { nt.o[k].stop(); } catch (e) { /* already ended */ }
+            if(nt.o[k].detune){
+              try { this.chmod[nt.ch].disconnect(nt.o[k].detune); } catch(e) { /* not connected */ }
+            }
+            nt.g[k].gain.value=0;
+          }
+        }
+        return;
+      }
+      if(t>now){
+        nt._stopAt=t;
+        nt.l=nt.o.length;
+        for(let k=nt.o.length-1;k>=0;--k){
+          const o=nt.o[k],g=nt.g[k],b=nt.q[k];
+          try { o.stop(t); } catch (e) { /* already ended */ }
+          /* A scheduled cut preserves automation and routes until onended. */
+          o.onended=()=>{
+            o.disconnect(); g.disconnect(); b && b.disconnect();
+            if(o.detune){
+              try { this.chmod[nt.ch].disconnect(o.detune); } catch(e) { /* not connected */ }
+            }
+            --nt.l || this._gone.delete(nt);
+          };
+        }
+        this._gone.add(nt);
+        return;
+      }
+      nt._stopAt=now;
       for(let k=nt.o.length-1;k>=0;--k){
         if(nt.o[k].frequency){
           nt.o[k].frequency.cancelScheduledValues(0);
@@ -1207,7 +1264,7 @@ function WebAudioTinySynthCore(target) {
       nt.l=nt.o.length;
       this._gone.add(nt);
     },
-    _limitVoices:(ch,n)=>{ // eslint-disable-line no-unused-vars -- callers pass the new note; the limit is global
+    _limitVoices:(ch,n,t)=>{ // callers pass the new note; the limit is global
       this.notetab.sort(function(n1,n2){
         if(n1.f!=n2.f) return n1.f-n2.f;
         if(n1.e!=n2.e) return n2.e-n1.e;
@@ -1215,8 +1272,9 @@ function WebAudioTinySynthCore(target) {
       });
       for(let i=this.notetab.length-1;i>=0;--i){
         var nt=this.notetab[i];
-        if(this.actx.currentTime>nt.e || i>=(this.voices-1)){
-          this._pruneNote(nt);
+        const ended=this.actx.currentTime>nt.e;
+        if(ended || i>=(this.voices-1)){
+          this._pruneNote(nt,ended ? undefined : t);
           this.notetab.splice(i,1);
         }
       }
@@ -1262,7 +1320,7 @@ function WebAudioTinySynthCore(target) {
         if(![fp[i]/b[i],fp[i]/b[i]*pn.p,vp[i],pn.s*vp[i]].every(f32))
           return;
       }
-      this._limitVoices(ch,n);
+      this._limitVoices(ch,n,t);
       const q=[]; // the output operators' filters, by operator (#27)
       for(let i=0;i<p.length;++i){
         pn=p[i];
@@ -1401,16 +1459,24 @@ function WebAudioTinySynthCore(target) {
         }
       }
     },
-    allSoundOff:(ch)=>{
+    _allSoundOffAt:(ch,t)=>{
       ch=this._ch(ch);
+      if(!this.actx || this._dead)
+        return;
+      if(t==undefined)
+        t=this.actx.currentTime;
       for(let i=this.notetab.length-1;i>=0;--i){
         const nt=this.notetab[i];
         if(nt.ch==ch){
-          this._pruneNote(nt);
+          this._pruneNote(nt,t);
           this.notetab.splice(i,1);
         }
       }
+      for(const nt of this._gone)
+        if(nt.ch==ch && nt._stopAt>t)
+          this._pruneNote(nt,t);
     },
+    allSoundOff:(ch)=>this._allSoundOffAt(ch),
     resetAllControllers:(ch)=>{
       ch=this._ch(ch);
       this.bend[ch]=0; this.ex[ch]=1.0;
@@ -1570,7 +1636,7 @@ function WebAudioTinySynthCore(target) {
         case 120:  /* all sound off */
         case 123:  /* all notes off */
         case 124: case 125: case 126: case 127: /* omni off/on mono/poly */
-          this.allSoundOff(ch);
+          this._allSoundOffAt(ch,this._tsConv(t));
           break;
         case 121: this.resetAllControllers(ch); break;
         }
