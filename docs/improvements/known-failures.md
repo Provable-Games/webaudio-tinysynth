@@ -16,9 +16,10 @@ comparison and requires the reported difference and first-divergence index
 to match. Drum repeat roles must be `repeat` and `kept source`; the kept
 source must match the first source capture. Both original pairs are
 required for the drum-54 exception.
-The q1/48 kHz GM125 source/min mismatch is separately scoped to its first
-attempt; a clean diagnostic rerender does not clear the original verdict
-([#96 evidence addendum](https://github.com/Provable-Games/webaudio-tinysynth/issues/96#issuecomment-6051228830)).
+The q1/48 kHz GM125 and GM127 source/min mismatches are separately scoped to
+their first attempts; clean diagnostic rerenders do not clear either original
+verdict ([GM125 addendum](https://github.com/Provable-Games/webaudio-tinysynth/issues/96#issuecomment-6051228830),
+[GM127 addendum](https://github.com/Provable-Games/webaudio-tinysynth/issues/96#issuecomment-6051496096)).
 The strict full-mix qualification mode rejects this option.
 
 | Failure | Accepted ordinary-CI scope | Tracking |
@@ -26,7 +27,7 @@ The strict full-mix qualification mode rejects this option.
 | Stereo generated-buffer descriptor contradiction | A final `convBuf` descriptor says one channel, while browser and Node capture traces, independent expected dimensions, retained raw bytes and SHA-256 agree on stereo. Only this descriptor discrepancy and its derived checks are excepted. All three engines, quality 0/1, 44.1/48 kHz. | #79 |
 | WebKit noisy-program first PCM mismatch | `render q0 44100`: GM121/125; `render q0 48000`: GM127; `short-notes completed min`: q1/program120 or program126 (including both in the same case). Only the named parity/completed-attack assertion and its valid split-measurement layout are excepted. Other programs, fixtures, assertions and malformed evidence remain blocking. | #91 |
 | WebKit drum-54 first PCM mismatch | `render q1 48000`, drum 54 only: both source/min parity and fresh-repeat/source checks, with valid 47-slot split measurements and original WAV pairs. Other drums, rates, qualities, checks and inconsistent capture roles/identity remain blocking. | [#96](https://github.com/Provable-Games/webaudio-tinysynth/issues/96) |
-| WebKit GM125 first PCM mismatch | `render q1 48000`, GM125 source/min only: exact same-engine parity failure with valid 32-slot split measurements and its original source/min WAV pair. Other programs, cases, checks and malformed evidence remain blocking. | [#96 evidence addendum](https://github.com/Provable-Games/webaudio-tinysynth/issues/96#issuecomment-6051228830) |
+| WebKit GM125/GM127 first PCM mismatch | `render q1 48000`, GM125 or GM127 source/min only: exact same-engine parity failure with valid 32-slot split measurements and its original source/min WAV pair per failed program. Other programs, cases, checks and malformed evidence remain blocking. | [GM125 addendum](https://github.com/Provable-Games/webaudio-tinysynth/issues/96#issuecomment-6051228830), [GM127 addendum](https://github.com/Provable-Games/webaudio-tinysynth/issues/96#issuecomment-6051496096) |
 | WebKit drum-58 first PCM mismatch | `render q0 48000`, drum 58 source/min parity only, valid 47-slot split measurements and its original WAV pair. An approved GM127 failure in the same case is independently validated, including both groups and every WAV pair. Repeat assertions and other drums/settings remain blocking. | [#97](https://github.com/Provable-Games/webaudio-tinysynth/issues/97) |
 | WebKit held-note first PCM mismatch | `short-notes held source`, q1/program119 at 0.0700 s only: the pre-note-off/uncut comparison with tolerance `0.0002` of peak. Valid 768-item diagnostic summary and exact comparison reason/detail required. Audibility, finite output, page errors, cleanup and other programs/durations/builds remain blocking. This spec retains JSON, not first-attempt WAVs. | [#97](https://github.com/Provable-Games/webaudio-tinysynth/issues/97) |
 | WebKit full-mix peak overshoot | Historical `ws-mid-default`, q1/48 kHz, first captures. Already outside ordinary PR CI in the manual strict qualification lane; its actual failed/incomplete verdict is retained. | #79, #91 |

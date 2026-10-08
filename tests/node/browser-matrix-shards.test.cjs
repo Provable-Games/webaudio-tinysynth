@@ -1047,9 +1047,41 @@ function mutateKnownDrumFailure(files) {
   return { report: c, resultPath: rel };
 }
 
-function mutateKnownGm125Q1Failure(files, { pairIndex = 1 } = {}) {
+function mutateKnownGmQ1Failure(files, program, { pairIndex = 1 } = {}) {
   return mutateKnownRenderFailure(files, { descriptor: false, caseId: "render q1 48000",
-    item: knownFailurePolicy.RENDER_GROUP + " program 125 source/min", pairIndex });
+    item: knownFailurePolicy.RENDER_GROUP + " program " + program + " source/min", pairIndex });
+}
+
+function mutateKnownGm125Q1Failure(files, options) {
+  return mutateKnownGmQ1Failure(files, 125, options);
+}
+
+function mutateKnownGm127Q1Failure(files, options) {
+  return mutateKnownGmQ1Failure(files, 127, options);
+}
+
+function mutateKnownGm125And127Q1Failures(files) {
+  const gm125 = mutateKnownGm125Q1Failure(files, { pairIndex: 1 });
+  const firstSummary = structuredClone(gm125.report.observations[knownFailurePolicy.FAILURE_OBSERVATION]);
+  const firstChecks = structuredClone(gm125.report.checks);
+  const firstMeasurements = structuredClone(gm125.report.observations.measurements);
+  const gm127 = mutateKnownGm127Q1Failure(files, { pairIndex: 2 });
+  const c = gm127.report;
+  c.observations.measurements = firstMeasurements;
+  const summary = c.observations[knownFailurePolicy.FAILURE_OBSERVATION];
+  summary.failures = [...firstSummary.failures, ...summary.failures];
+  summary.firstAttemptFailures = summary.intermittent = 2;
+  summary.diagnosticRenderAttempts = 2;
+  summary.rendersIncludingFirstAttempts = summary.items + 2;
+  summary.diagnosticBudget.unspent = 4;
+  const checkName = knownFailurePolicy.RENDER_GROUP + ": min renders the same PCM as source (max |diff| <= " +
+    String(tolerances("webkit").sameEngineSample) + ")";
+  const checks = [...firstChecks, ...c.checks];
+  const detail = summary.failures.map((failure) => failure.item + ": " + failure.firstAttempt.reasons[0] +
+    " (first attempt; " + FIRST_ATTEMPT.SHORT[failure.outcome] + ")").join(" | ");
+  c.checks = checks.filter((check) => check.name !== checkName);
+  c.checks.push({ name: checkName, ok: false, detail });
+  return { report: c, resultPath: gm127.resultPath };
 }
 
 function mutateKnownDrum54AndGm125Q1Failures(files) {
@@ -1422,7 +1454,7 @@ test("drum-54 exception preserves both first failures and rejects other scopes o
   }
 });
 
-test("q1/48 kHz WebKit GM125 exception is exact and composes only with complete drum-54 evidence", () => {
+test("q1/48 kHz WebKit GM125/GM127 exception is exact and composes only with complete drum-54 evidence", () => {
   const strict = merged((files) => { mutateKnownGm125Q1Failure(files); });
   assert.equal(strict.status, 1, strict.out);
 
@@ -1432,10 +1464,46 @@ test("q1/48 kHz WebKit GM125 exception is exact and composes only with complete 
     rawJson = JSON.stringify(rawCase);
   }, TEST_REFERENCE_BYTES, null, "core", "core", {}, true);
   assert.equal(accepted.status, 0, accepted.out);
-  assert.match(accepted.out, /webkit-gm125-q1-48000-first-attempt/);
+  assert.match(accepted.out, /webkit-gm125-127-q1-48000-first-attempt/);
   assert.equal(JSON.stringify(rawCase), rawJson);
   assert.equal(rawCase.status, "fail");
   assert.equal(rawCase.checks.filter((check) => check.ok === false).length, 1);
+
+  const gm127Strict = merged((files) => { mutateKnownGm127Q1Failure(files); });
+  assert.equal(gm127Strict.status, 1, gm127Strict.out);
+  let gm127Case;
+  const gm127Accepted = merged((files) => { gm127Case = mutateKnownGm127Q1Failure(files).report; },
+    TEST_REFERENCE_BYTES, null, "core", "core", {}, true);
+  assert.equal(gm127Accepted.status, 0, gm127Accepted.out);
+  assert.match(gm127Accepted.out, /webkit-gm125-127-q1-48000-first-attempt/);
+  assert.equal(gm127Case.status, "fail");
+  assert.equal(gm127Case.observations[knownFailurePolicy.FAILURE_OBSERVATION].failures[0].item,
+    knownFailurePolicy.RENDER_GROUP + " program 127 source/min");
+
+  let combinedGmCase;
+  const combinedGm = merged((files) => { combinedGmCase = mutateKnownGm125And127Q1Failures(files).report; },
+    TEST_REFERENCE_BYTES, null, "core", "core", {}, true);
+  assert.equal(combinedGm.status, 0, combinedGm.out);
+  assert.match(combinedGm.out, /webkit-gm125-127-q1-48000-first-attempt/);
+  assert.equal(combinedGmCase.status, "fail");
+  assert.deepEqual(combinedGmCase.observations[knownFailurePolicy.FAILURE_OBSERVATION].failures.map((failure) => failure.item), [
+    knownFailurePolicy.RENDER_GROUP + " program 125 source/min",
+    knownFailurePolicy.RENDER_GROUP + " program 127 source/min",
+  ]);
+  assert.equal(combinedGmCase.checks.filter((check) => check.ok === false).length, 1);
+  assert.match(combinedGmCase.checks.find((check) => check.ok === false).detail,
+    /program 125 source\/min:.*\| gm-programs-96-127 program 127 source\/min:/);
+
+  const unknownProgram = merged((files) => {
+    const c = mutateKnownGm127Q1Failure(files).report;
+    const summary = c.observations[knownFailurePolicy.FAILURE_OBSERVATION];
+    const failure = summary.failures[0];
+    failure.item = knownFailurePolicy.RENDER_GROUP + " program 126 source/min";
+    failure.firstAttempt.pcmRetention.label = failure.item;
+    c.checks.find((check) => check.ok === false).detail = failure.item + ": " + failure.firstAttempt.reasons[0] +
+      " (first attempt; " + FIRST_ATTEMPT.SHORT[failure.outcome] + ")";
+  }, TEST_REFERENCE_BYTES, null, "core", "core", {}, true);
+  assert.equal(unknownProgram.status, 1, unknownProgram.out);
 
   const classify = (engine, c) => knownFailurePolicy.classifyKnownCase(engine, c);
   for (const [scope, mutate, engine = "webkit"] of [
@@ -1458,7 +1526,7 @@ test("q1/48 kHz WebKit GM125 exception is exact and composes only with complete 
     TEST_REFERENCE_BYTES, null, "core", "core", {}, true);
   assert.equal(combined.status, 0, combined.out);
   assert.match(combined.out, /webkit-drum54-q1-48000-first-attempt/);
-  assert.match(combined.out, /webkit-gm125-q1-48000-first-attempt/);
+  assert.match(combined.out, /webkit-gm125-127-q1-48000-first-attempt/);
 
   const partialDrum = merged((files) => {
     const c = mutateKnownDrum54AndGm125Q1Failures(files).report;
