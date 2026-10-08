@@ -95,6 +95,11 @@ Modifications by Provable Games, based on upstream commit
     within it shifts. A live note sent before that starts after the
     build with its full envelope (about 46 ms in Chromium); prewarm()
     after resume() avoids that and removes only this deferred build.
+  - webaudio-tinysynth.js: constructor option autoResume (default true)
+    allows an application to own context resume. With false, send does
+    not wake suspended/interrupted audio and the sequencer waits until
+    the context runs. Explicit resume remains available; suspension
+    retains the loaded score, voices and scheduled events.
   - webaudio-tinysynth.min.js and its source map are regenerated from
     the modified source.
   - Demo pages and README updated to use the JavaScript API; tests added.
