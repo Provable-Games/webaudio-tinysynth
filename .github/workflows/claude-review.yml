@@ -240,6 +240,36 @@ jobs:
             exit 1
           fi
 
+      # Fixed categories only: do not publish the transcript or provider error text.
+      # The pinned action throws before exporting its session ID on runtime failure.
+      - name: Report the Claude runtime failure category
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.claude.outcome == 'failure' }}
+        run: |
+          python3 -I -B - <<'PY_DIAGNOSTIC'
+          import json, os
+          from pathlib import Path
+          try:
+              messages = json.loads((Path(os.environ["RUNNER_TEMP"]) / "claude-execution-output.json").read_text())
+              final = next(m for m in reversed(messages) if isinstance(m, dict) and m.get("type") == "result")
+          except (OSError, ValueError, TypeError, StopIteration):
+              print("Claude runtime failure category: no readable final result")
+          else:
+              if final.get("is_error") is True or final.get("subtype") != "success":
+                  text = (str(final.get("result", "")) + " " + str(final.get("errors", ""))).lower()
+                  categories = {
+                      "authentication": ("authentication", "unauthorized", "invalid token", "expired token", "token expired", "not logged in", "please login", "401"),
+                      "usage limit": ("usage limit", "rate limit", "limit reached", "out of extra usage", "hit your limit", "reached your limit", "429"),
+                      "model unavailable": ("model not found", "unknown model", "invalid model", "model access", "not have access to", "model does not exist", "404"),
+                      "billing": ("credit balance", "billing", "payment required", "402"),
+                      "network or service": ("connection", "network", "timed out", "overloaded", "503", "529"),
+                      "runtime options": ("unknown option", "unrecognized option", "invalid option"),
+                  }
+                  matched = [name for name, needles in categories.items() if any(n in text for n in needles)]
+                  print("Claude runtime failure category: " + (", ".join(matched) or "unclassified provider/runtime error"))
+              else:
+                  print("Claude runtime failure category: action failed after a successful final result")
+          PY_DIAGNOSTIC
+
       - name: Record the review result
         id: result
         if: ${{ !cancelled() && steps.verify.outcome == 'success' }}

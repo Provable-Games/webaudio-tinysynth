@@ -180,6 +180,15 @@ or `### [` and write nothing before, between or after the findings.
   reading the files", and rejecting an otherwise valid review for it adds
   noise without adding safety.
 
+On a first-attempt Claude runtime failure, the workflow reports only fixed
+failure categories (authentication, usage limit, model availability, billing,
+network/service or runtime options) from the action's final result. It does
+not publish provider error text or the transcript, and it does not retry or
+approve the failed review. A category is a troubleshooting hint, not a confirmed
+root cause. The pinned action throws before exporting its session ID on such
+failures; the resulting session-validation error is secondary. An unclassified
+error still requires provider-side investigation.
+
 ## Retry
 
 A model sometimes adds a sentence to an otherwise clean answer. On PR #39,

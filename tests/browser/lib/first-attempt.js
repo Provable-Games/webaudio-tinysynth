@@ -100,10 +100,20 @@ const SHORT = { [OUTCOMES.CLEAN]: "clean", [OUTCOMES.INTERMITTENT]: "diagnostic:
  * `retries`, stopping at the first clean one, and only while the budget lasts) are listed in
  * `diagnostics`; `attempts` counts every render of the item.
  */
-async function attempts({ first, judge, rerun, retries = 2, budget }) {
+/* onFirstFailure is awaited once after the first failed verdict and before any diagnostic re-render. */
+async function attempts({ first, judge, rerun, retries = 2, budget, onFirstFailure = null }) {
   const v = judge(first);
   const out = { ok: v.ok, reasons: v.reasons.slice(), attempts: 1, diagnostics: [], outcome: OUTCOMES.CLEAN };
   if (v.ok) return out;
+  if (onFirstFailure) {
+    try {
+      out.firstFailure = await onFirstFailure(first);
+    } catch (error) {
+      // Retention is diagnostic: an output failure cannot erase or replace the first verdict.
+      out.firstFailure = { status: "capture-error", saved: false,
+        reason: error && typeof error.message === "string" ? error.message : "first-failure callback failed" };
+    }
+  }
   if (!rerun || !budget || budget.left <= 0) {
     if (budget) ++budget.skipped;
     out.outcome = OUTCOMES.NOT_RERENDERED;
@@ -127,9 +137,10 @@ async function attempts({ first, judge, rerun, retries = 2, budget }) {
  * render of each side (null keeps that side's first render), onDiagnostic(render) sees every
  * re-render, and each attempt records the cross differences that say which side moved.
  */
-async function comparePair({ a, b, rerenderA, rerenderB, tolerance, budget, retries = 2, onDiagnostic = (r) => r }) {
+async function comparePair({ a, b, rerenderA, rerenderB, tolerance, budget, retries = 2, onDiagnostic = (r) => r, onFirstFailure = null }) {
   return attempts({
     first: { a, b }, budget, retries,
+    onFirstFailure,
     judge: (x) => { const c = compareRenders(x.a, x.b, tolerance); return { ok: c.ok, reasons: c.reasons, info: x.cross }; },
     rerun: async () => {
       const na = rerenderA ? onDiagnostic(await rerenderA()) : a;
@@ -147,7 +158,11 @@ function createLog(budget) {
     add(label, res) {
       ++items;
       renders += res.attempts;
-      if (!res.ok) failures.push({ item: label, firstAttempt: { reasons: res.reasons }, outcome: res.outcome, attempts: res.attempts, diagnostics: res.diagnostics });
+      if (!res.ok) {
+        const firstAttempt = { reasons: res.reasons };
+        if (res.firstFailure !== undefined) firstAttempt.pcmRetention = res.firstFailure;
+        failures.push({ item: label, firstAttempt, outcome: res.outcome, attempts: res.attempts, diagnostics: res.diagnostics });
+      }
       return res;
     },
     /* Counts renders of the failed items only beyond their first. */

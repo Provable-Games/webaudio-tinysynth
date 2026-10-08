@@ -20,6 +20,8 @@
 const pages = require("../lib/pages");
 const A = require("../lib/analysis");
 const { SCENARIOS } = require("../lib/scenarios");
+const float32Digest = require("../lib/float32-digest");
+const { SEED_EXPECTED } = require("./seed-expected");
 const { classifyRejections } = require("../lib/known");
 const { tolerances } = require("../tolerances");
 const FA = require("../lib/first-attempt");
@@ -37,9 +39,33 @@ function renderSpec(s, { seed, sr, quality }, variant = {}) {
   return spec;
 }
 
+function bufferCaptureSettings(spec) {
+  const steps = spec.steps || [];
+  const noteOn = steps.find((step) => step.call === "noteOn" && Array.isArray(step.args) && step.args.length >= 4);
+  const noteOff = steps.find((step) => step.call === "noteOff" && Array.isArray(step.args) && step.args.length >= 3);
+  const patch = noteOn && (spec.timbres || []).find((row) => Array.isArray(row) && row[0] === noteOn.args[0]);
+  return {
+    seed: spec.seed,
+    sampleRate: spec.sr,
+    quality: spec.options && spec.options.quality,
+    options: { quality: spec.options && spec.options.quality, useReverb: spec.options && spec.options.useReverb },
+    masterVol: spec.masterVol,
+    reverbLev: spec.reverbLev === undefined ? null : spec.reverbLev,
+    durationSec: spec.duration,
+    timbres: spec.timbres || [],
+    steps,
+    activeProbe: noteOn && noteOff ? {
+      channel: noteOn.args[0], program: patch ? patch[1] : null, pitch: noteOn.args[1], velocity: noteOn.args[2],
+      onsetSec: noteOn.args[3], offChannel: noteOff.args[0], offPitch: noteOff.args[1], offSec: noteOff.args[2],
+      timbre: patch ? patch[2] : null,
+    } : null,
+  };
+}
+
 async function openRenderPage(t, build, seed, browser = null) {
   const p = await t.newPage({ offline: true, browser });
-  await p.page.setContent(pages.inlinePage({ library: pages.readLibrary(build, t.shared.options.overrides), seed, after: [pages.pageScript("render.js")] }));
+  await p.page.setContent(pages.inlinePage({ library: pages.readLibrary(build, t.shared.options.overrides), seed,
+    after: [pages.pageScript("../lib/float32-digest.js"), pages.pageScript("render.js")] }));
   return p;
 }
 
@@ -47,6 +73,45 @@ async function render(p, spec) {
   const r = await p.page.evaluate((s) => window.__t6.render(s), spec); // eslint-disable-line no-undef -- runs in the page
   r.channels = r.pcm ? r.pcm.map(decode) : null;
   delete r.pcm;
+  if (r.bufferBytes) {
+    const digests = {};
+    const captures = {};
+    const captureTrace = {};
+    for (const name of ["convBuf", "n0", "n1"]) {
+      const capture = r.bufferBytes[name];
+      if (capture === null) {
+        digests[name] = null;
+        continue;
+      }
+      if (!capture || typeof capture.bytesBase64 !== "string" ||
+          !Number.isSafeInteger(capture.channels) || capture.channels < 1 ||
+          !Number.isSafeInteger(capture.frames) || capture.frames < 0 ||
+          !Number.isSafeInteger(capture.byteLength) || capture.byteLength < 0)
+        throw new Error("malformed generated Float32 buffer byte capture for " + name);
+      try {
+        const digest = float32Digest.sha256Base64Planar(capture.bytesBase64, capture.channels, capture.frames);
+        if (digest.byteLength !== capture.byteLength)
+          throw new RangeError("declared byteLength " + capture.byteLength + " differs from validated " + digest.byteLength);
+        digests[name] = Object.freeze(digest);
+        recordCreatedBufferDigest(digests, name, digests[name]);
+        captures[name] = Buffer.from(capture.bytesBase64, "base64");
+        captureTrace[name] = Object.freeze({
+          browser: Object.freeze({ channels: capture.channels, frames: capture.frames,
+            byteLength: capture.byteLength, base64Chars: capture.bytesBase64.length }),
+          node: Object.freeze({ channels: digest.channels, frames: digest.frames,
+            byteLength: digest.byteLength, decodedByteLength: captures[name].length, sha256: digest.sha256 }),
+        });
+      } catch (error) {
+        throw new Error("invalid generated Float32 buffer bytes for " + name + ": " + error.message, { cause: error });
+      }
+    }
+    r.bufferSha256 = digests;
+    r.bufferCaptures = captures;
+    r.bufferCaptureTrace = captureTrace;
+    r.bufferCaptureSettings = bufferCaptureSettings(spec);
+    delete r.bufferBytes;
+    for (const name of GENERATED_BUFFER_NAMES) recordBufferMapObservation(digests, name, "renderReturn");
+  }
   return r;
 }
 
@@ -77,7 +142,12 @@ async function renderParts(p, s, ctx, variant = {}) {
  * items' rejections and NaN/Infinity counts added up.
  */
 function combine(s, parts) {
-  if (!s.items) return parts[0];
+  if (!s.items) {
+    const result = parts[0];
+    if (result && result.bufferSha256)
+      for (const name of GENERATED_BUFFER_NAMES) recordBufferMapObservation(result.bufferSha256, name, "combine");
+    return result;
+  }
   const nch = parts[0].channels.length;
   const channels = [];
   for (let c = 0; c < nch; ++c) {
@@ -89,7 +159,9 @@ function combine(s, parts) {
   }
   const sr = parts[0].sr;
   return {
-    sr, channels, buffers: parts[0].buffers, randomCalls: parts[0].randomCalls,
+    sr, channels, buffers: parts[0].buffers, bufferSha256: parts[0].bufferSha256,
+    bufferCaptures: parts[0].bufferCaptures, bufferCaptureTrace: parts[0].bufferCaptureTrace,
+    bufferCaptureSettings: parts[0].bufferCaptureSettings, randomCalls: parts[0].randomCalls,
     internalContext: [...new Set(parts.map((r) => r.internalContext))].join(","),
     hash: parts.map((r) => r.hash).join("+"),
     rejections: parts.flatMap((r) => r.rejections),
@@ -104,6 +176,355 @@ function combine(s, parts) {
   };
 }
 
+const GENERATED_BUFFER_NAMES = ["convBuf", "n0", "n1"];
+const GENERATED_BUFFER_INTEGRITY_CONTEXTS = new WeakMap();
+const MAX_GENERATED_BUFFER_CONTEXT_CHARS = 4096;
+
+function runtimeIntegrityFlags() {
+  const knownFlags = new Set(["--inspect", "--inspect-brk", "--require", "--import", "--max-old-space-size",
+    "--stack-size", "--enable-source-maps", "--no-warnings", "--trace-warnings", "--conditions", "--expose-gc",
+    "--test", "--test-reporter"]);
+  const flags = [];
+  let preloadPresent = false;
+  let truncated = false;
+  try {
+    const args = process.execArgv;
+    if (Array.isArray(args)) {
+      const scanLength = Math.min(args.length, 64);
+      for (let i = 0; i < scanLength; ++i) {
+        const arg = args[i];
+        if (typeof arg !== "string" || !arg.startsWith("-")) continue;
+        const equalsAt = arg.indexOf("=");
+        const name = arg.slice(0, equalsAt < 0 ? 64 : Math.min(equalsAt, 64));
+        const normalized = name === "-r" ? "--require" : name;
+        if (["--require", "--import"].includes(normalized)) {
+          preloadPresent = true;
+          if (arg === normalized || arg === "-r") ++i;
+        }
+        if (flags.length < 16) flags.push(knownFlags.has(normalized) ? normalized : "--other");
+        else truncated = true;
+      }
+      if (args.length > scanLength) truncated = true;
+    }
+  } catch {
+    truncated = true;
+  }
+  return {
+    nodeVersion: typeof process.version === "string" ? process.version.slice(0, 32) : "unknown",
+    platform: typeof process.platform === "string" ? process.platform.slice(0, 24) : "unknown",
+    arch: typeof process.arch === "string" ? process.arch.slice(0, 24) : "unknown",
+    nodeOptionsSet: (() => { try { return Object.prototype.hasOwnProperty.call(process.env, "NODE_OPTIONS"); } catch { return false; } })(),
+    execArgvFlags: flags,
+    execArgvTruncated: truncated,
+    preloadPresent,
+  };
+}
+
+function safeValueType(value) {
+  if (value === null) return "null";
+  return typeof value;
+}
+
+function descriptorSummary(target, key, mode) {
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(target, key);
+    if (!descriptor) return { kind: "missing" };
+    const summary = {
+      kind: Object.prototype.hasOwnProperty.call(descriptor, "value") ? "data" : "accessor",
+      enumerable: !!descriptor.enumerable,
+      configurable: !!descriptor.configurable,
+    };
+    if (summary.kind === "data") {
+      summary.writable = !!descriptor.writable;
+      if (mode === "channels") {
+        summary.valueType = safeValueType(descriptor.value);
+        summary.value = typeof descriptor.value === "number" && Number.isFinite(descriptor.value) ? descriptor.value : null;
+      } else if (mode === "slot") summary.valueType = safeValueType(descriptor.value);
+    } else {
+      summary.get = typeof descriptor.get === "function";
+      summary.set = typeof descriptor.set === "function";
+    }
+    return summary;
+  } catch {
+    return { kind: "error" };
+  }
+}
+
+function objectPrototypeKind(value) {
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype ? "Object.prototype" : prototype === null ? "null" : "other";
+  } catch {
+    return "error";
+  }
+}
+
+function objectIntegritySummary(value) {
+  if ((typeof value !== "object" && typeof value !== "function") || value === null)
+    return { valueType: safeValueType(value), channels: { kind: "unavailable" }, frozen: null, prototype: "unavailable" };
+  let frozen = null;
+  try { frozen = Object.isFrozen(value); } catch { /* Keep failure-only context primitive and bounded. */ }
+  return {
+    valueType: safeValueType(value),
+    channels: descriptorSummary(value, "channels", "channels"),
+    frozen,
+    prototype: objectPrototypeKind(value),
+    objectPrototypeChannels: descriptorSummary(Object.prototype, "channels", "flags"),
+  };
+}
+
+/* Fixed tuple: [kind, enumerable, configurable, writable, type]; accessors use null writable then get/set flags. */
+function fixedDigestFieldDescriptor(value, key) {
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  if (!descriptor) return ["missing"];
+  if (Object.prototype.hasOwnProperty.call(descriptor, "value"))
+    return ["data", !!descriptor.enumerable, !!descriptor.configurable, !!descriptor.writable, safeValueType(descriptor.value)];
+  return ["accessor", !!descriptor.enumerable, !!descriptor.configurable, null,
+    typeof descriptor.get === "function", typeof descriptor.set === "function"];
+}
+
+function generatedBufferDigestSnapshot(value) {
+  const fields = Object.create(null);
+  for (const key of ["sha256", "frames", "byteLength"]) fields[key] = fixedDigestFieldDescriptor(value, key);
+  fields.channels = descriptorSummary(value, "channels", "channels");
+  let frozen = null;
+  try { frozen = Object.isFrozen(value); } catch { /* Keep failure-only context primitive and bounded. */ }
+  return {
+    valueType: safeValueType(value),
+    fields,
+    frozen,
+    prototype: objectPrototypeKind(value),
+    objectPrototypeChannels: descriptorSummary(Object.prototype, "channels", "flags"),
+  };
+}
+
+function bufferSlotIntegritySummary(bufferMap, name) {
+  return {
+    own: descriptorSummary(bufferMap, name, "slot"),
+    objectPrototype: descriptorSummary(Object.prototype, name, "flags"),
+  };
+}
+
+function integrityContextForMap(bufferMap) {
+  if (!bufferMap || (typeof bufferMap !== "object" && typeof bufferMap !== "function")) return null;
+  let context = GENERATED_BUFFER_INTEGRITY_CONTEXTS.get(bufferMap);
+  if (!context) {
+    context = { runtime: null, buffers: Object.create(null) };
+    for (const name of GENERATED_BUFFER_NAMES) context.buffers[name] = { stages: Object.create(null) };
+    GENERATED_BUFFER_INTEGRITY_CONTEXTS.set(bufferMap, context);
+  }
+  return context;
+}
+
+function recordCreatedBufferDigest(bufferMap, name, digest) {
+  try {
+    const context = integrityContextForMap(bufferMap);
+    if (!context || !GENERATED_BUFFER_NAMES.includes(name)) return;
+    const buffer = context.buffers[name];
+    buffer.originalDigest = digest;
+    buffer.stages.digestCreated = {
+      value: generatedBufferDigestSnapshot(digest),
+      sameAsCreatedDigest: true,
+    };
+  } catch {
+    /* Diagnostics must never replace the integrity verdict. */
+  }
+}
+
+function recordBufferMapObservation(bufferMap, name, stage) {
+  try {
+    if (!bufferMap || (typeof bufferMap !== "object" && typeof bufferMap !== "function")) return;
+    const context = GENERATED_BUFFER_INTEGRITY_CONTEXTS.get(bufferMap);
+    if (!context || !GENERATED_BUFFER_NAMES.includes(name)) return;
+    const buffer = context.buffers[name];
+    const slot = Object.getOwnPropertyDescriptor(bufferMap, name);
+    const hasValue = !!slot && Object.prototype.hasOwnProperty.call(slot, "value");
+    const value = hasValue ? slot.value : undefined;
+    const summary = objectIntegritySummary(value);
+    const channels = summary.channels;
+    buffer.stages[stage] = {
+      mapSlotKind: !slot ? "missing" : hasValue ? "data" : "accessor",
+      mapSlotValueType: hasValue ? safeValueType(value) : null,
+      objectPrototypeSlotKind: descriptorSummary(Object.prototype, name, "flags").kind,
+      channels: { kind: channels.kind, valueType: channels.valueType || null, value: channels.valueType === "number" ? channels.value : null },
+      frozen: summary.frozen,
+      sameAsCreatedDigest: Object.prototype.hasOwnProperty.call(buffer, "originalDigest") && hasValue && value === buffer.originalDigest,
+    };
+  } catch {
+    /* Diagnostics must never replace the integrity verdict. */
+  }
+}
+
+function recordBufferIntegrityStage(bufferMap, name, stage, value) {
+  try {
+    const context = integrityContextForMap(bufferMap);
+    if (!context || !GENERATED_BUFFER_NAMES.includes(name)) return;
+    const buffer = context.buffers[name];
+    if (stage === "beforeSave" && !context.runtime) context.runtime = runtimeIntegrityFlags();
+    context.buffers[name].stages[stage] = {
+      value: objectIntegritySummary(value),
+      mapSlot: bufferSlotIntegritySummary(bufferMap, name),
+      sameAsCreatedDigest: Object.prototype.hasOwnProperty.call(buffer, "originalDigest") && value === buffer.originalDigest,
+    };
+  } catch {
+    /* Diagnostics must never replace the integrity verdict. */
+  }
+}
+
+/* Map-stage tuple: [map slot kind/type/prototype kind, own channel kind/type/value, frozen, created-digest identity]. */
+function compactBufferMapObservation(stage) {
+  return [
+    [stage.mapSlotKind, stage.mapSlotValueType, stage.objectPrototypeSlotKind],
+    [stage.channels.kind, stage.channels.valueType, stage.channels.value],
+    stage.frozen,
+    stage.sameAsCreatedDigest,
+  ];
+}
+
+/* Creation tuple: [value type, named fixed-field descriptors, frozen, prototype, inherited channels descriptor, identity]. */
+function compactCreatedDigestObservation(stage) {
+  return [stage.value.valueType, stage.value.fields, stage.value.frozen, stage.value.prototype,
+    stage.value.objectPrototypeChannels, stage.sameAsCreatedDigest];
+}
+
+function integrityStagesForContext(stages) {
+  if (!stages) return null;
+  const result = {};
+  for (const stage of Object.keys(stages)) {
+    result[stage] = stage === "digestCreated" ? compactCreatedDigestObservation(stages[stage])
+      : stage === "renderReturn" || stage === "combine" ? compactBufferMapObservation(stages[stage]) : stages[stage];
+  }
+  return result;
+}
+
+function appendBufferIntegrityContext(detail, sourceBuffers, minBuffers, failingSlots) {
+  const fallback = '{"unavailable":true}';
+  try {
+    const source = sourceBuffers && GENERATED_BUFFER_INTEGRITY_CONTEXTS.get(sourceBuffers);
+    const min = minBuffers && GENERATED_BUFFER_INTEGRITY_CONTEXTS.get(minBuffers);
+    const slots = [...new Set(failingSlots)];
+    const first = slots[0] || "";
+    const slash = first.indexOf("/");
+    const focusBuild = slash < 0 ? null : first.slice(0, slash);
+    const focusName = slash < 0 ? null : first.slice(slash + 1);
+    const focusState = focusBuild === "source" ? source : focusBuild === "min" ? min : null;
+    const otherBuild = focusBuild === "source" ? "min" : "source";
+    const otherState = otherBuild === "source" ? source : min;
+    const focusStages = focusName && focusState && focusState.buffers[focusName] && focusState.buffers[focusName].stages;
+    const counterpartStages = focusName && otherState && otherState.buffers[focusName] && otherState.buffers[focusName].stages;
+    const context = {
+      runtime: (source || min) && (source || min).runtime,
+      failure: {
+        slotCount: slots.length,
+        slots: slots.slice(0, GENERATED_BUFFER_NAMES.length * 2),
+        slotsTruncated: slots.length > GENERATED_BUFFER_NAMES.length * 2,
+      },
+      focus: focusName ? {
+        build: focusBuild,
+        buffer: focusName,
+        stages: integrityStagesForContext(focusStages),
+      } : null,
+      counterpart: focusName ? {
+        build: otherBuild,
+        buffer: focusName,
+        comparison: counterpartStages && counterpartStages.comparison || null,
+      } : null,
+    };
+    let encoded;
+    try { encoded = JSON.stringify(context); } catch { encoded = fallback; }
+    if (typeof encoded !== "string" || encoded.length > MAX_GENERATED_BUFFER_CONTEXT_CHARS) encoded = '{"omitted":"size-limit"}';
+    return detail + " | integrity-context=" + encoded;
+  } catch {
+    return detail + " | integrity-context=" + fallback;
+  }
+}
+
+function generatedBufferIntegrityCheck(sourceBuffers, minBuffers, options) {
+  const { quality, sampleRate, expectedFrames, requireSaved } = options;
+  const equalBufferMeasurements = (left, right) => GENERATED_BUFFER_NAMES.every((name) =>
+    left && right && left[name] && right[name] &&
+    ["sha256", "channels", "frames", "byteLength"].every((key) => left[name][key] === right[name][key]));
+  const failingSlots = [];
+  const bufferShapeProblems = (value, buildName) => GENERATED_BUFFER_NAMES.flatMap((name) => {
+    if (!value || typeof value !== "object") {
+      failingSlots.push(buildName + "/descriptors");
+      return [buildName + " descriptors missing"];
+    }
+    const row = value[name];
+    recordBufferIntegrityStage(value, name, "comparison", row);
+    const channels = name === "convBuf" ? 2 : 1;
+    const rel = "generated-buffers/q" + quality + "-" + sampleRate + "-reverb-" + buildName + "-" + name + ".f32le";
+    const at = buildName + " " + name;
+    if (!row) {
+      failingSlots.push(buildName + "/" + name);
+      return [at + " descriptor missing"];
+    }
+    const problems = [];
+    if (!/^[a-f0-9]{64}$/.test(row.sha256)) problems.push(at + " SHA-256 malformed");
+    if (row.channels !== channels) problems.push(at + " channels=" + row.channels + " expected=" + channels);
+    if (row.frames !== expectedFrames) problems.push(at + " frames=" + row.frames + " expected=" + expectedFrames);
+    if (row.byteLength !== channels * expectedFrames * 4)
+      problems.push(at + " byteLength=" + row.byteLength + " expected=" + (channels * expectedFrames * 4));
+    const trace = row.captureTrace;
+    if (!trace || !trace.browser || !trace.node) problems.push(at + " browser/Node capture-stage snapshot missing");
+    else {
+      const b = trace.browser, n = trace.node;
+      if (b.channels !== n.channels || b.frames !== n.frames || b.byteLength !== n.byteLength || b.byteLength !== n.decodedByteLength)
+        problems.push(at + " browser snapshot=" + JSON.stringify(b) + " Node snapshot=" + JSON.stringify(n));
+      if (n.channels !== row.channels || n.frames !== row.frames || n.byteLength !== row.byteLength || n.sha256 !== row.sha256)
+        problems.push(at + " final descriptor=" + JSON.stringify({ channels: row.channels, frames: row.frames, byteLength: row.byteLength, sha256: row.sha256 }) +
+          " differs from Node snapshot=" + JSON.stringify(n));
+      if (b.base64Chars !== Math.ceil(n.decodedByteLength / 3) * 4)
+        problems.push(at + " base64Chars=" + b.base64Chars + " does not match decoded bytes=" + n.decodedByteLength);
+    }
+    if (!row.artifact || row.artifact.path !== rel || row.artifact.saved !== requireSaved)
+      problems.push(at + " artifact retention/path mismatch (saved=" + (row.artifact && row.artifact.saved) + ")");
+    if (problems.length) failingSlots.push(buildName + "/" + name);
+    return problems;
+  });
+  const bufferProblems = [
+    ...bufferShapeProblems(sourceBuffers, "source"),
+    ...bufferShapeProblems(minBuffers, "min"),
+  ];
+  const measurementsMatch = !bufferProblems.length && equalBufferMeasurements(sourceBuffers, minBuffers);
+  if (!bufferProblems.length && !measurementsMatch) {
+    for (const name of GENERATED_BUFFER_NAMES) {
+      const left = sourceBuffers && sourceBuffers[name], right = minBuffers && minBuffers[name];
+      if (!left || !right || ["sha256", "channels", "frames", "byteLength"].some((key) => left[key] !== right[key]))
+        failingSlots.push("source/" + name, "min/" + name);
+    }
+  }
+  const ok = !bufferProblems.length && measurementsMatch;
+  let detail = ok ? JSON.stringify(sourceBuffers) : bufferProblems.slice(0, 8).join("; ") || "source/min SHA-256 descriptors differ";
+  if (!ok) detail = appendBufferIntegrityContext(detail, sourceBuffers, minBuffers, failingSlots);
+  return { ok, detail };
+}
+
+function saveGeneratedBufferCaptures(result, quality, sampleRate, build, t) {
+  const bufferMap = result.bufferSha256;
+  for (const name of ["convBuf", "n0", "n1"]) {
+    const measurement = bufferMap && bufferMap[name];
+    const bytes = result.bufferCaptures && result.bufferCaptures[name];
+    if (!measurement || !bytes) continue;
+    const rel = "generated-buffers/q" + quality + "-" + sampleRate + "-reverb-" + build + "-" + name + ".f32le";
+    recordBufferIntegrityStage(bufferMap, name, "beforeSave", measurement);
+    const saved = t.save(rel, bytes);
+    recordBufferIntegrityStage(bufferMap, name, "afterSave", measurement);
+    const row = Object.freeze({
+      sha256: measurement.sha256,
+      channels: measurement.channels,
+      frames: measurement.frames,
+      byteLength: measurement.byteLength,
+      captureTrace: result.bufferCaptureTrace && result.bufferCaptureTrace[name],
+      artifact: Object.freeze({ path: rel, saved: !!saved }),
+    });
+    recordBufferIntegrityStage(bufferMap, name, "constructedRow", row);
+    result.bufferSha256[name] = row;
+    recordBufferIntegrityStage(bufferMap, name, "afterInsert", row);
+  }
+  return result.bufferSha256;
+}
+
 async function renderScenario(p, s, ctx, variant = {}) {
   return combine(s, await renderParts(p, s, ctx, variant));
 }
@@ -112,6 +533,130 @@ const { maxDiff } = FA;
 
 /* Diagnostic re-renders a case may spend (the verdict never depends on them), first-attempt.js. */
 const MAX_DIAGNOSED = 6;
+/* Retention is separately counted and bounded: at most two PCM WAVs for six failed pairs per case. */
+const MAX_RETAINED_PCM_PAIRS = MAX_DIAGNOSED;
+const NATIVE_LITTLE_ENDIAN = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
+
+/* analysis.wav supplies the established Float32 WAV header; restore the sample bytes verbatim. */
+function exactFloat32Wav(channels, sampleRate) {
+  if (!Array.isArray(channels) || !channels.length ||
+      channels.some((channel) => !(channel instanceof Float32Array) || channel.length !== channels[0].length))
+    throw new TypeError("PCM WAV retention needs one or more equal-length Float32Array channels");
+  const wav = A.wav(channels, sampleRate);
+  const sourceBytes = channels.map((channel) => new Uint8Array(channel.buffer, channel.byteOffset, channel.byteLength));
+  let target = 44;
+  for (let frame = 0; frame < channels[0].length; ++frame) {
+    for (const bytes of sourceBytes) {
+      const source = frame * 4;
+      if (NATIVE_LITTLE_ENDIAN) {
+        wav[target++] = bytes[source];
+        wav[target++] = bytes[source + 1];
+        wav[target++] = bytes[source + 2];
+        wav[target++] = bytes[source + 3];
+      } else {
+        wav[target++] = bytes[source + 3];
+        wav[target++] = bytes[source + 2];
+        wav[target++] = bytes[source + 1];
+        wav[target++] = bytes[source];
+      }
+    }
+  }
+  return wav;
+}
+
+function planarFloat32Sha256(channels) {
+  if (NATIVE_LITTLE_ENDIAN) return A.sha256(...channels);
+  return A.sha256(...channels.map((channel) => {
+    const source = new Uint8Array(channel.buffer, channel.byteOffset, channel.byteLength);
+    const littleEndian = Buffer.alloc(channel.byteLength);
+    for (let i = 0; i < source.length; i += 4) {
+      littleEndian[i] = source[i + 3];
+      littleEndian[i + 1] = source[i + 2];
+      littleEndian[i + 2] = source[i + 1];
+      littleEndian[i + 3] = source[i];
+    }
+    return littleEndian;
+  }));
+}
+
+function pcmSideShape(render, role, rel, sampleRate) {
+  const channels = render && Array.isArray(render.channels) ? render.channels : [];
+  const channelFrames = channels.map((channel) => channel instanceof Float32Array ? channel.length : null);
+  const sameFrames = channelFrames.length > 0 && channelFrames.every((frames) => frames === channelFrames[0]);
+  const pcmBytes = channelFrames.every(Number.isSafeInteger) ? channelFrames.reduce((n, frames) => n + frames * 4, 0) : null;
+  return {
+    role,
+    path: rel,
+    channels: channels.length,
+    frames: sameFrames ? channelFrames[0] : null,
+    channelFrames,
+    sampleRate,
+    pcmBytes,
+    wavSha256: null,
+    wavBytes: null,
+    planarPcmSha256: null,
+    saved: false,
+  };
+}
+
+function createFirstPcmRetainer(t, { quality, sampleRate }, maxPairs = MAX_RETAINED_PCM_PAIRS) {
+  let pairIndex = 0, retainedPairs = 0;
+  return ({ a, b, label, roles }) => {
+    const index = ++pairIndex;
+    const prefix = "first-attempt-pcm/q" + quality + "-" + sampleRate + "/pair-" + String(index).padStart(3, "0");
+    const pair = {
+      schemaVersion: 1,
+      pairIndex: index,
+      label,
+      planarPcmEncoding: "IEEE-754 binary32 little-endian; planar channel order",
+      roles: { a: roles.a, b: roles.b },
+      saved: false,
+      status: "not-saved",
+      a: pcmSideShape(a, roles.a, prefix + "-first-a.wav", sampleRate),
+      b: pcmSideShape(b, roles.b, prefix + "-first-b.wav", sampleRate),
+    };
+    if (!t.out) {
+      pair.status = "output-disabled";
+      pair.reason = "no output directory";
+      return pair;
+    }
+    if (retainedPairs >= maxPairs) {
+      pair.reason = "PCM retention budget exhausted";
+      pair.status = "budget-exhausted";
+      return pair;
+    }
+    ++retainedPairs;
+    const renders = [a, b];
+    if (renders.some((render) => !render || !Array.isArray(render.channels) || !render.channels.length ||
+        render.channels.some((channel) => !(channel instanceof Float32Array) || channel.length !== render.channels[0].length))) {
+      pair.status = "unsupported-channel-shape";
+      pair.reason = "one or both first renders have non-rectangular Float32 channels";
+      return pair;
+    }
+    for (const [side, render] of [[pair.a, a], [pair.b, b]]) {
+      let wav;
+      try {
+        wav = exactFloat32Wav(render.channels, sampleRate);
+        side.wavBytes = wav.length;
+        side.wavSha256 = A.sha256(wav);
+        side.planarPcmSha256 = planarFloat32Sha256(render.channels);
+        side.saved = !!t.save(side.path, wav);
+        if (!side.saved) side.reason = "save returned no file";
+      } catch (error) {
+        side.reason = error && typeof error.message === "string" ? error.message : "WAV save failed";
+      }
+    }
+    pair.saved = pair.a.saved && pair.b.saved;
+    pair.status = pair.saved ? "saved" : pair.a.saved || pair.b.saved ? "partial" : "save-failed";
+    if (!pair.saved) pair.reason = "one or both first PCM WAVs were not saved";
+    return pair;
+  };
+}
+
+/* Raw peaks feed the strict qualification GM headroom gate; RMS stays in its existing display form. */
+function rawGmMeasurements(slots) {
+  return { peaks: slots.map((x) => x.peak), rms: slots.map((x) => +x.rms.toExponential(4)) };
+}
 
 function cases(shared) {
   const { matrix, options, engine } = shared;
@@ -138,6 +683,7 @@ function cases(shared) {
           const measurements = {};
           const hashes = {};
           const buffers = {};
+          let generatedBufferSha256 = null;
           const sameEngine = { bitIdentical: [], differing: {} };
           const kept = {};
           // Every first-attempt render, and the repeat and alternate-seed renders, is checked for
@@ -172,9 +718,12 @@ function cases(shared) {
            */
           const budget = FA.makeBudget(MAX_DIAGNOSED);
           const diag = FA.createLog(budget);
+          const retainPcm = createFirstPcmRetainer(t, { quality, sampleRate: sr });
           // A part pair that must agree, rerendered by rerenderA/rerenderB (null: that side keeps its render).
-          const judgePair = async (label, a, b, rerenderA, rerenderB) => {
-            const res = await FA.comparePair({ a, b, rerenderA, rerenderB, tolerance: tol.sameEngineSample, budget, onDiagnostic: (r) => audit(r, label + " diagnostic re-render", true) });
+          const judgePair = async (label, a, b, rerenderA, rerenderB, roles) => {
+            const res = await FA.comparePair({ a, b, rerenderA, rerenderB, tolerance: tol.sameEngineSample, budget,
+              onFirstFailure: (first) => retainPcm({ ...first, label, roles }),
+              onDiagnostic: (r) => audit(r, label + " diagnostic re-render", true) });
             diag.add(label, res);
             return res;
           };
@@ -186,7 +735,9 @@ function cases(shared) {
             for (const build of matrix.builds) {
               parts[build] = [];
               for (const v of [{}, ...variants]) {
-                const ps = await renderParts(pg[build], s, { seed, sr, quality }, v);
+                const captureBufferSha256 = s.name === "reverb" && parts[build].length === 0;
+                const renderVariant = captureBufferSha256 ? Object.assign({}, v, { captureBufferSha256: true }) : v;
+                const ps = await renderParts(pg[build], s, { seed, sr, quality }, renderVariant);
                 // Fault injection (lib/first-attempt.js): the first part of the min build's first render.
                 const fault = build === "min" && !parts.min.length ? injectRender.take() : null;
                 if (fault) ps[0] = FA.corruptRender(fault, ps[0]);
@@ -202,7 +753,8 @@ function cases(shared) {
                 const label = s.name + (s.items ? " " + s.items[k].label : "") + (vi ? " variant " + vi : "") + " source/min";
                 const r = await judgePair(label, a, b,
                   () => renderPart(pg.source, s, { seed, sr, quality }, allVariants[vi], k),
-                  () => renderPart(pg.min, s, { seed, sr, quality }, allVariants[vi], k));
+                  () => renderPart(pg.min, s, { seed, sr, quality }, allVariants[vi], k),
+                  { a: "source", b: "min" });
                 if (!r.ok) persistent.push(label + ": " + r.reasons[0] + " (first attempt; " + FA.SHORT[r.outcome] + ")");
               }
             }
@@ -215,6 +767,39 @@ function cases(shared) {
             const parity = !persistent.length;
             t.check(s.name + ": min renders the same PCM as source (max |diff| <= " + tol.sameEngineSample + ")", parity,
               parity ? (identical ? "bit-identical" : "max |diff| " + diff.toExponential(3)) : persistent.slice(0, 2).join(" | "));
+            if (s.name === "reverb") {
+              const expectedFrames = Math.floor(sr * 0.5);
+              for (const build of matrix.builds) {
+                const result = res[build][0];
+                saveGeneratedBufferCaptures(result, quality, sr, build, t);
+              }
+              const sourceBuffers = res.source[0].bufferSha256;
+              const minBuffers = res.min[0].bufferSha256;
+              const integrity = generatedBufferIntegrityCheck(sourceBuffers, minBuffers, {
+                quality, sampleRate: sr, expectedFrames, requireSaved: !!t.out,
+              });
+              t.check("reverb-enabled first-attempt generated Float32 buffers have complete source/min SHA-256 measurements",
+                integrity.ok, integrity.detail);
+              const sourceMinMatch = integrity.ok;
+              const expectedBuffers = SEED_EXPECTED.hashes[sr] && SEED_EXPECTED.hashes[sr][seed];
+              if (expectedBuffers) {
+                const expectedMatch = sourceMinMatch && ["convBuf", "n0", "n1"].every((name) => sourceBuffers[name].sha256 === expectedBuffers[name]);
+                t.check("source/min generated-buffer SHA-256 matches the independent seeded Float32 reference",
+                  expectedMatch,
+                  expectedMatch ? "all three buffers match at seed " + seed + " and " + sr + " Hz" : "generated-buffer SHA-256 differs from the independent seeded reference");
+              }
+            generatedBufferSha256 = {
+                schemaVersion: 1,
+                method: "sha256-f32le-planar-channel-order-v1",
+                producer: "node-crypto-after-browser-byte-transfer",
+                encoding: "IEEE-754 binary32 little-endian; planar channel-index order; sample bytes only",
+                scenarioId: "reverb",
+                attempt: 1,
+                firstAttempt: true,
+                settings: { source: res.source[0].bufferCaptureSettings, min: res.min[0].bufferCaptureSettings },
+                builds: { source: sourceBuffers, min: minBuffers },
+              };
+            }
             for (const build of parity ? ["source"] : matrix.builds) {
               const prefix = s.name + (parity ? "" : " [" + build + "]") + ": ";
               const check = (name, ok, detail) => t.check(prefix + name, ok, detail);
@@ -227,7 +812,7 @@ function cases(shared) {
               }
               const extra = s.verify(m, tol, check);
               if (s.gm && extra && extra.overFullScale.length) gmOver[s.name] = extra.overFullScale;
-              measurements[s.name + (parity ? "" : "/" + build)] = s.gm ? { peaks: m.slots.map((x) => +x.peak.toFixed(5)), rms: m.slots.map((x) => +x.rms.toExponential(4)) } : m;
+              measurements[s.name + (parity ? "" : "/" + build)] = s.gm ? rawGmMeasurements(m.slots) : m;
             }
             hashes[s.name] = res.source.map((r) => r.hash);
             buffers[s.name] = res.source[0].buffers;
@@ -246,7 +831,8 @@ function cases(shared) {
             for (let k = 0; k < ps.length; ++k) {
               const label = name + (s.items ? " " + s.items[k].label : "") + " repeat";
               // Both sides are re-rendered as diagnostics: the kept first render may be the odd one.
-              const r = await judgePair(label, ps[k], kept[name].parts[k], () => renderPart(again, s, { seed, sr, quality }, {}, k), () => renderPart(pg.source, s, { seed, sr, quality }, {}, k));
+              const r = await judgePair(label, ps[k], kept[name].parts[k], () => renderPart(again, s, { seed, sr, quality }, {}, k), () => renderPart(pg.source, s, { seed, sr, quality }, {}, k),
+                { a: "repeat", b: "kept source" });
               if (!r.ok) persistent.push(label + ": " + r.reasons[0] + " (first attempt; " + FA.SHORT[r.outcome] + ")");
             }
             const r = combine(s, ps);
@@ -272,7 +858,8 @@ function cases(shared) {
           t.observe("first-attempt same-engine failures and their diagnostic re-renders (the verdict is the first attempt's; a clean re-render does not clear it)", Object.assign({ firstAttemptRenders: renders, diagnosticRenders: diagRenders }, diag.summary()));
           t.observe("measurements", measurements);
           t.observe("render hashes (source build)", hashes);
-          t.observe("generated buffer hashes (convBuf, n0, n1)", buffers[SCENARIOS[0].name]);
+          t.observe("legacy generated buffer hashes (16-hex cyrb53, pitch-sine with useReverb 0)", buffers[SCENARIOS[0].name]);
+          t.observe("generated buffer SHA-256 (first reverb-enabled attempt)", generatedBufferSha256);
         },
       });
     }
@@ -280,4 +867,5 @@ function cases(shared) {
   return out;
 }
 
-module.exports = { cases, renderSpec, renderScenario, renderParts, combine, openRenderPage, render, decode, maxDiff };
+module.exports = { cases, renderSpec, bufferCaptureSettings, renderScenario, renderParts, combine, saveGeneratedBufferCaptures,
+  openRenderPage, render, decode, maxDiff, createFirstPcmRetainer, rawGmMeasurements, generatedBufferIntegrityCheck };

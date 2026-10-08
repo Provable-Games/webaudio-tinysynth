@@ -496,3 +496,66 @@ The user said: "lets stick to only high priority issues. I want to get to a prop
 - **Frozen until after the release:** every P2 and P3 issue (#66, #67, #69–#75, #77, #81–#88), #90 (push note API), #17 (refactor) and #20 (the separate docs pass; T10 covers accuracy instead).
 - **New features need explicit user approval during the freeze.** The supervisor flags any scope creep.
 - **#65 (T13.1) is accepted** (`72cede6`, merged by the user), and #78 is closed. It changed tests only, so no NOTICE entry.
+
+
+## D-043 Retain known failures without blocking ordinary CI (2026-10-07)
+
+The user chose to document the specific unresolved failures and ignore their
+blocking effect so the project can move forward: "we want to keep those tests
+as they are pointing out a failure". A dedicated diagnosis lab is deferred.
+
+- Ordinary PR CI may accept the documented generated-buffer stereo descriptor
+  contradiction and narrowly identified WebKit noisy-voice first-capture
+  mismatches. Every test still runs; original failed checks, case verdicts,
+  measurements and retained first-attempt artifacts remain visible. Accepted
+  known failures are reported separately from passing tests.
+- Unknown failed checks, missing or malformed evidence, stale provenance,
+  invalid raw buffer bytes, nonfinite samples, launch failures, timeouts and
+  cleanup failures still block. The aggregate independently rechecks the
+  known-failure scope; producer labels alone cannot waive a failure.
+- This does not change a tolerance, normalize stored descriptors, replace a
+  failed first attempt with a clean rerender, or establish a browser/runtime
+  cause. A future defect within an excepted assertion could also be
+  nonblocking until diagnosis removes that exception.
+- The historical WebKit full-mix peak overshoot remains documented and
+  deferred. The manual strict full-mix lane keeps its actual verdict;
+  incomplete references or production inputs are not certified by this
+  ordinary-CI policy.
+- Known-defect diagnosis under #91 and the associated #79 producer investigation
+  move out of the immediate release work into the deferred lab. The issues
+  remain open. Other P1 work and the D-042 feature freeze continue. Physical
+  device and production qualification retain their actual evidence state.
+- Implementation is reviewed in PR #95. The user still controls every merge,
+  release and repository administration change. No lab, new diagnostic
+  framework, ruleset change or review-gate bypass is authorized here.
+
+- Follow-up authorization: the user approved deferring exactly the newly
+  observed WebKit `render q1 48000` drum-54 first source/min and
+  fresh-repeat/source failures. Their assertions, tolerance, failed raw
+  verdicts and original WAV pairs are preserved; the extension requires
+  valid roles, recomputed comparisons and consistent kept-source identity.
+  Other drums, qualities, sample rates and checks remain outside the scope.
+  [Issue #96](https://github.com/Provable-Games/webaudio-tinysynth/issues/96) records the complete deferred investigation
+  handoff. The user will assign its investigator; no new lab campaign is
+  launched by the CI-policy follow-up.
+
+- Further authorization: on 2026-10-07 the user approved logging and ignoring
+  the two additional WebKit failures in ordinary CI: `short-notes completed
+  min`, q1/program120, and `render q0 48000`, drum58 source/min parity only.
+  [Issue #97](https://github.com/Provable-Games/webaudio-tinysynth/issues/97)
+  records the exact tests, raw first failures, artifacts and verified drum
+  WAVs. Policy v3 retains every assertion and tolerance; other settings,
+  programs/drums, repeat checks and invalid evidence remain blocking. Multiple
+  already-approved failures in one case are all independently validated;
+  strict full-mix qualification and raw first-attempt verdicts are unchanged.
+
+- Supervisor-process clarification (2026-10-07): the user instructed the
+  supervisor to investigate failing PR CI, attempt a fix, and, if diagnosis
+  remains unresolved, log a detailed GitHub issue and make the failing test
+  nonblocking without returning for another decision. The latest retained
+  WebKit held-source q1/program119/0.0700 s comparison is documented in
+  issue #97 and accepted narrowly by policy v4. Every original assertion,
+  tolerance and first verdict remains. All other comparisons and integrity,
+  audibility, finite-output, execution and cleanup checks still block.
+  Broader GM/drum test-family quarantine was rejected by automatic approval
+  review and was not applied. The dedicated diagnosis lab remains deferred.

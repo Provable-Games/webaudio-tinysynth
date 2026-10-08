@@ -1124,6 +1124,46 @@ class ConfigurationTests(Workspace):
         self.assertEqual(CONFIG["agents"][0]["diff_paths"], ["."])
 
 
+class ClaudeFailureDiagnosticTests(Workspace):
+    def run_diagnostic(self, messages):
+        workflow = (WORKFLOWS / "claude-review.yml").read_text()
+        step = workflow.split("      - name: Report the Claude runtime failure category\n", 1)[1].split("\n      - name:", 1)[0]
+        code = textwrap.dedent(step.split("<<'PY_DIAGNOSTIC'\n", 1)[1].split("\n          PY_DIAGNOSTIC", 1)[0])
+        (self.dir / "claude-execution-output.json").write_text(json.dumps(messages))
+        result = subprocess.run([sys.executable, "-I", "-B", "-c", code],
+                                env=self.base_env | {"RUNNER_TEMP": str(self.dir)},
+                                capture_output=True, text=True, check=True)
+        return result.stdout
+
+    def test_failure_reason_is_classified_without_publishing_error_or_transcript(self):
+        for reason, expected in (("Usage limit reached", "usage limit"),
+                                 ("Authentication failed: invalid token", "authentication"),
+                                 ("Unknown model", "model unavailable"),
+                                 ("Credit balance too low", "billing"),
+                                 ("Connection timed out", "network or service"),
+                                 ("Unknown option --bad", "runtime options"),
+                                 ("Unexpected failure", "unclassified provider/runtime error")):
+            with self.subTest(reason=reason):
+                secret = "fake-credential-0123456789"
+                messages = [{"type": "assistant", "message": secret},
+                            {"type": "result", "subtype": "success", "is_error": True,
+                             "result": reason + "\n::error::" + secret}]
+                output = self.run_diagnostic(messages)
+                self.assertEqual(output, "Claude runtime failure category: " + expected + "\n")
+                self.assertNotIn(secret, output)
+                self.assertNotIn("::error::", output)
+
+    def test_missing_final_or_successful_text_never_becomes_error_output(self):
+        for messages, expected in (([], "no readable final result"),
+                                   ([{"type": "result", "subtype": "success", "is_error": False,
+                                      "result": "lgtm fake-credential-0123456789"}],
+                                    "action failed after a successful final result"),
+                                   ([{"type": "result", "subtype": "error_max_turns", "errors": ["Rate limit"]}],
+                                    "usage limit")):
+            with self.subTest(messages=messages):
+                self.assertEqual(self.run_diagnostic(messages), "Claude runtime failure category: " + expected + "\n")
+
+
 class WorkflowStructureTests(unittest.TestCase):
     def workflows(self):
         return {path.name: path.read_text() for path in sorted(WORKFLOWS.glob("*review*.yml"))}
@@ -1391,7 +1431,7 @@ class TrustedScriptTests(Workspace):
             with self.subTest(workflow=workflow):
                 self.assertTrue(invocations)
                 for line in invocations:
-                    self.assertTrue(line.startswith(("python3 -I -B trusted/", "python3 -I -c ")), line)
+                    self.assertTrue(line.startswith(("python3 -I -B trusted/", "python3 -I -c ", "python3 -I -B - <<")), line)
         self.assertIn('python3 -I -B "$script_dir/review.py"', (SCRIPTS / "run-codex-review.sh").read_text())
 
     def test_shadow_modules_in_the_working_directory_are_never_loaded(self):
