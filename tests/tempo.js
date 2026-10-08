@@ -8,8 +8,9 @@
  * files at fractional tempos, plays them on the mock clock, and requires
  * every note-on time to equal
  *     start + sum over tempo segments of ticks * us / 1e6 / ppq
- * within 1e-9 s, where start is the sequencer's playTime right after
- * playMIDI(). Raw upstream must miss this by more than 1 ms, which shows the
+ * within 1e-9 s, where start is the pre-Play audio clock plus the documented
+ * 0.1 s opening lead (these fixtures begin at tick 0). Raw upstream must miss
+ * this by more than 1 ms, which shows the
  * test detects the bug.
  *
  * Run: npm test
@@ -57,8 +58,9 @@ function play(source, label, bytes) {
   const { synth, env, notes } = H.createSynth(source, label);
   synth.loadMIDI(H.toArrayBuffer(bytes));
   synth.setLoop(0);
+  const audioNowBeforePlay = synth.actx.currentTime;
   synth.playMIDI();
-  const start = synth.playTime;
+  const start = audioNowBeforePlay + 0.1;
   if (!H.runUntil(env, () => synth.getPlayStatus().play === 0, 10 * 60 * 1000))
     H.fail(label + ": song did not finish");
   return { start, times: notes.map((n) => n[0]) };

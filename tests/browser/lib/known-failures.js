@@ -5,7 +5,7 @@ const { MATRIX } = require("../matrix");
 const { tolerances } = require("../tolerances");
 const FIRST_ATTEMPT = require("./first-attempt");
 
-const POLICY_ID = "p1-a2-known-failures-v4";
+const POLICY_ID = "p1-a2-known-failures-v6";
 const BUFFER_OBSERVATION = "generated buffer SHA-256 (first reverb-enabled attempt)";
 const FAILURE_OBSERVATION = "first-attempt same-engine failures and their diagnostic re-renders (the verdict is the first attempt's; a clean re-render does not clear it)";
 const SHORT_FAILURE_OBSERVATION = "first-attempt failures and their diagnostic re-renders (the verdict is the first attempt's; a clean re-render does not clear it)";
@@ -42,10 +42,15 @@ function validGmMeasurement(row, slots = 32) {
 
 function expectedNoiseFor(engine, c) {
   if (engine !== "webkit" || !c || c.spec !== "render" || !validRenderDims(c)) return [];
-  if (c.id === "render q1 48000" && c.dims.quality === 1 && c.dims.sampleRate === 48000)
-    return [{ group: DRUM_GROUP, slots: 47, signature: "webkit-drum54-q1-48000-first-attempt", minimumFailures: 2,
-      items: [DRUM_GROUP + " drum 54 source/min", DRUM_GROUP + " drum 54 repeat"] }];
-  const targets = [], target = RENDER_NOISE.get(c.id);
+  const targets = [];
+  if (c.id === "render q1 48000" && c.dims.quality === 1 && c.dims.sampleRate === 48000) {
+    targets.push({ group: DRUM_GROUP, slots: 47, signature: "webkit-drum54-q1-48000-first-attempt", minimumFailures: 2,
+      items: [DRUM_GROUP + " drum 54 source/min", DRUM_GROUP + " drum 54 repeat"] });
+    targets.push({ group: RENDER_GROUP, slots: 32, signature: "webkit-gm125-127-q1-48000-first-attempt", minimumFailures: 1,
+      items: [RENDER_GROUP + " program 125 source/min", RENDER_GROUP + " program 127 source/min"] });
+    return targets;
+  }
+  const target = RENDER_NOISE.get(c.id);
   if (target && c.dims.quality === target.quality && c.dims.sampleRate === target.sampleRate)
     targets.push({ group: RENDER_GROUP, slots: 32, signature: "webkit-noise-gm-first-attempt", minimumFailures: 1,
       items: target.programs.map((program) => RENDER_GROUP + " program " + program + " source/min") });

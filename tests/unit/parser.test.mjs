@@ -66,11 +66,12 @@ function playing(variant) {
   s.synth.setTimbre(1, 36, [{ w: "n0", t: 1, f: 0, v: 0.9, d: 0.05, s: 0, r: 0.05 }]);
   s.synth.loadMIDI(H.toArrayBuffer(H.smf(0, PPQ, [H.trackBytes([H.midi.tempo(0, 455000), ...fourNotes(), noteOn(1700, 0, 70, 90)])])));
   s.synth.setLoop(0);
+  const origin = s.synth.getAudioContext().currentTime + 0.1;
   s.synth.playMIDI();
   H.runUntil(s.env, () => false, 500);
   s.synth.setProgram(1, 33);
   s.song = s.synth.song;
-  return s;
+  return Object.assign(s, { origin });
 }
 
 describe.each(variants)("$name: loadMIDI rejects bad headers without side effects", (variant) => {
@@ -107,7 +108,7 @@ describe.each(variants)("$name: loadMIDI rejects bad headers without side effect
     const notes = s.notes.length;
     expect(H.runUntil(s.env, () => s.synth.getPlayStatus().play === 0, 60000)).toBe(true);
     expect(s.notes.length).toBeGreaterThan(notes);
-    expect(s.synth.getPlayStatus()).toEqual(H.playStatus(0, 1700, 1700));
+    expect(s.synth.getPlayStatus()).toEqual(H.playStatus(0, 1700, 1700, null, s.origin));
     expect(s.synth.pg[1]).toBe(33);
   });
 

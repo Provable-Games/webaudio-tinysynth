@@ -158,8 +158,11 @@ const HARNESS = function () {
           if (op.load) synth.loadMIDI(bytes(op.load)); else synth[op.call].apply(null, args);
           phase = "idle";
           var st = synth.getPlayStatus();
-          rec.status = { play: st.play, maxTick: st.maxTick, curTick: st.curTick };
-          rec.playTime = synth.playTime; // the time of the pass's first event after playMIDI() (D-005: currentTime + 0.1 s)
+          rec.status = { play: st.play, maxTick: st.maxTick, curTick: st.curTick, startTime: st.startTime,
+            initialStartTime: st.initialStartTime };
+          rec.initialStartTime = st.initialStartTime; // public opening origin; stable even if the first fill crosses passes
+          rec.startTime = st.startTime; // public scheduler-following pass cursor
+          rec.playTime = synth.playTime; // private timestamp of the next unscheduled event, retained for resume automation checks
           rec.sourcesCreated = sources.length - before;
           ops.push(rec);
         });
@@ -257,6 +260,8 @@ function noteTicks(file) {
 /* Notes (sources started with a nonzero frequency; the start-up oscillator has 0). */
 const notes = (r) => r.sources.filter((s) => s.start !== null && s.freq !== 0);
 const opAt = (r, name, k = 0) => r.ops.filter((o) => o.op === name)[k];
+/* Source creation is attributed to the play operation that preceded it. */
+const sourcesForPlay = (sources, play, nextPlay) => sources.filter((x) => x.seq > play.seq && (!nextPlay || x.seq < nextPlay.seq));
 const fmt = (x) => Number(x).toFixed(9);
 
 const SONGS = {
@@ -314,8 +319,9 @@ function cases(shared) {
         });
         if (!r) return;
         t.check("stopped at the end: {play: 0, curTick: maxTick (" + tick + ")}", r.status.play === 0 && r.status.curTick === tick && r.status.maxTick === tick, JSON.stringify(r.status));
-        const n = notes(r);
-        t.check("the one note played once", n.length === 1 && Math.abs(n[0].start - opAt(r, "playMIDI").playTime) <= TIME_TOL, n.length + " notes at " + n.map((x) => fmt(x.start)).join(", ") + "; pass start " + fmt(opAt(r, "playMIDI").playTime));
+        const n = notes(r), play = opAt(r, "playMIDI"), expected = play.initialStartTime + seconds(SONGS[key], tick);
+        t.check("the one note played once at its independently decoded tick-" + tick + " onset", n.length === 1 && Math.abs(n[0].start - expected) <= TIME_TOL,
+          n.length + " notes at " + n.map((x) => fmt(x.start)).join(", ") + "; expected " + fmt(expected) + " (tick-0 origin " + fmt(play.initialStartTime) + ")");
       });
     }
     add("#8 a padded loopEnd (480) keeps a tick-0 song looping every 480 ticks", async (t) => {
@@ -324,7 +330,7 @@ function cases(shared) {
       });
       if (!r) return;
       const period = seconds(SONGS.tick0, 480) - seconds(SONGS.tick0, 0); // 0.5 s at 120 BPM
-      const n = notes(r), first = opAt(r, "playMIDI").playTime;
+      const n = notes(r), first = opAt(r, "playMIDI").initialStartTime;
       const worst = Math.max(...n.map((x, i) => Math.abs(x.start - (first + i * period))));
       t.check("still playing after 1.8 s", r.status.play === 1, JSON.stringify(r.status));
       t.check("at least 4 passes, one note every " + period + " s from the pass start (tempo map)", n.length >= 4 && worst <= TIME_TOL, n.length + " notes; largest difference " + worst.toExponential(2) + " s; starts " + n.map((x) => fmt(x.start - first)).join(", "));
@@ -357,9 +363,9 @@ function cases(shared) {
       });
       if (!r) return;
       const ticks = noteTicks(SONGS.replay), exp = ticks.map((k) => seconds(SONGS.replay, k) - seconds(SONGS.replay, ticks[0]));
-      const n = notes(r), o1 = opAt(r, "playMIDI", 0).playTime, o2 = opAt(r, "playMIDI", 1).playTime;
-      const pass = (o) => n.filter((x) => x.start >= o - TIME_TOL && x.start < o + exp[exp.length - 1] + 0.05).map((x) => x.start - o);
-      const p1 = pass(o1), p2 = pass(o2);
+      const n = notes(r), first = opAt(r, "playMIDI", 0), replay = opAt(r, "playMIDI", 1);
+      const o1 = first.initialStartTime, o2 = replay.initialStartTime;
+      const p1 = sourcesForPlay(n, first, replay).map((x) => x.start - o1), p2 = sourcesForPlay(n, replay).map((x) => x.start - o2);
       const diff = (p) => p.length === exp.length ? Math.max(...p.map((x, i) => Math.abs(x - exp[i]))) : Infinity;
       t.check("the first pass and the replay both play on the tempo map (" + exp.join(", ") + " s; 120 BPM until tick 960)", diff(p1) <= TIME_TOL && diff(p2) <= TIME_TOL,
         "first pass " + p1.map(fmt).join(", ") + "; replay " + p2.map(fmt).join(", "));
@@ -393,7 +399,7 @@ function cases(shared) {
         ],
       });
       if (!r) return;
-      const replay = opAt(r, "playMIDI", 1), o1 = opAt(r, "playMIDI", 0).playTime;
+      const replay = opAt(r, "playMIDI", 1), o1 = opAt(r, "playMIDI", 0).initialStartTime;
       const prev = notes(r).filter((x) => x.seq < replay.seq);
       const stoppedByReplay = prev.filter((x) => x.stops.some((s) => s.phase === replay.phase));
       t.check("the replay stopped none of the previous pass's notes", prev.length === heldTicks.length && !stoppedByReplay.length,
@@ -423,4 +429,4 @@ function cases(shared) {
   return out;
 }
 
-module.exports = { cases, scenario, automation, SONGS, song, seconds, noteTicks, notes, opAt, b64, on, off, tempo, PPQ, SINE, SQUARE, TIME_TOL, fmt };
+module.exports = { cases, scenario, automation, SONGS, song, seconds, noteTicks, notes, opAt, sourcesForPlay, b64, on, off, tempo, PPQ, SINE, SQUARE, TIME_TOL, fmt };

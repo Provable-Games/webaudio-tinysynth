@@ -401,14 +401,15 @@ function smf(format, division, chunks, opts = {}) {
 }
 
 /*
- * getPlayStatus() results. This fork adds startTime (D-023): the AudioContext
- * time at which tick 0 of the current pass sounds, null unless playing.
- * playStatus(play, maxTick, curTick, startTime) is a whole expected result.
- * statusOf(synth) is a synth's result for comparing with upstream, which has no
- * startTime: a missing one reads as null, and the fork's own value is kept.
+ * getPlayStatus() results. This fork adds startTime (D-023), the scheduler's
+ * current pass origin, and initialStartTime (#68), the origin of the latest
+ * playMIDI() run until explicit invalidation. playStatus() builds a whole
+ * expected result; statusOf() fills missing fork fields on upstream's result.
  */
-const playStatus = (play, maxTick, curTick, startTime = null) => ({ play, maxTick, curTick, startTime });
-const statusOf = (synth) => Object.assign({ startTime: null }, synth.getPlayStatus());
+const playStatus = (play, maxTick, curTick, startTime = null, initialStartTime = null) => ({
+  play, maxTick, curTick, startTime, initialStartTime,
+});
+const statusOf = (synth) => Object.assign({ startTime: null, initialStartTime: null }, synth.getPlayStatus());
 
 /*
  * Everything a failed loadMIDI must leave unchanged, as plain JSON: the song,

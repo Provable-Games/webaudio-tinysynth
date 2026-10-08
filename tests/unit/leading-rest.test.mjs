@@ -259,6 +259,7 @@ describe.each(variants)("$name: leading rest and startTime (D-023)", (variant) =
       expect(startTime(s), "pass " + pass).toBe(t0 + 0.1);
       expect(H.runUntil(s.env, () => s.synth.getPlayStatus().play === 0, 20000)).toBe(true);
       expect(startTime(s)).toBe(null);
+      expect(s.synth.getPlayStatus().initialStartTime).toBe(t0 + 0.1);
       expectAligned(CONSUMER, s.notes.slice(from), t0 + 0.1, CONSUMER.ticks, "pass " + pass);
       H.runUntil(s.env, () => false, 500);
     }
@@ -270,12 +271,15 @@ describe.each(variants)("$name: leading rest and startTime (D-023)", (variant) =
     s.synth.setLoop(1);
     s.synth.setLoopEnd(768);
     s.synth.playMIDI();
-    H.runUntil(s.env, () => now(s) >= 0.3, 1000); // the first note sounds at 0.6 s, scheduled from 0.4 s
-    expect(s.notes).toHaveLength(0);
+    H.runUntil(s.env, () => now(s) >= 0.3, 1000); // 0.5 s lookahead queues the 0.6 s note while it is still in the leading rest
+    expect(s.notes).toHaveLength(1);
+    expect(s.notes[0][0]).toBeCloseTo(0.6, 9);
+    expect(s.notes[0][0]).toBeGreaterThan(now(s));
     s.synth.stopMIDI();
     let t0 = now(s);
+    const resumeTick = s.synth.getPlayStatus().curTick;
     s.synth.playMIDI();
-    expect(startTime(s)).toBe(t0 + 0.1);
+    close(startTime(s), t0 + 0.1 - at(CONSUMER, resumeTick), "resume origin at the scheduler cursor");
     // A later pass: start from a seek (next-event), stop between the wrap and the next pass's first event.
     s.synth.stopMIDI();
     s.synth.locateMIDI(48);
@@ -309,7 +313,48 @@ describe.each(variants)("$name: leading rest and startTime (D-023)", (variant) =
     close(s.notes[from][0], t0 + 0.1 + at(CONSUMER, next) - at(CONSUMER, cur));
   });
 
-  test("startTime is a fourth field of getPlayStatus(): null when not playing, tick 0's time when playing", async () => {
+
+  test("a short nonloop song keeps its origin after startup schedules its only event and completes", () => {
+    const s = synthFor(variant);
+    s.synth.loadMIDI(H.toArrayBuffer(H.makeMidi(PPQ, [noteOn(0, 0, 60, 100)])));
+    s.synth.setLoop(0);
+    const firstRun = now(s) + 0.1;
+    s.synth.playMIDI();
+    expect(s.synth.getPlayStatus()).toEqual(H.playStatus(0, 0, 0, null, firstRun));
+    expect(s.notes.map((n) => n[0])).toEqual([firstRun]);
+
+    s.env.skip(1); // make the replay's run origin observably new
+    const secondRun = now(s) + 0.1;
+    s.synth.playMIDI();
+    expect(s.synth.getPlayStatus()).toEqual(H.playStatus(0, 0, 0, null, secondRun));
+    expect(s.synth.getPlayStatus().initialStartTime).not.toBe(firstRun);
+    expect(s.notes.map((n) => n[0])).toEqual([firstRun, secondRun]);
+  });
+
+  test("locate starts a new run origin; stop and context replacement clear it", () => {
+    const s = synthFor(variant);
+    load(s, CONSUMER);
+    s.synth.setLoop(1);
+    s.synth.setLoopEnd(768);
+    s.synth.playMIDI();
+    const firstOrigin = s.synth.getPlayStatus().initialStartTime;
+
+    s.synth.locateMIDI(48); // while playing: invalidates the old run, then starts a new one
+    const located = s.synth.getPlayStatus();
+    expect(located.play).toBe(1);
+    expect(located.initialStartTime).not.toBe(firstOrigin);
+    expect(located.initialStartTime).toBe(located.startTime);
+
+    s.synth.stopMIDI();
+    expect(s.synth.getPlayStatus().initialStartTime).toBe(null);
+    s.synth.playMIDI();
+    expect(s.synth.getPlayStatus().initialStartTime).not.toBe(null);
+    const replacement = new s.env.sandbox.AudioContext();
+    s.synth.setAudioContext(replacement);
+    expect(s.synth.getPlayStatus().initialStartTime).toBe(null);
+  });
+
+  test("startTime follows scheduled passes; initialStartTime is the latest run origin until invalidated", async () => {
     const s = synthFor(variant);
     const status = () => s.synth.getPlayStatus();
     expect(status()).toEqual(H.playStatus(0, 0, 0)); // no song
@@ -318,17 +363,20 @@ describe.each(variants)("$name: leading rest and startTime (D-023)", (variant) =
     s.synth.setLoop(0);
     s.synth.setLoopEnd(768);
     s.synth.playMIDI();
-    expect(status()).toEqual(H.playStatus(1, 768, 96, now(s) + 0.1));
-    expect(Object.keys(status())).toEqual(["play", "maxTick", "curTick", "startTime"]);
-    expect(JSON.parse(JSON.stringify(status()))).toEqual(H.playStatus(1, 768, 96, now(s) + 0.1));
+    const firstOrigin = now(s) + 0.1;
+    expect(status()).toEqual(H.playStatus(1, 768, 96, firstOrigin, firstOrigin));
+    expect(Object.keys(status())).toEqual(["play", "maxTick", "curTick", "startTime", "initialStartTime"]);
+    expect(JSON.parse(JSON.stringify(status()))).toEqual(H.playStatus(1, 768, 96, firstOrigin, firstOrigin));
     s.synth.stopMIDI();
     expect(status()).toEqual(H.playStatus(0, 768, 96)); // stopped
     s.synth.playMIDI();
+    const resumedOrigin = status().initialStartTime;
     expect(H.runUntil(s.env, () => status().play === 0, 20000)).toBe(true);
-    expect(status()).toEqual(H.playStatus(0, 768, 768)); // ended
+    expect(status()).toEqual(H.playStatus(0, 768, 768, null, resumedOrigin)); // ended; run origin stays readable
     s.synth.setLoop(1);
     s.synth.playMIDI();
-    expect(status()).toEqual(H.playStatus(1, 768, 96, now(s) + 0.1)); // replay
+    const replayOrigin = now(s) + 0.1;
+    expect(status()).toEqual(H.playStatus(1, 768, 96, replayOrigin, replayOrigin)); // replay
     s.synth.loadMIDI(H.toArrayBuffer(CONSUMER.bytes));
     expect(status()).toEqual(H.playStatus(0, 768, 96)); // a load stops
     s.synth.playMIDI();

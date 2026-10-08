@@ -63,8 +63,12 @@ const EXPECTED = {
 };
 
 /* The new pass after the seek: its notes and channel 0's automation, from the pass start. */
+function passStart(seekOp) {
+  return seekOp.initialStartTime + T.seconds(SONG, SEEK_TICK);
+}
+
 function pass(r, seekOp) {
-  const origin = seekOp.playTime;
+  const origin = passStart(seekOp);
   const notes = T.notes(r).filter((x) => x.seq > seekOp.seq).map((x) => ({ t: x.start - origin, freq: x.freq, detune: x.detune, wave: x.wave }));
   const out = { origin, notes };
   for (const p of ["vol", "pan", "mod"]) out[p] = T.automation(r, p, origin);
@@ -140,7 +144,8 @@ function cases(shared) {
         if (!r) return;
         const play = T.opAt(r, "playMIDI", 1);
         const timed = r.ops.filter((o) => o.op === "send" && o.args.length > 1).map((o) => o.args[1]);
-        t.check("(precondition) the caller-scheduled changes are due after the seek's pass start", timed.length === 3 && timed.every((x) => x > play.playTime), timed.map(T.fmt).join(", ") + " vs pass start " + T.fmt(play.playTime));
+        const origin = passStart(play);
+        t.check("(precondition) the caller-scheduled changes are due after the independently timed seek pass start", timed.length === 3 && timed.every((x) => x > origin), timed.map(T.fmt).join(", ") + " vs pass start " + T.fmt(origin));
         const got = pass(r, play);
         t.observe("pass after the seek", got);
         const d = compare(got, ref, 0);
@@ -194,4 +199,4 @@ function cases(shared) {
   return out;
 }
 
-module.exports = { cases };
+module.exports = { cases, SEEK_TICK, SONG, passStart };

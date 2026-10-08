@@ -63,6 +63,14 @@ function instrument(variant, bytes, setup) {
   if (setup) setup(s.synth);
   const send = s.synth.send;
   s.synth.send = (m, t) => { sent.push([callback, Array.from(m), t]); return send(m, t); };
+  const immediateBatches = [];
+  const playMIDI = s.synth.playMIDI;
+  s.synth.playMIDI = function () {
+    const previous = callback, from = sent.length;
+    callback = -1; // the bounded fill in playMIDI(), separate from interval callbacks
+    try { return playMIDI.apply(s.synth, arguments); }
+    finally { immediateBatches.push(sent.length - from); callback = previous; }
+  };
   const perStep = [];
   const step = () => {
     ++callback;
@@ -71,7 +79,7 @@ function instrument(variant, bytes, setup) {
     perStep.push({ sends: sent.length - from, ms: Number(process.hrtime.bigint() - t0) / 1e6 });
   };
   const osc = (from) => s.trace.slice(from).filter((l) => l.startsWith('["create","osc#') || l.startsWith('["create","src#')).length;
-  return Object.assign(s, { sent, perStep, step, osc, status: () => ({ ...s.synth.getPlayStatus() }) });
+  return Object.assign(s, { sent, perStep, immediateBatches, step, osc, status: () => ({ ...s.synth.getPlayStatus() }) });
 }
 
 const noteOnTimes = (s) => s.notes.map((n) => n[0]);
@@ -80,47 +88,53 @@ const CASES = {
   /* #8: zero-duration loops end after one pass. */
   "zero-duration default loop (issue snippet)": (v) => {
     const s = instrument(v, H.makeMidi(PPQ, [noteOn(0, 0, 60, 100), noteOff(0, 0, 60)]), (y) => y.setLoop(1));
+    const origin = s.env.clock.ms / 1000 + 0.1;
     s.synth.playMIDI();
     s.step();
     const afterFirst = s.status();
     for (let i = 0; i < 50; ++i) s.step();
-    return { afterFirst, status: s.status(), sends: s.sent.length, notes: noteOnTimes(s) };
+    return { afterFirst, status: s.status(), origin, immediateBatches: s.immediateBatches, sends: s.sent.length, notes: noteOnTimes(s) };
   },
   "one-tick loop at tick 960, loopEnd 0": (v) => {
     const s = instrument(v, H.makeMidi(PPQ, [noteOn(960, 0, 60, 100), noteOff(960, 0, 60)]), (y) => y.setLoop(1));
+    const origin = s.env.clock.ms / 1000 + 0.1 - 960 * (0.5 / PPQ);
     s.synth.playMIDI();
     for (let i = 0; i < 50; ++i) s.step();
-    return { status: s.status(), sends: s.sent.length, notes: noteOnTimes(s) };
+    return { status: s.status(), origin, sends: s.sent.length, notes: noteOnTimes(s) };
   },
   "one-tick loop at tick 0 with End-of-Track at 1920, loopEnd 0": (v) => {
     const s = instrument(v, withEot([noteOn(0, 0, 60, 100), noteOff(0, 0, 60)], 1920), (y) => y.setLoop(1));
+    const origin = s.env.clock.ms / 1000 + 0.1;
     s.synth.playMIDI();
     for (let i = 0; i < 50; ++i) s.step();
-    return { status: s.status(), sends: s.sent.length, notes: noteOnTimes(s) };
+    return { status: s.status(), origin, sends: s.sent.length, notes: noteOnTimes(s) };
   },
   "one-tick loop with a negative loopEnd": (v) => {
     let rejected = null; // #13 (D-019 F8): setLoopEnd() rejects it, so the loop runs with loopEnd 0
     const s = instrument(v, H.makeMidi(PPQ, [noteOn(0, 0, 60, 100), noteOff(0, 0, 60)]), (y) => { y.setLoop(1); try { y.setLoopEnd(-480); } catch (e) { rejected = e.name; } });
+    const origin = s.env.clock.ms / 1000 + 0.1;
     s.synth.playMIDI();
     for (let i = 0; i < 50; ++i) s.step();
-    return { status: s.status(), sends: s.sent.length, notes: noteOnTimes(s), rejected, loopEnd: s.synth.loopEnd };
+    return { status: s.status(), origin, sends: s.sent.length, notes: noteOnTimes(s), rejected, loopEnd: s.synth.loopEnd };
   },
   "tempo and program change at tick 0 only, looping": (v) => {
     const s = instrument(v, H.makeMidi(PPQ, [tempo(0, 400000), { tick: 0, bytes: [0xc0, 5] }]), (y) => y.setLoop(1));
+    const origin = s.env.clock.ms / 1000 + 0.1;
     s.synth.playMIDI();
     const started = s.status();
     for (let i = 0; i < 50; ++i) s.step();
-    return { started, status: s.status(), sends: s.sent.map((x) => x[1]), pg0: s.synth.pg[0] };
+    return { started, status: s.status(), origin, sends: s.sent.map((x) => x[1]), pg0: s.synth.pg[0] };
   },
   "5000-event same-tick batch, looping": (v) => {
     const ev = batch(0, 4998).concat([noteOn(0, 0, 60, 100), noteOff(0, 0, 60)]);
     const s = instrument(v, H.makeMidi(PPQ, ev), (y) => y.setLoop(1));
     const order = s.synth.song.ev.map((e) => Array.from(e.m));
+    const origin = s.env.clock.ms / 1000 + 0.1;
     s.synth.playMIDI();
-    const start = s.synth.playTime;
+    const start = origin;
     for (let i = 0; i < 20; ++i) s.step();
     return {
-      status: s.status(), perStep: s.perStep.map((x) => x.sends), start,
+      status: s.status(), perStep: s.perStep.map((x) => x.sends), immediateBatches: s.immediateBatches, totalSent: s.sent.length, start,
       inOrder: JSON.stringify(s.sent.map((x) => x[1])) === JSON.stringify(order),
       times: [...new Set(s.sent.map((x) => x[2]))], notes: s.notes.length,
     };
@@ -129,23 +143,26 @@ const CASES = {
   /* #8: positive loopEnd keeps a one-tick phrase looping. */
   "tick-0 phrase padded by loopEnd 480": (v) => {
     const s = instrument(v, H.makeMidi(PPQ, [noteOn(0, 0, 60, 100), noteOff(0, 0, 60)]), (y) => { y.setLoop(1); y.setLoopEnd(480); });
+    const origin = s.env.clock.ms / 1000 + 0.1;
     s.synth.playMIDI();
     for (let i = 0; i < 50; ++i) s.step(); // 3 s
-    return { status: s.status(), notes: noteOnTimes(s) };
+    return { status: s.status(), origin, notes: noteOnTimes(s) };
   },
   "one tick at 960 with loopEnd 480 (not above the tick)": (v) => {
     const s = instrument(v, H.makeMidi(PPQ, [noteOn(960, 0, 60, 100), noteOff(960, 0, 60)]), (y) => { y.setLoop(1); y.setLoopEnd(480); });
+    const origin = s.env.clock.ms / 1000 + 0.1;
     s.synth.playMIDI();
     for (let i = 0; i < 70; ++i) s.step(); // 4.2 s
-    return { status: s.status(), notes: noteOnTimes(s) };
+    return { status: s.status(), origin, notes: noteOnTimes(s) };
   },
   "loopEnd 1 at 1 us per quarter note (each pass advances about 2 ns)": (v) => {
     const s = instrument(v, H.makeMidi(PPQ, [tempo(0, 1), noteOn(0, 0, 60, 100), noteOff(0, 0, 60)]), (y) => { y.setLoop(1); y.setLoopEnd(1); });
+    const origin = s.env.clock.ms / 1000 + 0.1;
     s.synth.playMIDI();
     for (let i = 0; i < 20; ++i) s.step();
     const t = noteOnTimes(s);
     return {
-      status: s.status(), perStep: s.perStep.map((x) => x.sends), maxMs: Math.max(...s.perStep.map((x) => x.ms)),
+      status: s.status(), origin, perStep: s.perStep.map((x) => x.sends), maxMs: Math.max(...s.perStep.map((x) => x.ms)),
       ordered: t.every((x, i) => i === 0 || x >= t[i - 1]), advancing: t[t.length - 1] > t[0],
     };
   },
@@ -155,11 +172,12 @@ const CASES = {
     const ev = batch(0, 3000).concat([noteOn(0, 0, 60, 100), noteOff(240, 0, 60), noteOn(480, 0, 62, 100), noteOff(720, 0, 62)]);
     const s = instrument(v, H.makeMidi(PPQ, ev), (y) => y.setLoop(0));
     const order = s.synth.song.ev.map((e) => Array.from(e.m));
+    const origin = s.env.clock.ms / 1000 + 0.1;
     s.synth.playMIDI();
-    const start = s.synth.playTime;
+    const start = origin;
     while (s.synth.playing && s.perStep.length < 200) s.step();
     return {
-      status: s.status(), perStep: s.perStep.map((x) => x.sends), start,
+      status: s.status(), perStep: s.perStep.map((x) => x.sends), immediateBatches: s.immediateBatches, start,
       inOrder: JSON.stringify(s.sent.map((x) => x[1])) === JSON.stringify(order),
       batchTimes: [...new Set(s.sent.slice(0, 3001).map((x) => x[2]))], notes: noteOnTimes(s),
     };
@@ -168,13 +186,14 @@ const CASES = {
     const song = denseSong(24000); // 2400 notes, 4800 note events plus tempo
     const s = instrument(v, song.bytes, (y) => y.setLoop(0));
     const order = s.synth.song.ev.filter((e) => e.m[0] !== 0xff51).map((e) => Array.from(e.m));
+    const origin = s.env.clock.ms / 1000 + 0.1;
     s.synth.playMIDI();
-    const start = s.synth.playTime;
+    const start = origin;
     s.step();
     s.env.skip(3600 * 1000);
     while (s.synth.playing && s.perStep.length < 200) s.step();
     return {
-      status: s.status(), perStep: s.perStep.map((x) => x.sends), start, tempos: song.tempos, noteTicks: song.noteTicks,
+      status: s.status(), perStep: s.perStep.map((x) => x.sends), immediateBatches: s.immediateBatches, start, tempos: song.tempos, noteTicks: song.noteTicks,
       inOrder: JSON.stringify(s.sent.map((x) => x[1])) === JSON.stringify(order), notes: noteOnTimes(s),
     };
   },
@@ -242,10 +261,11 @@ for (const [song, bytes] of Object.entries(SILENT)) {
     // A normal song still loads and plays to its end afterwards.
     s.synth.loadMIDI(H.toArrayBuffer(NORMAL));
     s.synth.setLoop(0);
+    const normalOrigin = s.env.clock.ms / 1000 + 0.1;
     s.synth.playMIDI();
     out.normalStarted = s.status();
     out.normalFinished = H.runUntil(s.env, () => !s.synth.playing, 10000);
-    out.normal = { status: s.status(), notes: noteOnTimes(s) };
+    out.normal = { origin: normalOrigin, status: s.status(), notes: noteOnTimes(s) };
     return out;
   };
 }
@@ -308,32 +328,40 @@ function parent() {
 
       test("a zero-duration default loop plays once, then stops with curTick = maxTick (#8)", () => {
         const r = get("zero-duration default loop (issue snippet)");
-        assert.deepEqual(r.afterFirst, H.playStatus(0, 0, 0));
-        assert.deepEqual(r.status, H.playStatus(0, 0, 0));
+        assert.deepEqual(r.afterFirst, H.playStatus(0, 0, 0, null, r.origin));
+        assert.deepEqual(r.status, H.playStatus(0, 0, 0, null, r.origin));
+        assert.equal(r.origin, 0.1);
         assert.equal(r.sends, 2);
+        assert.deepEqual(r.immediateBatches, [2]);
         assert.deepEqual(r.notes, [0.1]);
         const at960 = get("one-tick loop at tick 960, loopEnd 0");
-        assert.deepEqual([at960.status, at960.sends, at960.notes], [H.playStatus(0, 960, 960), 2, [0.1]]);
+        assert.deepEqual([at960.status, at960.sends, at960.notes], [H.playStatus(0, 960, 960, null, at960.origin), 2, [0.1]]);
+        close(at960.origin, -0.9, "virtual tick-0 origin for first event at tick 960");
         // The rest before End-of-Track does not count: a pass spans the retained events only.
         const trailing = get("one-tick loop at tick 0 with End-of-Track at 1920, loopEnd 0");
-        assert.deepEqual([trailing.status, trailing.sends, trailing.notes], [H.playStatus(0, 1920, 1920), 2, [0.1]]);
+        assert.deepEqual([trailing.status, trailing.sends, trailing.notes], [H.playStatus(0, 1920, 1920, null, trailing.origin), 2, [0.1]]);
         const negative = get("one-tick loop with a negative loopEnd");
-        assert.deepEqual([negative.status, negative.sends, negative.notes], [H.playStatus(0, 0, 0), 2, [0.1]]);
+        assert.deepEqual([negative.status, negative.sends, negative.notes], [H.playStatus(0, 0, 0, null, negative.origin), 2, [0.1]]);
         assert.deepEqual([negative.rejected, negative.loopEnd], ["RangeError", 0]);
       });
 
       test("a looping one-tick song of tempo and state events plays once, then stops (#8)", () => {
         const r = get("tempo and program change at tick 0 only, looping");
-        assert.deepEqual(r.started, H.playStatus(1, 0, 0, 0.1)); // tick 0 sounds 0.1 s after playMIDI() at time 0
-        assert.deepEqual(r.status, H.playStatus(0, 0, 0));
+        // The immediate fill completes the same one-pass/non-advancing guard before Play returns.
+        assert.deepEqual(r.started, H.playStatus(0, 0, 0, null, r.origin));
+        assert.deepEqual(r.status, H.playStatus(0, 0, 0, null, r.origin));
+        assert.equal(r.origin, 0.1);
         assert.deepEqual(r.sends, [[0xc0, 5]]);
         assert.equal(r.pg0, 5);
       });
 
-      test("a 5000-event same-tick loop takes five callbacks of 1000 events, in order, then stops (#8)", () => {
+      test("a 5000-event same-tick loop takes five bounded batches of 1000 events, then stops (#8)", () => {
         const r = get("5000-event same-tick batch, looping");
-        assert.deepEqual(r.perStep.slice(0, 6), [LIMIT, LIMIT, LIMIT, LIMIT, LIMIT, 0]);
-        assert.deepEqual(r.status, H.playStatus(0, 0, 0));
+        // One bounded batch is synchronous; four timer passes finish the remaining 4000 events.
+        assert.deepEqual(r.immediateBatches, [LIMIT]);
+        assert.deepEqual(r.perStep.slice(0, 5), [LIMIT, LIMIT, LIMIT, LIMIT, 0]);
+        assert.equal(r.totalSent, 5000);
+        assert.deepEqual(r.status, H.playStatus(0, 0, 0, null, r.start));
         assert.equal(r.inOrder, true);
         assert.deepEqual(r.times, [r.start]);
         assert.equal(r.notes, 1);
@@ -342,6 +370,7 @@ function parent() {
       test("a positive loopEnd keeps a tick-0 phrase looping, 480 ticks per pass (#8)", () => {
         const r = get("tick-0 phrase padded by loopEnd 480");
         assert.equal(r.status.play, 1);
+        assert.equal(r.status.initialStartTime, r.origin);
         // 480 ticks at the default 120 BPM = 0.5 s per pass; the first note plays at currentTime 0 + 0.1 s.
         assert.ok(r.notes.length >= 6, JSON.stringify(r.notes));
         r.notes.forEach((t, i) => close(t, 0.1 + i * 0.5, "note " + i));
@@ -350,14 +379,17 @@ function parent() {
       test("one tick at 960 with loopEnd 480 loops every 960 ticks: every pass keeps the leading rest (#8, D-023)", () => {
         const r = get("one tick at 960 with loopEnd 480 (not above the tick)");
         assert.equal(r.status.play, 1);
+        assert.equal(r.status.initialStartTime, r.origin);
+        assert.equal(r.origin, 0.1); // tick 0 remains distinct from the first event at tick 960
         assert.ok(r.notes.length >= 4, JSON.stringify(r.notes));
-        // Tick 0 of the first pass sounds at 0.1 s, so its note does too 960 ticks later (T3.1).
-        r.notes.forEach((t, i) => close(t, 0.1 + (i + 1) * secondsAt([], 960), "note " + i));
+        // Tick 0 is at the origin; the first note is one second later on each 960-tick pass.
+        r.notes.forEach((t, i) => close(t, r.origin + (i + 1) * secondsAt([], 960), "note " + i));
       });
 
       test("a loop that advances by nanoseconds per pass does at most 1000 events per callback (#8)", () => {
         const r = get("loopEnd 1 at 1 us per quarter note (each pass advances about 2 ns)");
         assert.equal(r.status.play, 1);
+        assert.equal(r.status.initialStartTime, r.origin);
         assert.equal(r.perStep.length, 20);
         // Three events per pass (tempo, note-on, note-off), two of them sent: 1000 events are 667 or 666 sends.
         for (const n of r.perStep) assert.ok(n > 0 && n <= 667, "sends per callback: " + n);
@@ -367,9 +399,10 @@ function parent() {
 
       test("a finite same-tick batch continues on later callbacks, in order and at its own time (#8)", () => {
         const r = get("3000-event same-tick batch then later notes");
-        assert.deepEqual(r.perStep.slice(0, 3), [LIMIT, LIMIT, LIMIT]);
+        assert.deepEqual(r.immediateBatches, [LIMIT]);
+        assert.deepEqual(r.perStep.slice(0, 3), [LIMIT, LIMIT, 3]);
         assert.ok(r.perStep.every((n) => n <= LIMIT));
-        assert.equal(r.perStep.reduce((a, b) => a + b, 0), 3004);
+        assert.equal(r.immediateBatches[0] + r.perStep.reduce((a, b) => a + b, 0), 3004);
         assert.equal(r.inOrder, true);
         assert.deepEqual(r.batchTimes, [r.start]);
         assert.deepEqual(r.notes.map((t) => Math.round((t - r.start) * 1e9) / 1e9), [0, 0.5]);
@@ -381,6 +414,7 @@ function parent() {
         const r = get("dense song after a one-hour catch-up window");
         assert.equal(r.status.play, 0);
         assert.equal(r.status.curTick, r.status.maxTick);
+        assert.equal(r.status.initialStartTime, r.start);
         assert.ok(r.perStep.every((n) => n <= LIMIT), JSON.stringify(r.perStep));
         // Tempo events count toward the limit but are not sent, so a full callback sends 999 or 1000 messages here.
         assert.ok(r.perStep.filter((n) => n >= LIMIT - 1).length >= 4, "the catch-up did not need several callbacks: " + JSON.stringify(r.perStep));
@@ -415,7 +449,7 @@ function parent() {
           }
           assert.equal(r.normalStarted.play, 1);
           assert.equal(r.normalFinished, true);
-          assert.deepEqual(r.normal.status, H.playStatus(0, 720, 720));
+          assert.deepEqual(r.normal.status, H.playStatus(0, 720, 720, null, r.normal.origin));
           assert.equal(r.normal.notes.length, 2);
           close(r.normal.notes[1] - r.normal.notes[0], 0.5, "normal song");
         });

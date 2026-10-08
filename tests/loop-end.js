@@ -16,9 +16,10 @@
  *    include a leading rest, tempo changes, a non-default tempo at tick 0,
  *    and a tempo event before the first note.
  * 2. With loopEnd unset (or set back to 0), looping playback must match
- *    upstream (plus FORK_PATCHES) exactly: identical _note calls and
- *    WebAudio traces. The same holds for ws.mid with loopEnd equal to its
- *    last event's tick.
+ *    upstream (plus FORK_PATCHES and a test-local #68 horizon alignment)
+ *    exactly: identical _note calls and WebAudio traces. The same holds for
+ *    ws.mid with loopEnd equal to its last event's tick. The explicit
+ *    loopEnd cases above keep their independent tempo-map oracle.
  *
  * Run: npm test
  */
@@ -106,7 +107,15 @@ function playLooped(source, label, bytes, setup, maxMs, until) {
 }
 
 const fork = H.forkVariants();
-const reference = { name: "upstream@" + H.UPSTREAM_COMMIT.slice(0, 7) + "+patches", source: H.referenceSource() };
+const legacyReference = { name: "upstream@" + H.UPSTREAM_COMMIT.slice(0, 7) + "+patches (.2 s)", source: H.referenceSource() };
+const reference = {
+  name: "upstream@" + H.UPSTREAM_COMMIT.slice(0, 7) + "+patches+#68 horizon",
+  source: H.applyPatches(H.referenceSource(), [{
+    name: "#68 loop baseline: align the fixed scheduler horizon to 0.5 s",
+    from: "this.preroll=0.2;",
+    to: "this.preroll=0.5;",
+  }]),
+};
 
 console.log("API");
 for (const v of fork) {
@@ -139,10 +148,10 @@ for (const c of periodCases) {
   }
 }
 
-console.log("\n   contrast: upstream looping (loopEnd unset), first pass-to-pass interval");
+console.log("\n   contrast: legacy upstream (.2 s horizon), first pass-to-pass interval");
 for (const c of periodCases.filter((x) => [fixtures.fourBars, fixtures.pickup, fixtures.codex].includes(x.fx) && x.loopEnd !== 4000)) {
-  const n = notesPerPass(reference.source, c.fx.bytes);
-  const r = playLooped(reference.source, reference.name, c.fx.bytes, () => {}, 5 * 60 * 1000, (notes) => notes.length >= 2 * n);
+  const n = notesPerPass(legacyReference.source, c.fx.bytes);
+  const r = playLooped(legacyReference.source, legacyReference.name, c.fx.bytes, () => {}, 5 * 60 * 1000, (notes) => notes.length >= 2 * n);
   console.log("  " + c.name.split(",")[0] + ": upstream " + (r.notes[n][0] - r.notes[0][0]).toFixed(6) + " s; with loopEnd " +
     secondsAt(c.fx.tempos, Math.max(c.loopEnd, c.fx.lastTick)).toFixed(6) + " s");
 }
@@ -168,6 +177,18 @@ for (const c of unsetCases) {
       x.r.trace.every((e, i) => e === ref.trace[i]);
     report(same, c.name + ", 45 s looped: " + x.name + ": " + x.r.notes.length + " notes, " + x.r.trace.length +
       " WebAudio calls " + (same ? "identical to " : "DIFFER from ") + reference.name);
+  }
+  if (c.fx === fixtures.wsMid) {
+    const old = playLooped(legacyReference.source, legacyReference.name, c.fx.bytes, () => {}, 45000);
+    const candidate = runs.find((x) => x.name === fork[0].name + " (loopEnd unset)").r;
+    const beforeCutoff = (notes) => notes.filter((n) => n[0] <= 45 + TOLERANCE);
+    report(JSON.stringify(beforeCutoff(candidate.notes)) === JSON.stringify(beforeCutoff(old.notes)),
+      "ws.mid, loopEnd unset: requested _note stream through 45 s matches legacy .2 s horizon");
+    const oldBeyond = old.notes.filter((n) => n[0] > 45 + TOLERANCE).length;
+    const candidateBeyond = candidate.notes.filter((n) => n[0] > 45 + TOLERANCE).length;
+    report(candidateBeyond - oldBeyond === 4,
+      "ws.mid, loopEnd unset: 0.5 s horizon submits four additional future notes after 45 s (legacy " +
+      oldBeyond + ", candidate " + candidateBeyond + ")");
   }
 }
 

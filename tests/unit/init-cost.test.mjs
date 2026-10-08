@@ -426,7 +426,7 @@ for (const variant of variants) {
           l.env.skip(70); // the first scheduler callback comes late, as in the field: now 1.07 s
           l.env.step();
           const src = sources(l.trace, from);
-          return { starts: src.map((x) => x.start), lengths: src.filter((x) => x.stop != null).map((x) => x.stop - x.start), now: l.env.clock.ms / 1000, startTime: synth.getPlayStatus().startTime };
+          return { starts: src.map((x) => x.start), lengths: src.filter((x) => x.stop != null).map((x) => x.stop - x.start), now: l.env.clock.ms / 1000, startTime: synth.getPlayStatus().initialStartTime };
         };
         const ref = run(0), built = run(41);
         expect(new Set(ref.starts).size).toBe(1);
@@ -448,7 +448,7 @@ for (const variant of variants) {
           l.count.stall = 41;
           synth.playMIDI();
           expect(l.count.sin, how).toBe(N1);
-          expect(synth.getPlayStatus().startTime, how).toBeCloseTo(1.141, 9);
+          expect(synth.getPlayStatus().initialStartTime, how).toBeCloseTo(1.141, 9);
           synth.stopMIDI();
           synth.playMIDI();
           expect(l.count.sin, how + ": a second play").toBe(N1);
@@ -482,7 +482,7 @@ for (const variant of variants) {
           l.count.stall = 41;
           synth.playMIDI();
           expect(l.count.sin, "same context object: " + same).toBe(2 * N1);
-          expect(synth.getPlayStatus().startTime).toBeGreaterThanOrEqual(l.env.clock.ms / 1000 + 0.1 - 1e-9);
+          expect(synth.getPlayStatus().initialStartTime).toBeGreaterThanOrEqual(l.env.clock.ms / 1000 + 0.1 - 1e-9);
         }
       }, SLOW);
 
@@ -518,7 +518,7 @@ for (const variant of variants) {
         const from = l.trace.length;
         synth.playMIDI();
         expect(l.count.sin).toBe(N1);
-        const st = synth.getPlayStatus().startTime;
+        const st = synth.getPlayStatus().initialStartTime;
         expect(st).toBeCloseTo(1.141, 9);
         H.runUntil(l.env, () => sources(l.trace, from).some((x) => x.start != null), 2000);
         expect(sources(l.trace, from)[0].start).toBeCloseTo(st + 0.5, 9); // tick 480 at 120 BPM

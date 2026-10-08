@@ -3,7 +3,9 @@
  * https://github.com/g200kg/webaudio-tinysynth - Apache License 2.0
  *
  * Modified by Provable Games (https://github.com/Provable-Games/webaudio-tinysynth);
- * see NOTICE for the changes.
+ * see NOTICE for the changes. Issue #68 schedules the first 0.5 s horizon after
+ * preparation and exposes a stable `initialStartTime` run origin in play status. Timestamped
+ * controller and voice-cap cuts keep future attacks intact until their requested AudioContext time.
  */
 ( function(window){
 "use strict";
@@ -496,6 +498,57 @@ function WebAudioTinySynthCore(target) {
       /* The synth is ready when the constructor returns; kept for compatibility. */
       return Promise.resolve();
     },
+    _scheduleMIDI:(until)=>{
+      /* Queue at most 1000 MIDI events through a fixed AudioContext-time horizon (#8, #68).
+         The timer passes currentTime + preroll; playMIDI passes its single startup anchor plus
+         preroll. A fixed cutoff keeps startup work from extending its own scheduling window. */
+      if(!this.playing)
+        return;
+      let e=this.song.ev[this.playIndex],n=1e3;
+      while(n-- && until>this.playTime){
+        if(e.m[0]==0xff51){
+          this.song.tempo=e.m[1];
+          this.tick2Time=4*60/this.song.tempo/this.song.timebase;
+        }
+        else
+          this.send(e.m,this.playTime);
+        ++this.playIndex;
+        if(this.playIndex>=this.song.ev.length){
+          /* Wrap only if the next pass advances (#8). Without a positive loopEnd,
+             a song whose events share one tick would repeat at one instant
+             forever, so it ends here as if looping were off. */
+          if(this.loop && (this.loopEnd>0 || this.playTick>this.song.ev[0].t)){
+            e=this.song.ev[this.playIndex=0];
+            if(this.loopEnd){
+              /* Pad to loopEnd at the tempo the pass ended on. Then restart at
+                 the song's starting tempo: 120 BPM, the MIDI default that
+                 loadMIDI starts from (a tempo event at tick 0 re-applies at
+                 once). Time the leading rest before ev[0] at that tempo. */
+              this.playTime+=(Math.max(this.loopEnd,this.playTick)-this.playTick)*this.tick2Time;
+              this.song.tempo=120;
+              this.tick2Time=4*60/this.song.tempo/this.song.timebase;
+              this.playTime+=e.t*this.tick2Time;
+            }
+            /* The new pass stands at its tick 0 (see playMIDI), which sounds e.t ticks
+               before ev[0]: at the padded end with loopEnd, else virtually (D-023). _x0:
+               the pass's opening seconds per tick (inherited without loopEnd). */
+            this._z=1;
+            this._st=this.playTime-e.t*(this._x0=this.tick2Time);
+            this.playTick=e.t;
+          }
+          else{
+            this.playTick=this.maxTick;
+            this.playing=0;
+            break;
+          }
+        }
+        else{
+          e=this.song.ev[this.playIndex];
+          this.playTime+=(e.t-this.playTick)*this.tick2Time;
+          this.playTick=e.t;
+        }
+      }
+    },
     init:(ctx,dest)=>{
       if(this._tid) // the constructor's step: once only, so no second interval or context
         return;
@@ -503,6 +556,7 @@ function WebAudioTinySynthCore(target) {
       this.sustain=[]; this.notetab=[]; this.rhythm=[];
       this.masterTuningC=0; this.masterTuningF=0; this.tuningC=[]; this.tuningF=[]; this.scaleTuning=[];
       this.maxTick=0, this.playTick=0, this.playing=0; this.releaseRatio=3.5;
+      this._initialSt=null;
       for(let i=0;i<16;++i){
         this.pg[i]=0; this.vol[i]=3*100*100/(127*127);
         this.bend[i]=0; this.brange[i]=0x100;
@@ -511,7 +565,7 @@ function WebAudioTinySynthCore(target) {
         this.rhythm[i]=0;
       }
       this.rhythm[9]=1;
-      this.preroll=0.2;
+      this.preroll=0.5;
       this.relcnt=0;
       /* Lifecycle (#11, #12): the installed context, whether the synth created it (_own), the
          one-shot sources (percussion hits and playMIDI's start-up oscillator, kept until they
@@ -540,56 +594,16 @@ function WebAudioTinySynthCore(target) {
                 this.notetab.splice(i,1);
               }
             }
+            /* A voice-count eviction is already out of notetab, but remains owned until its
+               scheduled stop. Retire it on the same phase once the release bookkeeping ends. */
+            for(const nt of this._gone)
+              if(nt._stopAt>c.currentTime && c.currentTime>nt.e)
+                this._pruneNote(nt);
             this._src=this._src.filter(v=>v.e>=c.currentTime);
           }
-          /* playMIDI only starts songs with events. At most 1000 events per callback
-             (#8): the rest follow on the next callbacks, in order, at their own times. */
-          if(this.playing){
-            let e=this.song.ev[this.playIndex],n=1e3;
-            while(n-- && this.actx.currentTime+this.preroll>this.playTime){
-              if(e.m[0]==0xff51){
-                this.song.tempo=e.m[1];
-                this.tick2Time=4*60/this.song.tempo/this.song.timebase;
-              }
-              else
-                this.send(e.m,this.playTime);
-              ++this.playIndex;
-              if(this.playIndex>=this.song.ev.length){
-                /* Wrap only if the next pass advances (#8). Without a positive loopEnd,
-                   a song whose events share one tick would repeat at one instant
-                   forever, so it ends here as if looping were off. */
-                if(this.loop && (this.loopEnd>0 || this.playTick>this.song.ev[0].t)){
-                  e=this.song.ev[this.playIndex=0];
-                  if(this.loopEnd){
-                    /* Pad to loopEnd at the tempo the pass ended on. Then restart at
-                       the song's starting tempo: 120 BPM, the MIDI default that
-                       loadMIDI starts from (a tempo event at tick 0 re-applies at
-                       once). Time the leading rest before ev[0] at that tempo. */
-                    this.playTime+=(Math.max(this.loopEnd,this.playTick)-this.playTick)*this.tick2Time;
-                    this.song.tempo=120;
-                    this.tick2Time=4*60/this.song.tempo/this.song.timebase;
-                    this.playTime+=e.t*this.tick2Time;
-                  }
-                  /* The new pass stands at its tick 0 (see playMIDI), which sounds e.t ticks
-                     before ev[0]: at the padded end with loopEnd, else virtually (D-023). _x0:
-                     the pass's opening seconds per tick (inherited without loopEnd). */
-                  this._z=1;
-                  this._st=this.playTime-e.t*(this._x0=this.tick2Time);
-                  this.playTick=e.t;
-                }
-                else{
-                  this.playTick=this.maxTick;
-                  this.playing=0;
-                  break;
-                }
-              }
-              else{
-                e=this.song.ev[this.playIndex];
-                this.playTime+=(e.t-this.playTick)*this.tick2Time;
-                this.playTick=e.t;
-              }
-            }
-          }
+          /* Housekeeping cadence is independent of how often the scheduler is entered. */
+          if(this.playing)
+            this._scheduleMIDI(c.currentTime+this.preroll);
         }.bind(this),60
       );
       if(this.debug)
@@ -668,6 +682,7 @@ function WebAudioTinySynthCore(target) {
         this._dead=1;
         clearInterval(this._tid);
         this.playing=0;
+        this._initialSt=null;
         this._pend.forEach(f=>{
           try{ f(); }catch(e){ /* a canceller must not stop the disposal */ }
         });
@@ -746,12 +761,14 @@ function WebAudioTinySynthCore(target) {
       this.voices=this._num("voices",v,0xffffffff,1,1);
     },
     getPlayStatus:()=>{
-      /* startTime (D-023): the AudioContext time at which tick 0 of the current pass sounds
-         (see playMIDI), or null when not playing. Like curTick, it follows the scheduler: it
-         moves to the next pass once the current pass's last event is scheduled, up to 0.2 s
-         before that event sounds and before any rest up to loopEnd, so it can be later than
-         currentTime. */
-      return {play:this.playing, maxTick:this.maxTick, curTick:this.playTick, startTime:this.playing?this._st:null};
+      /* `play` and `curTick` describe scheduler progress, not audible completion. `startTime`
+         (D-023) is the tick-0 time of the pass currently held by the scheduler. It follows
+         scheduling, so it can move ahead of audible playback and includes any rest up
+         to loopEnd. initialStartTime (#68) is the origin set by the most recent playMIDI() call;
+         it stays stable across that run and is cleared by stop, load, seek, context replacement
+         or dispose. Read it for the first visual sync, then follow startTime for later passes. */
+      return {play:this.playing, maxTick:this.maxTick, curTick:this.playTick,
+        startTime:this.playing?this._st:null, initialStartTime:this._initialSt};
     },
     locateMIDI:(tick,load)=>{
       if(!this._live())
@@ -867,6 +884,7 @@ function WebAudioTinySynthCore(target) {
       /* The upstream stop, kept for loadMIDI's internal stops (D-023). A load sets every
          channel again, so nothing is left to apply on the next playMIDI(). */
       this.playing=this._rs=0;
+      this._initialSt=null;
       for(var i=0;i<16;++i)
         this.allSoundOff(i);
     },
@@ -901,21 +919,35 @@ function WebAudioTinySynthCore(target) {
       /* A song with no events other than tempo (empty, metadata-only or tempo-only)
          stays stopped (#9). A completed song (not one just loaded at maxTick) starts a
          new pass with the state of locateMIDI(0) (#10, D-005), but the previous pass's
-         sounding and already scheduled notes play on, as upstream (D-019): its voices are
-         kept out of the seek's reach. A song stopped before its end resumes as it is. */
-      const s=this.song,n=this.notetab,d=this._src;
+         sounding and already scheduled notes play on, as upstream (D-019): their ownership
+         sets are kept out of the seek's reach. A song stopped before its end resumes as it is. */
+      const s=this.song,n=this.notetab,d=this._src,g=this._gone;
       /* The sequencer runs on the realtime timer, which cannot follow an offline render's
          clock (#12, tasks/T4.md): schedule notes with explicit times instead. */
       if(this._off)
         throw CodedError("AUDIO_CONTEXT_OFFLINE");
       if(!s || !s.ev.some(e=>e.m[0]!=0xff51))
         return;
-      /* Before anything reads the clock (#18): a first n1 note built inside the scheduler's
-         callback can take longer than the 0.1 s start and the 0.2 s lead, and would sound after
-         the notes sent with it. The clock is read after the build, so the whole song shifts. */
+      /* A second call while the scheduler is active is an idempotent no-op. The scheduler may
+         finish before its queued notes and release tails have finished sounding. */
+      if(this.playing)
+        return;
+      /* Before the song clock is anchored (#18, #68): build a first n1 note before choosing one
+         shared start time for the whole first batch. */
       this.prewarm();
-      if(this.playIndex && this.playTick>=this.maxTick)
-        this.notetab=[], this._src=[], this.playing=0, this.locateMIDI(0), this.notetab=n, this._src=d;
+      if(this.playIndex && this.playTick>=this.maxTick){
+        this.notetab=[];
+        this._src=[];
+        this._gone=new Set();
+        this.playing=0;
+        try{
+          this.locateMIDI(0);
+        }finally{
+          this.notetab=n;
+          this._src=d;
+          this._gone=g;
+        }
+      }
       if(this._rs) // after a caller's stop: the channels' latest values, now (review F1)
         for(let i=this._rs=0;i<16;++i)
           [[this.chvol[i],"gain",this.vol[i]*this.ex[i]],[this.chmod[i],"gain",this._m[i]],[this.chpan[i],"pan",this._p[i]]].forEach(([n,k,x])=>n && n[k].setValueAtTime(x||0,this.actx.currentTime));
@@ -935,7 +967,8 @@ function WebAudioTinySynthCore(target) {
          leading rest, as later passes do: tick 0 sounds 0.1 s from now. Otherwise the next
          event plays 0.1 s from now, as upstream and after a seek (next-event positioning,
          D-005), and startTime (_st) is when tick 0 would have sounded, now + 0.1 s - t. */
-      let t=0,k=0,x=this._x0||2/s.timebase,a=this.actx.currentTime+.1;
+      const anchor=this.actx.currentTime;
+      let t=0,k=0,x=this._x0||2/s.timebase,a=anchor+.1;
       for(const e of s.ev.slice(0,this.playIndex+1)){
         t+=(e.t-k)*x;
         k=e.t;
@@ -948,6 +981,8 @@ function WebAudioTinySynthCore(target) {
         this._st=(this.playTime=a)-t;
       this.tick2Time=4*60/s.tempo/s.timebase;
       this.playing=1;
+      this._initialSt=this._st;
+      this._scheduleMIDI(anchor+this.preroll);
     },
     loadMIDI:(data)=>{
       if(!this._live())
@@ -1166,7 +1201,53 @@ function WebAudioTinySynthCore(target) {
       }
       return c;
     },
-    _pruneNote:(nt)=>{
+    _pruneNote:(nt,t)=>{
+      const now=this.actx.currentTime;
+      if(nt._stopAt!=undefined){
+        if(t>now){
+          if(t<nt._stopAt){
+            nt._stopAt=t;
+            for(let k=nt.o.length-1;k>=0;--k){
+              try { nt.o[k].stop(t); } catch (e) { /* already ended */ }
+            }
+          }
+        }
+        else if(nt._stopAt>now){
+          nt._stopAt=now;
+          for(let k=nt.o.length-1;k>=0;--k){
+            if(nt.o[k].frequency)
+              nt.o[k].frequency.cancelScheduledValues(0);
+            else
+              nt.o[k].playbackRate.cancelScheduledValues(0);
+            nt.g[k].gain.cancelScheduledValues(0);
+            try { nt.o[k].stop(); } catch (e) { /* already ended */ }
+            if(nt.o[k].detune){
+              try { this.chmod[nt.ch].disconnect(nt.o[k].detune); } catch(e) { /* not connected */ }
+            }
+            nt.g[k].gain.value=0;
+          }
+        }
+        return;
+      }
+      if(t>now){
+        nt._stopAt=t;
+        nt.l=nt.o.length;
+        for(let k=nt.o.length-1;k>=0;--k){
+          const o=nt.o[k],g=nt.g[k],b=nt.q[k];
+          try { o.stop(t); } catch (e) { /* already ended */ }
+          /* A scheduled cut preserves automation and routes until onended. */
+          o.onended=()=>{
+            o.disconnect(); g.disconnect(); b && b.disconnect();
+            if(o.detune){
+              try { this.chmod[nt.ch].disconnect(o.detune); } catch(e) { /* not connected */ }
+            }
+            --nt.l || this._gone.delete(nt);
+          };
+        }
+        this._gone.add(nt);
+        return;
+      }
+      nt._stopAt=now;
       for(let k=nt.o.length-1;k>=0;--k){
         if(nt.o[k].frequency){
           nt.o[k].frequency.cancelScheduledValues(0);
@@ -1194,7 +1275,7 @@ function WebAudioTinySynthCore(target) {
       nt.l=nt.o.length;
       this._gone.add(nt);
     },
-    _limitVoices:(ch,n)=>{ // eslint-disable-line no-unused-vars -- callers pass the new note; the limit is global
+    _limitVoices:(ch,n,t)=>{ // callers pass the new note; the limit is global
       this.notetab.sort(function(n1,n2){
         if(n1.f!=n2.f) return n1.f-n2.f;
         if(n1.e!=n2.e) return n2.e-n1.e;
@@ -1202,8 +1283,9 @@ function WebAudioTinySynthCore(target) {
       });
       for(let i=this.notetab.length-1;i>=0;--i){
         var nt=this.notetab[i];
-        if(this.actx.currentTime>nt.e || i>=(this.voices-1)){
-          this._pruneNote(nt);
+        const ended=this.actx.currentTime>nt.e;
+        if(ended || i>=(this.voices-1)){
+          this._pruneNote(nt,ended ? undefined : t);
           this.notetab.splice(i,1);
         }
       }
@@ -1249,7 +1331,7 @@ function WebAudioTinySynthCore(target) {
         if(![fp[i]/b[i],fp[i]/b[i]*pn.p,vp[i],pn.s*vp[i]].every(f32))
           return;
       }
-      this._limitVoices(ch,n);
+      this._limitVoices(ch,n,t);
       const q=[]; // the output operators' filters, by operator (#27)
       for(let i=0;i<p.length;++i){
         pn=p[i];
@@ -1388,16 +1470,24 @@ function WebAudioTinySynthCore(target) {
         }
       }
     },
-    allSoundOff:(ch)=>{
+    _allSoundOffAt:(ch,t)=>{
       ch=this._ch(ch);
+      if(!this.actx || this._dead)
+        return;
+      if(t==undefined)
+        t=this.actx.currentTime;
       for(let i=this.notetab.length-1;i>=0;--i){
         const nt=this.notetab[i];
         if(nt.ch==ch){
-          this._pruneNote(nt);
+          this._pruneNote(nt,t);
           this.notetab.splice(i,1);
         }
       }
+      for(const nt of this._gone)
+        if(nt.ch==ch && nt._stopAt>t)
+          this._pruneNote(nt,t);
     },
+    allSoundOff:(ch)=>this._allSoundOffAt(ch),
     resetAllControllers:(ch)=>{
       ch=this._ch(ch);
       this.bend[ch]=0; this.ex[ch]=1.0;
@@ -1557,7 +1647,7 @@ function WebAudioTinySynthCore(target) {
         case 120:  /* all sound off */
         case 123:  /* all notes off */
         case 124: case 125: case 126: case 127: /* omni off/on mono/poly */
-          this.allSoundOff(ch);
+          this._allSoundOffAt(ch,this._tsConv(t));
           break;
         case 121: this.resetAllControllers(ch); break;
         }
@@ -1692,6 +1782,7 @@ function WebAudioTinySynthCore(target) {
          installed graph as it was (#26). */
       const r=[...this._wv].map(([w,d])=>[w,this._mk(d,actx)]);
       const own=this._own && actx==this.actx;
+      this._initialSt=null;
       this._drop(this._own && !own);
       this._own=own;
       if((this._off=typeof actx.startRendering=="function"))
