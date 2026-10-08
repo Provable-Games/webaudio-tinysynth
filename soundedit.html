@@ -2,18 +2,20 @@
 <html>
 <head>
 <meta charset="utf-8">
-<script src="https://unpkg.com/@webcomponents/custom-elements"></script>
+<title>WebAudio-TinySynth Sound Editor and MIDI Player</title>
 <script src="./webaudio-tinysynth.js"></script>
-<script src="https://g200kg.github.io/webaudio-controls/webaudio-controls.js" ></script>
-<link href="https://fonts.googleapis.com/css?family=Audiowide" rel="stylesheet">
-<link href="https://fonts.googleapis.com/css?family=Roboto+Condensed" rel="stylesheet">
+<script src="./bower_components/webaudio-controls/webaudio-controls.js"></script>
 <style>
 #soundeditor{
   display:none;
 }
+#soundeditor table input{
+  width:3.8em;
+  box-sizing:border-box;
+}
 body{
   background:#ddf;
-  font-family: 'Roboto Condensed', sans-serif;
+  font-family: 'Roboto Condensed', 'Arial Narrow', sans-serif;
 }
 a{
   color:#fff;
@@ -31,7 +33,7 @@ a{
 h1{
   margin:0px 0px;
   font-weight: 300;
-  font-family: 'Audiowide', cursive;
+  font-family: 'Audiowide', sans-serif;
 }
 #base {
     width:1000px;
@@ -56,6 +58,9 @@ td{
   text-align: center;
   padding:4px;
 }
+.error{
+  color:#f99;
+}
 label{
   display:inline-block;
   background:#ddf;
@@ -71,88 +76,381 @@ var curProg=0;
 var curOct=0;
 var curNote=60;
 var curMidi=0;
+var midiAccess=null;
 var midiPort=[];
 var currentPort=-1;
+var midiOff=false;      // the user chose no MIDI input ("--"): a hot-plug does not select one
+var synth, kb;
+/* Notes this page is sounding, by input (keyboard key, shot button, MIDI input
+   note): each note-off goes to the channel and note that were sent, even after
+   an octave or channel change, and losing focus releases them all. */
+var held={};
+var sustainCh=-1;       // the channel the sustain pedal was sent to, or -1
+var shiftSustain=false; // sustain is held by the Shift key rather than the checkbox
+var midiSustain={};     // channels whose sustain pedal the MIDI input holds down
 function Init(){
   InitMidi();
-  synth=new WebAudioTinySynth({quality:1});
+  /* lazy: no AudioContext exists until the first click, tap, key press or
+     change on the page, which starts audio (StartAudio). Installing a song
+     creates the AudioContext, so the sample song is loaded by Play (LoadSong). */
+  synth=new WebAudioTinySynth({quality:1,lazy:true});
   synth.setLoop(1);
   synth.setMasterVol(0.3);
-  synth.loadMIDIUrl("ws.mid");
-  setInterval(function(){
+  ["pointerdown","keydown","click","change"].forEach(function(type){
+    window.addEventListener(type,StartAudio,true);
+  });
+  var showStatus=function(){
     var st=synth.getPlayStatus();
     document.getElementById("status").innerHTML=(st.play?"Playing ":"Stopped ")+st.curTick+" / "+st.maxTick;
-  },100);
+    AudioStatus();
+  };
+  showStatus();   // at once: a line filled in 100 ms later would move the controls below it
+  setInterval(showStatus,100);
   kb=document.getElementById("kb");
   kb.addEventListener("change",KeyIn);
+  kb.addEventListener("focusout",function(){ReleaseAll("kb");});
+  // Show the engine's settings rather than the controls' fixed defaults.
+  document.getElementById("vol").value=synth.masterVol;
+  document.getElementById("rev").value=synth.reverbLev;
+  document.getElementById("loop").value=synth.loop?1:0;
+  document.getElementById("quality").selectedIndex=synth.quality?1:0;
   var sh=document.getElementById("shot");
   synth.ready().then(()=>{
-    sh.addEventListener("mousedown",function(){
-        synth.send([0x90+curMidi,curNote,100],0);
-      });
-      sh.addEventListener("mouseup",function(){
-        synth.send([0x80+curMidi,curNote,100],0);
-      });
+      HoldButton(sh,"shot");
       for(var i=0;i<128;++i){
         var o=document.createElement("option");
         o.innerHTML=(i+1)+" : "+synth.getTimbreName(0,i);
         document.getElementById("prog").appendChild(o);
       }
-      ProgChange(0);
+      // Program 0 is every channel's default: show it without sending a program change,
+      // which would create the AudioContext before a gesture.
+      ViewParam(synth.program[curProg]);
   });
 }
-function MidiIn(e){
-  if(synth){
-    switch(e.data[0]&0xf0){
-    case 0x90:
-      kb.setNote(e.data[2]?1:0,e.data[1]);
-      break;
-    case 0x80:
-      kb.setNote(0,e.data[1]);
-    }
-    e.data[1]=e.data[1]+curOct*12;
-    synth.send(e.data,0);
+/* Starts audio from a user gesture: resume() creates the AudioContext inside
+   the event handler and starts it. Called again by later gestures while audio
+   is not running, for example after the browser refused to start it. */
+var audioError=null;
+function StartAudio(){
+  var c=synth.getAudioContext();
+  if(c&&c.state=="running")
+    return;
+  audioError=null;
+  synth.resume().then(AudioStatus,function(e){
+    audioError=e;
+    AudioStatus();
+  });
+  AudioStatus();
+}
+/* Shows whether audio is off, blocked, running, or failed to start. */
+function AudioStatus(){
+  var c=synth.getAudioContext(), s=c?c.state:"", text, error=false;
+  if(s=="running"){
+    text="Audio is on.";
+    audioError=null;
+  }
+  else if(s=="closed")
+    text="Audio is closed. Reload the page to start it again.";
+  else if(audioError){
+    text="Audio could not start ("+ErrorText(audioError)+"). Click, tap or press a key to try again.";
+    error=true;
+  }
+  else if(c)
+    text="Audio is blocked by the browser. Click, tap or press a key to start it.";
+  else
+    text="Audio is off. Click, tap or press a key to start it.";
+  var m=document.getElementById("audio");
+  if(m.textContent!=text||m.className!=(error?"error":"")){
+    m.textContent=text;
+    m.className=error?"error":"";
   }
 }
+/* An error's code (and HTTP status), or its name, with its message. */
+function ErrorText(e){
+  if(!e)
+    return "unknown error";
+  if(e.code){
+    var t=e.message&&e.message.indexOf(e.code)==0?e.message:e.code+(e.message?": "+e.message:"");
+    return e.status!=undefined?t+" "+e.status:t;
+  }
+  return (e.name||"Error")+(e.message?": "+e.message:"");
+}
+/* Play plays the loaded song. A song still loading (a file being read, or the
+   sample song) is played once it is installed; with none loaded or loading,
+   Play loads the sample song from its URL first. Installing a song creates the AudioContext and resets every
+   channel (program, sustain pedal, sounding notes), so the sample song waits
+   for Play instead of loading with the page or at the first note played. A
+   failure shows its code, until the next attempt. Choosing a file cancels a
+   pending load, and a superseded or cancelled load shows nothing. Stop while
+   the song loads, or choosing a file, cancels the play that waits for it. */
+var haveSong=false;   // a song (the sample song or a file) is installed
+var songLoad=null;    // the pending sample song load, settled once it has
+var urlLoad=null;     // its AbortController
+var fileRead=null;    // the pending file read, settled once it has
+var songError=null;   // the message the last failed sample song load showed
+var playWanted=0;     // counts Play and Stop presses: a play that waited runs only if no later press came
+function LoadSong(url){
+  if(songError!=null&&document.getElementById("message").textContent==songError)
+    ShowMessage("");  // a new attempt: the previous failure no longer applies
+  songError=null;
+  var ctl=urlLoad=new AbortController();
+  var load=songLoad=synth.loadMIDIUrl(url,{signal:ctl.signal}).then(function(){
+    haveSong=true;
+  },function(e){
+    if(e.code=="LOAD_SUPERSEDED"||e.name=="AbortError")
+      return;
+    songError="Could not load "+url+" ("+ErrorText(e)+"). Choose a MIDI file instead.";
+    ShowMessage(songError,true);
+  }).then(function(){
+    if(urlLoad==ctl)
+      urlLoad=null;
+    if(songLoad==load)
+      songLoad=null;
+  });
+}
+function Play(){
+  var press=++playWanted;
+  if(!haveSong&&!songLoad&&!fileRead)
+    LoadSong("ws.mid");
+  var wait=fileRead||songLoad;  // a file chosen after the sample song's load cancelled it
+  if(!wait){
+    if(haveSong)
+      synth.playMIDI();
+    return;
+  }
+  wait.then(function(){
+    if(haveSong&&press==playWanted)
+      synth.playMIDI();
+  });
+}
+function Stop(){
+  ++playWanted;   // a play waiting for the sample song does not start
+  synth.stopMIDI();
+}
+function NoteOn(key,ch,n,v,disp){
+  NoteOff(key);
+  if(n<0||n>127)
+    n=null;     // out of range after the octave shift: not played
+  held[key]={ch:ch,n:n,disp:disp};
+  if(n!=null)
+    synth.send([0x90+ch,n,v]);
+}
+function NoteOff(key){
+  var h=held[key];
+  if(!h)
+    return;
+  delete held[key];
+  if(h.n!=null)
+    synth.send([0x80+h.ch,h.n,0]);
+  if(h.disp!=undefined)
+    kb.setNote(0,h.disp);
+}
+/* Releases the notes whose input key starts with prefix (all notes without
+   one), the MIDI input's sustain pedal with its notes, and the Shift sustain
+   when everything is released. */
+function ReleaseAll(prefix){
+  prefix=prefix||"";
+  if(prefix==""||prefix=="kb"){
+    /* The keyboard ends a mouse drag on a window mouseup, which a lost focus
+       can swallow; end it here, or moving the mouse later would play notes. A
+       key it still thinks is down would ignore the next press of that key. */
+    window.dispatchEvent(new MouseEvent("mouseup"));
+    kb.currentKey=-1;
+  }
+  for(var key in held){
+    if(key.indexOf(prefix)==0)
+      NoteOff(key);
+  }
+  if(prefix==""||prefix=="midi"){
+    for(var ch in midiSustain){
+      delete midiSustain[ch];
+      if(+ch!=sustainCh)  // the page's own pedal (checkbox or Shift) keeps that channel sustained
+        synth.send([0xb0+(+ch),64,0],0);
+    }
+  }
+  if(prefix==""&&shiftSustain){
+    shiftSustain=false;
+    Sustain(false);
+  }
+}
+/* A button that sounds the current note while held: by a pointer (mouse, pen
+   or touch), captured so that a release outside the button still ends the
+   note, or by Space or Enter while it has focus. */
+function HoldButton(b,name){
+  b.addEventListener("pointerdown",function(e){
+    if(e.button!=0)
+      return;
+    try{
+      b.setPointerCapture(e.pointerId);
+    }
+    catch(err){ /* the pointer is already gone; pointerup or pointercancel still ends the note */ }
+    NoteOn(name+"p"+e.pointerId,curMidi,curNote,100);
+  });
+  var up=function(e){NoteOff(name+"p"+e.pointerId);};
+  b.addEventListener("pointerup",up);
+  b.addEventListener("pointercancel",up);
+  b.addEventListener("lostpointercapture",up);
+  b.addEventListener("keydown",function(e){
+    if(e.key!=" "&&e.key!="Enter")
+      return;
+    e.preventDefault();
+    if(!e.repeat&&!((name+"k") in held))
+      NoteOn(name+"k",curMidi,curNote,100);
+  });
+  b.addEventListener("keyup",function(e){
+    if(e.key==" "||e.key=="Enter")
+      NoteOff(name+"k");
+  });
+  b.addEventListener("focusout",function(){NoteOff(name+"k");});
+}
+function MidiIn(e){
+  if(!synth)
+    return;
+  var d=e.data, cmd=d[0]&0xf0, ch=d[0]&0x0f;
+  if(cmd==0x90||cmd==0x80){
+    var key="midi"+ch+"-"+d[1];
+    if(cmd==0x90&&d[2]){
+      NoteOn(key,ch,d[1]+curOct*12,d[2],d[1]);
+      kb.setNote(1,d[1]);
+    }
+    else
+      NoteOff(key);
+    return;
+  }
+  if(cmd==0xb0&&d[1]==64){
+    if(d[2]>=64)
+      midiSustain[ch]=1;
+    else{
+      delete midiSustain[ch];
+      if(ch==sustainCh)
+        return;   // the page's own pedal (checkbox or Shift) keeps that channel sustained
+    }
+  }
+  synth.send(Array.prototype.slice.call(d),0);
+}
+function ChooseMidi(n){
+  midiOff=n<0;
+  SelectMidi(n);
+}
 function SelectMidi(n){
-//  console.log("Select Port:"+n+":"+(n>=0?midiPort[n].name:"none"));
-console.log(midiPort);
   document.getElementById("midiport").selectedIndex=n+1;
   if(currentPort>=0)
     midiPort[currentPort].removeEventListener("midimessage",MidiIn);
+  ReleaseAll("midi");
   currentPort=n;
   if(currentPort>=0){
     midiPort[currentPort].addEventListener("midimessage",MidiIn);
   }
 }
+function MidiStatus(text,error){
+  var m=document.getElementById("midistatus");
+  m.textContent=text;
+  m.className=error?"error":"";
+}
 function InitMidi(){
-  if(navigator.requestMIDIAccess){
-    navigator.requestMIDIAccess().then(
-      function(access){
-        console.log("MIDI ready.");
-        setTimeout(function(){
-          var it=access.inputs.values();
-          for(var i=it.next();!i.done;i=it.next()){
-            var e=document.createElement("option");
-            e.innerHTML=i.value.name;
-            document.getElementById("midiport").appendChild(e);
-            midiPort.push(i.value);
-          }
-          if(midiPort.length>0)
-            SelectMidi(0);
-        },10);
-      },
-      function(){
-        console.log("MIDI is not available.");
-      }
-  );}
-};
-function loadMidi(files){
-  var reader = new FileReader();
-  reader.onload=function(e){
-    synth.loadMIDI(reader.result);
+  if(!navigator.requestMIDIAccess){
+    MidiStatus("Web MIDI is not available in this browser. Use the on-screen keyboard.",true);
+    return;
   }
-  reader.readAsArrayBuffer(files[0]);
+  MidiStatus("Requesting MIDI access...");
+  navigator.requestMIDIAccess().then(
+    function(access){
+      midiAccess=access;
+      access.addEventListener("statechange",UpdateMidiPorts);
+      setTimeout(UpdateMidiPorts,10);
+    },
+    function(e){
+      MidiStatus("MIDI access failed ("+(e&&e.name?e.name:"error")+(e&&e.message?": "+String(e.message).replace(/\.$/,""):"")+"). Use the on-screen keyboard.",true);
+    }
+  );
+}
+/* Lists the connected MIDI inputs; called again whenever a port appears or disappears. */
+function UpdateMidiPorts(){
+  var ports=[];
+  midiAccess.inputs.forEach(function(p){
+    if(p.state!="disconnected")
+      ports.push(p);
+  });
+  var same=ports.length==midiPort.length&&ports.every(function(p,i){return p.id==midiPort[i].id;});
+  if(!same){
+    var prev=currentPort>=0?midiPort[currentPort]:null;
+    var keep=-1;
+    ports.forEach(function(p,i){
+      if(prev&&p.id==prev.id)
+        keep=i;
+    });
+    if(keep<0)
+      SelectMidi(-1);   // the selected input is gone: detach it and release its notes
+    midiPort=ports;
+    var sel=document.getElementById("midiport");
+    while(sel.options.length>1)
+      sel.remove(1);
+    ports.forEach(function(p){
+      var o=document.createElement("option");
+      o.textContent=p.name;
+      sel.appendChild(o);
+    });
+    if(keep>=0){
+      // The selected input is still connected: keep listening and keep its held notes.
+      if(ports[keep]!==prev){
+        prev.removeEventListener("midimessage",MidiIn);
+        ports[keep].addEventListener("midimessage",MidiIn);
+      }
+      currentPort=keep;
+      sel.selectedIndex=keep+1;
+    }
+    else
+      SelectMidi(ports.length&&!midiOff?0:-1);
+  }
+  if(ports.length)
+    MidiStatus(ports.length+" MIDI input"+(ports.length>1?"s":"")+" connected.");
+  else
+    MidiStatus("No MIDI input connected. The list updates when one is connected.");
+}
+function ShowMessage(text,error){
+  var m=document.getElementById("message");
+  m.textContent=text;
+  m.className=error?"error":"";
+}
+var loadCount=0;
+function loadMidi(files){
+  var file=files&&files[0];
+  var load=++loadCount;
+  ++playWanted;   // a Play that waits for an earlier file or sample song load is cancelled: press Play again for the new song
+  if(!file){
+    ShowMessage("No file selected. The current song is unchanged.");
+    return;
+  }
+  if(urlLoad){
+    urlLoad.abort();
+    urlLoad=null;
+  }
+  var reader = new FileReader();
+  var read=fileRead=new Promise(function(done){
+    reader.addEventListener("loadend",done);
+  });
+  read.then(function(){
+    if(fileRead==read)
+      fileRead=null;
+  });
+  reader.onload=function(e){
+    if(load!=loadCount)
+      return;
+    try{
+      synth.loadMIDI(reader.result);
+    }
+    catch(err){
+      ShowMessage("Could not load "+file.name+" ("+err.message+"). The current song is unchanged.",true);
+      return;
+    }
+    haveSong=true;
+    ShowMessage("Loaded "+file.name+". Press Play.");
+  }
+  reader.onerror=function(){
+    if(load==loadCount)
+      ShowMessage("Could not read "+file.name+" ("+(reader.error?reader.error.message:"unknown error")+"). The current song is unchanged.",true);
+  }
+  reader.readAsArrayBuffer(file);
 }
 function Ctrl(){
   if(typeof(synth)!="undefined"){
@@ -162,25 +460,39 @@ function Ctrl(){
   }
 }
 function KeyIn(e){
-  curNote=e.note[1]+curOct*12;
-  document.getElementById("shot").innerHTML=curNote;
-  if(e.note[0])
-    synth.send([0x90+curMidi,curNote,100]);
-  else
-    synth.send([0x80+curMidi,curNote,0]);
-  if(curMidi==9){
-    var w=synth.drummap[curNote-35];
-    ViewParam(w);
+  var key="kb"+e.note[1];
+  if(e.note[0]){
+    curNote=e.note[1]+curOct*12;
+    document.getElementById("shot").innerHTML=curNote;
+    NoteOn(key,curMidi,curNote,100,e.note[1]);
+    if(curMidi==9)
+      ViewParam(DrumTimbre(curNote));
   }
+  else
+    NoteOff(key);
 }
 function ChChange(e){
   curMidi=e.selectedIndex;
+  if(sustainCh>=0)
+    Sustain(true);    // the pedal follows the channel
+  if(curMidi==9)
+    ViewParam(DrumTimbre(curNote));
+  else{
+    // Show the program this channel plays.
+    curProg=synth.pg[curMidi]||0;
+    document.getElementById("prog").selectedIndex=curProg;
+    ViewParam(synth.program[curProg]);
+  }
+}
+/* The drum timbre for a note, or null: the drum map covers notes 35 to 81. */
+function DrumTimbre(n){
+  return (n>=35&&n<=81)?synth.drummap[n-35]:null;
 }
 function ViewDef(pg){
   var s=JSON.stringify(pg.p);
   s=s.replace(/}/g,",}").replace(/\"([a-z])\"/g,"$1");
   var ss=["g:0,","t:1,","f:0,","v:0.5,","a:0,","h:0.01,","d:0.01,","s:0,","r:0.05,","p:1,","q:1","k:0"];
-  for(p=0;p<ss.length;++p){
+  for(var p=0;p<ss.length;++p){
     s=s.replace(ss[p],",");
     s=s.replace(ss[p],",");
     s=s.replace(ss[p],",");
@@ -191,53 +503,78 @@ function ViewDef(pg){
 }
 
 function EnableRow(){
-  oscs=document.getElementById("oscs").selectedIndex+1;
+  var oscs=document.getElementById("oscs").selectedIndex+1;
   for(var i=2;;++i){
     var o=document.getElementById("osc"+i)
     if(!o)
       break;
-    ids=["g","w","v","t","f","a","h","d","s","r","p","q","k"];
-    for(id=0;id<ids.length;++id){
+    var ids=["g","w","v","t","f","a","h","d","s","r","p","q","k"];
+    for(var id=0;id<ids.length;++id){
       document.getElementById(ids[id]+i).disabled=(oscs>=i)?false:true;
       document.getElementById(ids[id]+i).style.background=(oscs>=i)?"#fff":"#ccc";
     }
   }
 }
+/* The slot the editor shows: {m:0, n:program} or {m:1, n:note} on the drum
+   channel, or null for a key with no drum (setTimbre accepts drums 35-81). */
+function EditTarget(){
+  if(curMidi!=9)
+    return {m:0,n:curProg};
+  return (curNote>=35&&curNote<=81)?{m:1,n:curNote}:null;
+}
+function Installed(t){
+  return t.m?synth.drummap[t.n-35]:synth.program[t.n];
+}
+/* Timbres the editor installed, by "m:n". setQuality() reinstalls the built-in
+   timbres, so SetQuality installs these again. */
+var edits={};
+/* Upstream's starting values for an operator added by the operator count; the
+   form's values replace all but b and c, which the synth ignores. */
+var NEW_OP={g:0,w:"sine",v:0,t:0,f:0,a:0,h:0,d:1,s:0,r:1,b:0,c:0,p:1,q:1,k:0};
+var FIELDS=["g","v","t","f","a","h","d","s","r","p","q","k"];
+/* Builds a new timbre from the form and installs it with setTimbre(), which
+   checks it and keeps a copy; the installed timbre and the synth's built-in
+   tables are never modified. Each operator starts as a copy of the installed
+   one, so the keys keep their order and the Patch text is the same as
+   upstream's for the same values. An invalid value is shown and not applied. */
 function Edit(){
   if(window.synth==undefined)
     return;
-  var prog;
-  if(curMidi==9)
-    prog=synth.drummap[curNote-35];
-  else
-    prog=synth.program[curProg];
+  var t=EditTarget();
+  if(!t)
+    return;     // no drum sound on this note; the name line says so
   var oscs=document.getElementById("oscs").selectedIndex+1;
   EnableRow();
-  if(prog.p.length>oscs)
-    prog.p.length=oscs;
-  if(prog.p.length<oscs)
-    for(var i=oscs-prog.p.length;i>=0;--i)
-      prog.p.push({g:0,w:"sine",v:0,t:0,f:0,a:0,h:0,d:1,s:0,r:1,b:0,c:0,p:1,q:1,k:0});
+  var cur=Installed(t).p, p=[];
   for(var i=0;i<oscs;++i){
-    prog.p[i].g=GetVal("g"+(i+1));
-    prog.p[i].w=document.getElementById("w"+(i+1)).value;
-    prog.p[i].v=GetVal("v"+(i+1));
-    prog.p[i].t=GetVal("t"+(i+1));
-    prog.p[i].f=GetVal("f"+(i+1));
-    prog.p[i].a=GetVal("a"+(i+1));
-    prog.p[i].h=GetVal("h"+(i+1));
-    prog.p[i].d=GetVal("d"+(i+1));
-    prog.p[i].s=GetVal("s"+(i+1));
-    prog.p[i].r=GetVal("r"+(i+1));
-    prog.p[i].p=GetVal("p"+(i+1));
-    prog.p[i].q=GetVal("q"+(i+1));
-    prog.p[i].k=GetVal("k"+(i+1));
+    var o=Object.assign({},i<cur.length?cur[i]:NEW_OP);
+    o.w=document.getElementById("w"+(i+1)).value;
+    for(var j=0;j<FIELDS.length;++j)
+      o[FIELDS[j]]=document.getElementById(FIELDS[j]+(i+1)).value;  // setTimbre reads numeric strings
+    p.push(o);
   }
-  ViewDef(prog);
+  try{
+    synth.setTimbre(t.m,t.n,p);
+  }
+  catch(e){
+    EditStatus("Not applied ("+ErrorText(e)+"). The timbre is unchanged.",true);
+    return;
+  }
+  edits[t.m+":"+t.n]=p;
+  EditStatus("");
+  ViewDef(Installed(t));
+}
+function EditStatus(text,error){
+  var m=document.getElementById("editstatus");
+  m.textContent=text;
+  m.className=error?"error":"";
 }
 function ViewParam(pg){
-  if(!pg)
+  EditStatus("");
+  if(!pg){
+    document.getElementById("name").textContent="No drum sound on note "+curNote+" : ";
     return;
+  }
   var oscs=pg.p.length;
   document.getElementById("oscs").selectedIndex=oscs-1;
   var o=document.getElementById("osc2").firstChild;
@@ -278,7 +615,7 @@ function OctChange(o){
 }
 function ProgChange(p){
   if(synth){
-    synth.send([0xc0,p]);
+    synth.send([0xc0+curMidi,p]);
     if(curMidi!=9){
       curProg=p;
       var pg=synth.program[curProg];
@@ -287,19 +624,21 @@ function ProgChange(p){
   }
 }
 function SetQuality(n){
-  var pg;
-  synth.setQuality(n);
-  if(curMidi==9)
-    pg=synth.drummap[curNote];
-  else
-    pg=synth.program[curProg];
-  ViewParam(pg);
-}
-function GetVal(id){
-  var s=+document.getElementById(id).value;
-  if(isNaN(s))
-    s=0;
-  return s;
+  synth.setQuality(n);    // reinstalls the built-in timbres of that quality
+  var failed=null;
+  for(var k in edits){
+    var mn=k.split(":");
+    try{
+      synth.setTimbre(+mn[0],+mn[1],edits[k]);   // the editor's timbres stay installed
+    }
+    catch(e){
+      delete edits[k];
+      failed=failed||e;
+    }
+  }
+  ViewParam(curMidi==9?DrumTimbre(curNote):synth.program[curProg]);
+  if(failed)
+    EditStatus("An edited timbre could not be installed again ("+ErrorText(failed)+"). It is reset.",true);
 }
 function OpenEditor(){
   var e=document.getElementById("soundeditor");
@@ -308,27 +647,42 @@ function OpenEditor(){
   else
     e.style.display="block";
 }
-function Sustain(b){
-  synth.send([0xb0+curMidi,64,b?127:0],0);
+/* Sustain pedal on the current channel; turning it on again moves it to the current channel. */
+function Sustain(on){
+  if(sustainCh>=0&&!midiSustain[sustainCh])   // a MIDI pedal that holds that channel keeps it sustained
+    synth.send([0xb0+sustainCh,64,0],0);
+  sustainCh=on?curMidi:-1;
+  if(on)
+    synth.send([0xb0+curMidi,64,127],0);
+  document.getElementById("sus").checked=on;
 }
 window.onload=()=>{
   Init();
+  window.addEventListener("blur",function(){ReleaseAll();});
+  window.addEventListener("pagehide",function(){ReleaseAll();});
+  document.addEventListener("visibilitychange",function(){
+    if(document.visibilityState=="hidden")
+      ReleaseAll();
+  });
+  document.getElementById("file").addEventListener("cancel",function(){
+    ShowMessage("No file selected. The current song is unchanged.");
+  });
+  // Shift holds the sustain pedal while it is down (the checkbox latches it).
   document.addEventListener("keydown",function(e){
-    if(e.keyCode==16){
-      document.getElementById("sus").checked=true;
+    if(e.key=="Shift"&&!e.repeat&&sustainCh<0){
+      shiftSustain=true;
       Sustain(true);
     }
   });
   document.addEventListener("keyup",function(e){
-    if(e.keyCode==16){
-      document.getElementById("sus").checked=false;
+    if(e.key=="Shift"&&shiftSustain){
+      shiftSustain=false;
       Sustain(false);
     }
   })
 }
 function About(){
   var el=document.getElementById("aboutcontents");
-  console.log(el.style.height)
   if(el.style.height==""||el.style.height=="0px"){
     el.style.height="400px";
     el.style.padding="20px 20px";
@@ -342,17 +696,19 @@ function About(){
 </head>
 <body>
 <div id="base">
-<a href="http://www.g200kg.com/" target="_blank"><img id="logo" src="./g200kg160x80.png" style="float:left;margin:0px 20px 0px 0px"/></a>
+<a href="http://www.g200kg.com/" target="_blank" rel="noopener"><img id="logo" src="./g200kg160x80.png" style="float:left;margin:0px 20px 0px 0px"/></a>
 <h1>WebAudio-TinySynth</h1>
-<p>Light-weight GM mapped WebAudio-JavaScript Synthesizer Engine / MIDI Player<br/> GitHub Repository : <a href="https://github.com/g200kg/webaudio-tinysynth" target="_blank">https://github.com/g200kg/webaudio-tinysynth</a></p>
+<p>Light-weight GM mapped WebAudio-JavaScript Synthesizer Engine / MIDI Player<br/> Fork : <a href="https://github.com/Provable-Games/webaudio-tinysynth" target="_blank" rel="noopener">https://github.com/Provable-Games/webaudio-tinysynth</a><br/>
+Upstream : <a href="https://github.com/g200kg/webaudio-tinysynth" target="_blank" rel="noopener">https://github.com/g200kg/webaudio-tinysynth</a></p>
 <button id="about" onclick="About()">About</button>
 <br/><hr/>
 <div id="aboutcontents">
 <b>webaudio-tinysynth</b> is a small synthesizer / MIDI player library written in JavaScript with GM like timbre map.<br/>
-All timbres are generated by the combinations of Oscillator and Dynamically generated BufferSource algolithmically without any PCM samples.<br/><br/>
-Repository : <a href="https://github.com/g200kg/webaudio-tinysynth">https://github.com/g200kg/webaudio-tinysynth</a>
+All timbres are generated by the combinations of Oscillator and Dynamically generated BufferSource algorithmically without any PCM samples.<br/><br/>
+Repository : <a href="https://github.com/g200kg/webaudio-tinysynth">https://github.com/g200kg/webaudio-tinysynth</a> (upstream),
+<a href="https://github.com/Provable-Games/webaudio-tinysynth">https://github.com/Provable-Games/webaudio-tinysynth</a> (this fork)
 <br/>
-The demo on this page is based on webauido-tinysynth, and you can do the following:
+The demo on this page is based on webaudio-tinysynth, and you can do the following:
 <ul>
   <li>Playable with mouse or qwerty-keyboard.</li>
   <li>Play by MIDI keyboard also available via WebMIDI API(Chrome).</li>
@@ -363,21 +719,23 @@ The demo on this page is based on webauido-tinysynth, and you can do the followi
 <hr/>
 </div>
 <div id="container">
-<p style="font-family:AudioWide">WebAudio-TinySynth : GM Synth / MIDI Player</p>
+<p style="font-family:'Audiowide', sans-serif">WebAudio-TinySynth : GM Synth / MIDI Player</p>
+<div id="audio" role="status"></div>
 <table>
 <tr>
-  <td><button onclick="synth.playMIDI()">Play</button> <button onclick="synth.stopMIDI()">Stop</button><br/><span id="status"></span></td>
+  <td><button onclick="Play()">Play</button> <button onclick="Stop()">Stop</button><br/><span id="status"></span></td>
   <td><webaudio-knob colors="#c00;#ccf;#fff" diameter="40" min="0" max="1" step="0.01" id="vol" value="0.5" oninput="Ctrl()"></webaudio-knob></td>
   <td><webaudio-knob colors="#c00;#ccf;#fff" diameter="40" min="0" max="1" step="0.01" id="rev" value="0.2" oninput="Ctrl()"></webaudio-knob></td>
   <td><webaudio-switch id="loop" onchange="Ctrl()" value="1"></webaudio-switch></td>
-  <td><select onchange="SetQuality(this.selectedIndex)"><option>quality=0</option><option selected>quality=1</option></select>
+  <td><select id="quality" onchange="SetQuality(this.selectedIndex)"><option>quality=0</option><option selected>quality=1</option></select>
 </td>
 </tr>
-<tr><td><input type="file" onchange="loadMidi(this.files)"/></td><td>Vol</td><td>Reverb</td><td>Loop</td><td>Quality</td></tr>
+<tr><td><input id="file" type="file" accept=".mid,.midi" onchange="loadMidi(this.files)"/></td><td>Vol</td><td>Reverb</td><td>Loop</td><td>Quality</td></tr>
 </table>
+<div id="message" role="status"></div>
 <br/>
 <hr/>
-MIDI Keyboard : <select id="midiport" onchange="SelectMidi(this.selectedIndex-1)"><option>--</option></select>
+MIDI Keyboard : <select id="midiport" onchange="ChooseMidi(this.selectedIndex-1)"><option>--</option></select> <span id="midistatus" role="status"></span>
 <br/>
 Oct : <label><input type="radio" name="oct" onclick="OctChange(-2)"/> -2</label>
 <label><input type="radio" name="oct" onclick="OctChange(-1)"/> -1</label>
@@ -385,9 +743,9 @@ Oct : <label><input type="radio" name="oct" onclick="OctChange(-2)"/> -2</label>
 <label><input type="radio" name="oct" onclick="OctChange(1)"/> +1</label>
 <label><input type="radio" name="oct" onclick="OctChange(2)"/> +2</label>
 <br/>
-<div style="display:inline-block">Sustain<br/>(shift)<br/><input id="sus" type="checkbox" onchange="Sustain(this.checked)"/></div> <webaudio-keyboard id="kb" keys="73" min="35" width="800" tabindex="1"></webaudio-keyboard>
+<div style="display:inline-block">Sustain<br/>(shift)<br/><input id="sus" type="checkbox" onchange="shiftSustain=false;Sustain(this.checked)"/></div> <webaudio-keyboard id="kb" keys="73" min="35" width="800" tabindex="1"></webaudio-keyboard>
 <br/>
-Ch : <select onchange="ChChange(this)"><option>Ch1</option><option>Ch2</option><option>Ch3</option><option>Ch4</option><option>Ch5</option><option>Ch6</option><option>Ch7</option><option>Ch8</option><option>Ch9</option><option>Drum (Ch10)</option></select>
+Ch : <select id="ch" onchange="ChChange(this)"><option>Ch1</option><option>Ch2</option><option>Ch3</option><option>Ch4</option><option>Ch5</option><option>Ch6</option><option>Ch7</option><option>Ch8</option><option>Ch9</option><option>Drum (Ch10)</option></select>
 Prog : <select id="prog" onchange="ProgChange(this.selectedIndex)">
 </select>
 <hr/>
@@ -460,7 +818,8 @@ Number of Oscillator :<select id="oscs" onchange="Edit()"><option>1</option><opt
   </tr>
 </table>
 <br/>
-Patch : <input id="patch" size="80"/>
+Patch (output only; use it with <code>setTimbre()</code>) : <input id="patch" size="80" readonly/>
+<div id="editstatus" role="status"></div>
 </div>
 <hr/>
 </div>

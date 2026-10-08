@@ -1,18 +1,123 @@
 <!doctype html>
 <html>
 <head>
+<meta charset="utf-8">
+<title>WebAudio-TinySynth JavaScript API Test Page</title>
 <script src="webaudio-tinysynth.js"></script>
-<script>
-
-function loadMidiUrl(){
-  synth.loadMIDIUrl('ws.mid');
+<style>
+button[data-note]{
+  touch-action:none;
 }
+.error{
+  color:#c00;
+}
+</style>
+<script>
+var synth;
+/* Starts audio from a user gesture: resume() creates the AudioContext inside
+   the event handler and starts it. Called again by later gestures while audio
+   is not running, for example after the browser refused to start it. */
+var audioError=null;
+function startAudio(){
+  var c=synth.getAudioContext();
+  if(c&&c.state=="running")
+    return;
+  audioError=null;
+  synth.resume().then(audioStatus,function(e){
+    audioError=e;
+    audioStatus();
+  });
+  audioStatus();
+}
+/* Shows whether audio is off, blocked, running, or failed to start. */
+function audioStatus(){
+  var c=synth.getAudioContext(), s=c?c.state:"", text, error=false;
+  if(s=="running"){
+    text="Audio is on.";
+    audioError=null;
+  }
+  else if(s=="closed")
+    text="Audio is closed. Reload the page to start it again.";
+  else if(audioError){
+    text="Audio could not start ("+errorText(audioError)+"). Click, tap or press a key to try again.";
+    error=true;
+  }
+  else if(c)
+    text="Audio is blocked by the browser. Click, tap or press a key to start it.";
+  else
+    text="Audio is off. Click, tap or press a key to start it.";
+  var m=document.getElementById("audio");
+  if(m.textContent!=text||m.className!=(error?"error":"")){
+    m.textContent=text;
+    m.className=error?"error":"";
+  }
+}
+/* An error's code (and HTTP status), or its name, with its message. */
+function errorText(e){
+  if(!e)
+    return "unknown error";
+  if(e.code){
+    var t=e.message&&e.message.indexOf(e.code)==0?e.message:e.code+(e.message?": "+e.message:"");
+    return e.status!=undefined?t+" "+e.status:t;
+  }
+  return (e.name||"Error")+(e.message?": "+e.message:"");
+}
+/* The newest song load wins: a new URL load supersedes a pending one, choosing
+   a file cancels it, and a stale file read is ignored. A superseded or
+   cancelled load shows nothing; the newer load reports instead. */
+var urlLoad=null;   // the AbortController of the pending URL load
+function loadMidiUrl(){
+  var url="ws.mid";
+  ++loadCount;
+  var ctl=urlLoad=new AbortController();
+  showMessage("Loading "+url+"...");
+  synth.loadMIDIUrl(url,{signal:ctl.signal}).then(function(){
+    if(urlLoad==ctl)
+      urlLoad=null;
+    showMessage("Loaded "+url+". Press Play.");
+  },function(e){
+    if(urlLoad==ctl)
+      urlLoad=null;
+    if(e.code=="LOAD_SUPERSEDED"||e.name=="AbortError")
+      return;
+    showMessage("Could not load "+url+" ("+errorText(e)+"). The current song is unchanged.",true);
+  });
+}
+function showMessage(text,error){
+  var m=document.getElementById("message");
+  m.textContent=text;
+  m.className=error?"error":"";
+}
+var loadCount=0;
 function loadMidi(files){
+  var file=files&&files[0];
+  var load=++loadCount;
+  if(!file){
+    showMessage("No file selected. The current song is unchanged.");
+    return;
+  }
+  if(urlLoad){
+    urlLoad.abort();
+    urlLoad=null;
+  }
   var reader = new FileReader();
   reader.onload=(e)=>{
-    synth.loadMIDI(reader.result);
+    if(load!=loadCount)
+      return;
+    try{
+      synth.loadMIDI(reader.result);
+    }
+    catch(err){
+      showMessage("Could not load "+file.name+" ("+err.message+"). The current song is unchanged.",true);
+      return;
+    }
+    showMessage("Loaded "+file.name+". Press Play.");
   }
-  reader.readAsArrayBuffer(files[0]);
+  reader.onerror=()=>{
+    if(load==loadCount)
+      showMessage("Could not read "+file.name+" ("+(reader.error?reader.error.message:"unknown error")+"). The current song is unchanged.",true);
+  }
+  reader.readAsArrayBuffer(file);
 }
 function playMidi(){
   synth.playMIDI();
@@ -23,24 +128,100 @@ function stopMidi(){
 function SetProgram(p){
   synth.send([0xc0,p]);
 }
+/* Notes this page is sounding, by input: each note-off goes to the note that was
+   sent, and losing focus releases them all, so no note is left stuck. */
+var held={};
+function noteOn(key,n){
+  noteOff(key);
+  held[key]=n;
+  synth.send([0x90,n,100]);
+}
+function noteOff(key){
+  if(!(key in held))
+    return;
+  var n=held[key];
+  delete held[key];
+  synth.send([0x80,n,0]);
+}
+function releaseAll(){
+  for(var key in held)
+    noteOff(key);
+}
+/* A button that sounds its note while held: by a pointer (mouse, pen or touch),
+   captured so that a release outside the button still ends the note, or by
+   Space or Enter while it has focus. */
+function noteButton(b){
+  var n=+b.dataset.note;
+  b.addEventListener("pointerdown",function(e){
+    if(e.button!=0)
+      return;
+    try{
+      b.setPointerCapture(e.pointerId);
+    }
+    catch(err){ /* the pointer is already gone; pointerup or pointercancel still ends the note */ }
+    noteOn(n+"p"+e.pointerId,n);
+  });
+  var up=function(e){noteOff(n+"p"+e.pointerId);};
+  b.addEventListener("pointerup",up);
+  b.addEventListener("pointercancel",up);
+  b.addEventListener("lostpointercapture",up);
+  b.addEventListener("keydown",function(e){
+    if(e.key!=" "&&e.key!="Enter")
+      return;
+    e.preventDefault();
+    if(!e.repeat&&!((n+"k") in held))
+      noteOn(n+"k",n);
+  });
+  b.addEventListener("keyup",function(e){
+    if(e.key==" "||e.key=="Enter")
+      noteOff(n+"k");
+  });
+  b.addEventListener("focusout",function(){noteOff(n+"k");});
+}
 function Init(){
-  synth=new WebAudioTinySynth({voices:64});
+  /* lazy: no AudioContext exists until the first click, tap, key press or
+     change on the page, which starts audio (startAudio). */
+  synth=new WebAudioTinySynth({voices:64,lazy:true});
+  ["pointerdown","keydown","click","change"].forEach(function(type){
+    window.addEventListener(type,startAudio,true);
+  });
   for(var i=0;i<128;++i){
     var o=document.createElement("option");
     o.innerHTML=synth.getTimbreName(0,i);
     document.getElementById("prog").appendChild(o);
   }
-  setInterval(function(){
+  // Show the engine's settings rather than fixed defaults.
+  document.getElementById("loop").checked=!!synth.loop;
+  document.getElementById("vol").value=synth.masterVol*100;
+  document.getElementById("rev").value=synth.reverbLev*100;
+  document.getElementById("quality").selectedIndex=synth.quality?1:0;
+  document.querySelectorAll("button[data-note]").forEach(noteButton);
+  window.addEventListener("blur",releaseAll);
+  window.addEventListener("pagehide",releaseAll);
+  document.addEventListener("visibilitychange",function(){
+    if(document.visibilityState=="hidden")
+      releaseAll();
+  });
+  document.getElementById("file").addEventListener("cancel",function(){
+    showMessage("No file selected. The current song is unchanged.");
+  });
+  var showStatus=function(){
     var st=synth.getPlayStatus();
     document.getElementById("status").innerHTML="Play:"+st.play+"  Pos:"+st.curTick+"/"+st.maxTick;
-  },100);
+    audioStatus();
+  };
+  showStatus();   // at once: a line filled in 100 ms later would move the buttons below it
+  setInterval(showStatus,100);
 }
 function Test(){
-  var o=synth.getAudioContext().createOscillator();
-  o.connect(synth.getAudioContext().destination);
-  o.start(0);
-  o.stop(synth.getAudioContext().currentTime+1);
-  console.log(synth)
+  // The click started audio; the AudioContext exists from then on.
+  synth.resume().then(function(){
+    var ctx=synth.getAudioContext();
+    var o=ctx.createOscillator();
+    o.connect(ctx.destination);
+    o.start(0);
+    o.stop(ctx.currentTime+1);
+  },function(){ /* the audio line shows why audio did not start */ });
 }
 window.onload=Init;
 
@@ -49,35 +230,40 @@ window.onload=Init;
 <body>
 <h1>webaudio-tinysynth : js version test</h1>
 This is a simple sample of webaudio-tinysynth (JavaScript library version) page.
+<div id="audio" role="status"></div>
 <hr/>
 <button onclick="Test()">Test audioContext</button>
 <hr/>
 Load Sample MIDI from URL : <button onclick="loadMidiUrl()">Load (ws.mid)</button><br/>
-Load MIDI file from local : <input type="file" onchange="loadMidi(this.files)"/><br/>
+Load MIDI file from local : <input id="file" type="file" accept=".mid,.midi" onchange="loadMidi(this.files)"/><br/>
+<div id="message" role="status"></div>
 <button onclick="playMidi()">Play</button>
 <button onclick="stopMidi()">Stop</button>
 <div id="status"></div>
 <br/><br/>
-Loop : <input type="checkbox" onchange="synth.setLoop(this.checked)"/><br/>
+Loop : <input id="loop" type="checkbox" onchange="synth.setLoop(this.checked)"/><br/>
 MasterVol<br/>
-<input type="range" value="50" min="0" max="100" oninput="synth.setMasterVol(this.value/100)"/><br/>
+<input id="vol" type="range" value="50" min="0" max="100" oninput="synth.setMasterVol(this.value/100)"/><br/>
 ReverbLev<br/>
-<input type="range" value="50" min="0" max="100" oninput="synth.setReverbLev(this.value/100)"/><br/>
+<input id="rev" type="range" value="50" min="0" max="100" oninput="synth.setReverbLev(this.value/100)"/><br/>
 
 <br/><br/>
-Quality : <select onchange="synth.setQuality(this.selectedIndex)"><option>Quality=0</option><option selected>Quality=1</option></select>
+Quality : <select id="quality" onchange="synth.setQuality(this.selectedIndex)"><option>Quality=0</option><option selected>Quality=1</option></select>
 <br/>
 Timbre : <select id="prog" onchange="SetProgram(this.selectedIndex)"></select>
 <br/>
 <br/>
-Play by keys :<br/>
-  <button onmousedown="synth.send([0x90,60,100])" onmouseup="synth.send([0x80,60,0])">C</button>
-  <button onmousedown="synth.send([0x90,62,100])" onmouseup="synth.send([0x80,62,0])">D</button>
-  <button onmousedown="synth.send([0x90,64,100])" onmouseup="synth.send([0x80,64,0])">E</button>
-  <button onmousedown="synth.send([0x90,65,100])" onmouseup="synth.send([0x80,65,0])">F</button>
-  <button onmousedown="synth.send([0x90,67,100])" onmouseup="synth.send([0x80,67,0])">G</button>
-  <button onmousedown="synth.send([0x90,69,100])" onmouseup="synth.send([0x80,69,0])">A</button>
-  <button onmousedown="synth.send([0x90,71,100])" onmouseup="synth.send([0x80,71,0])">B</button>
-  <button onmousedown="synth.send([0x90,72,100])" onmouseup="synth.send([0x80,72,0])">C</button>
+Play by keys (hold with the mouse or touch, or Space/Enter) :<br/>
+  <button data-note="60">C</button>
+  <button data-note="62">D</button>
+  <button data-note="64">E</button>
+  <button data-note="65">F</button>
+  <button data-note="67">G</button>
+  <button data-note="69">A</button>
+  <button data-note="71">B</button>
+  <button data-note="72">C</button>
+<hr/>
+Fork : <a href="https://github.com/Provable-Games/webaudio-tinysynth">https://github.com/Provable-Games/webaudio-tinysynth</a><br/>
+Upstream : <a href="https://github.com/g200kg/webaudio-tinysynth">https://github.com/g200kg/webaudio-tinysynth</a>
 </body>
 </html>

@@ -1,0 +1,316 @@
+name: Browser matrix
+
+# The declared browser and rendered-audio matrix (tests/browser/matrix.js,
+# scripts/browser-matrix.js) and the demo pages (tests/browser/specs/demos.js).
+#
+#   browser (ENGINE, K/3)  ordinary matrix; runs all pre-existing assert specs
+#                          and observe specs, excluding the separately scoped
+#                          #79 full-mix qualification spec.
+#   full-mix qualification (ENGINE)  manual, strict render/headroom plus full-mix
+#                          qualification using the same runner and aggregate.
+#   demos (ENGINE)         npm run test:browser:demos for one engine.
+#   browser matrix         the aggregate to require: it fails unless every
+#                          shard and demos job passed and, from the uploaded
+#                          results, every engine ran every declared spec exactly
+#                          once and raw failures satisfy the ordinary-core
+#                          known-failure policy. Its summary lists measured
+#                          times per shard and per spec.
+#
+# A browser that cannot be installed or launched fails its job; nothing is
+# skipped. Core CI opts into the documented known-failure policy; the strict
+# full-mix qualification job below does not. To change the shard count, change
+# the shard list, SHARD and the job name together; the aggregate requires each.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Browser matrix scope
+        type: choice
+        required: true
+        default: core
+        options:
+          - core
+          - full-mix-qualification
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.mode || 'core' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  browser:
+    name: browser (${{ matrix.engine }}, ${{ matrix.shard }}/3)
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.mode == 'core' }}
+    # User-authorized x64 comparison for PR #95's hosted ARM failures.
+    # Keep all three engines, pinned browser versions and strict checks unchanged.
+    # A clean x64 run alone does not establish an ARM cause (see P1-A2.md).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [chromium, firefox, webkit]
+        shard: [1, 2, 3]
+        include:
+          - engine: chromium
+            install: --only-shell chromium
+          - engine: firefox
+            install: firefox
+          - engine: webkit
+            install: webkit
+    env:
+      ENGINE: ${{ matrix.engine }}
+      INSTALL: ${{ matrix.install }}
+      SHARD: ${{ matrix.shard }}/3
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - name: Shard layout
+        run: node scripts/browser-matrix.js --list --shard="$SHARD"
+      # The committed min.js can be older than the source in a pull request
+      # (dist.yml regenerates it after merging); the matrix tests a fresh build.
+      - name: Fresh build of the current source into .build/
+        run: node scripts/test-build.js
+      - name: Use Ubuntu archives for Firefox dependencies
+        if: matrix.engine == 'firefox'
+        run: |
+          # The hosted runner's preferred Azure mirror stalled past the job deadline.
+          # Keep its existing signed Ubuntu archive/security fallbacks.
+          sudo sed -i '\|^http://azure\.archive\.ubuntu\.com/ubuntu/|d' /etc/apt/apt-mirrors.txt
+      - name: Install the pinned Playwright's browser and system libraries
+        run: |
+          read -r -a args <<< "$INSTALL"
+          npx playwright-core install --with-deps "${args[@]}"
+      # Firefox starts a realtime AudioContext only when an audio output exists.
+      # A PulseAudio null sink provides one; the gesture spec fails without it.
+      - name: Audio output for Firefox (PulseAudio null sink)
+        if: matrix.engine == 'firefox'
+        run: |
+          sudo apt-get install -y --no-install-recommends pulseaudio pulseaudio-utils
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=t6null
+          pactl set-default-sink t6null
+          pactl info
+      # A shard with no spec of a step's selection passes that step without
+      # launching a browser; the aggregate checks that every spec ran.
+      - name: Browser matrix (this shard's assert specs)
+        run: npm run "test:browser:${ENGINE}" -- --accept-known-failures --shard="$SHARD" --out="$RUNNER_TEMP/browser-matrix"
+      - name: Observe-only specs in this shard (hangs under deadlines, run-to-run variation)
+        if: ${{ !cancelled() }}
+        run: npm run test:browser:observe -- --engines="$ENGINE" --shard="$SHARD" --out="$RUNNER_TEMP/browser-observe"
+      - name: Upload this shard's results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: browser-results-${{ matrix.engine }}-${{ matrix.shard }}
+          path: |
+            ${{ runner.temp }}/browser-matrix/results.json
+            ${{ runner.temp }}/browser-matrix/${{ matrix.engine }}/full-mix/*.wav
+            ${{ runner.temp }}/browser-matrix/${{ matrix.engine }}/first-attempt-pcm/**/*.wav
+            ${{ runner.temp }}/browser-matrix/${{ matrix.engine }}/generated-buffers/*.f32le
+            ${{ runner.temp }}/browser-observe/results.json
+          if-no-files-found: warn
+          retention-days: 7
+
+  full-mix-qualification:
+    name: full-mix qualification (${{ matrix.engine }})
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'full-mix-qualification' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - engine: chromium
+            install: --only-shell chromium
+          - engine: firefox
+            install: firefox
+          - engine: webkit
+            install: webkit
+    env:
+      ENGINE: ${{ matrix.engine }}
+      INSTALL: ${{ matrix.install }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - name: Build the source and minified identities
+        run: node scripts/test-build.js
+      - name: Use Ubuntu archives for Firefox dependencies
+        if: matrix.engine == 'firefox'
+        run: |
+          # The hosted runner's preferred Azure mirror stalled past the job deadline.
+          # Keep its existing signed Ubuntu archive/security fallbacks.
+          sudo sed -i '\|^http://azure\.archive\.ubuntu\.com/ubuntu/|d' /etc/apt/apt-mirrors.txt
+      - name: Install the pinned Playwright's browser and system libraries
+        run: |
+          read -r -a args <<< "$INSTALL"
+          npx playwright-core install --with-deps "${args[@]}"
+      - name: Audio output for Firefox (PulseAudio null sink)
+        if: matrix.engine == 'firefox'
+        run: |
+          sudo apt-get install -y --no-install-recommends pulseaudio pulseaudio-utils
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=t6null
+          pactl set-default-sink t6null
+          pactl info
+      - name: Strict render and full-mix qualification
+        run: npm run "test:browser:${ENGINE}" -- --mode=full-mix-qualification --shard=1/1 --out="$RUNNER_TEMP/full-mix-qualification/browser-matrix"
+      - name: Upload strict qualification evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: full-mix-qualification-${{ matrix.engine }}
+          path: ${{ runner.temp }}/full-mix-qualification/
+          if-no-files-found: warn
+          retention-days: 7
+
+  demos:
+    name: demos (${{ matrix.engine }})
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.mode == 'core' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - engine: chromium
+            install: --only-shell chromium
+          - engine: firefox
+            install: firefox
+          - engine: webkit
+            install: webkit
+    env:
+      ENGINE: ${{ matrix.engine }}
+      INSTALL: ${{ matrix.install }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - name: Use Ubuntu archives for Firefox dependencies
+        if: matrix.engine == 'firefox'
+        run: |
+          # The hosted runner's preferred Azure mirror stalled past the job deadline.
+          # Keep its existing signed Ubuntu archive/security fallbacks.
+          sudo sed -i '\|^http://azure\.archive\.ubuntu\.com/ubuntu/|d' /etc/apt/apt-mirrors.txt
+      - name: Install the pinned Playwright's browser and system libraries
+        run: |
+          read -r -a args <<< "$INSTALL"
+          npx playwright-core install --with-deps "${args[@]}"
+      - name: Audio output for Firefox (PulseAudio null sink)
+        if: matrix.engine == 'firefox'
+        run: |
+          sudo apt-get install -y --no-install-recommends pulseaudio pulseaudio-utils
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=t6null
+          pactl set-default-sink t6null
+          pactl info
+      # The demo pages load webaudio-tinysynth.js (the source). Deadlines: one
+      # per case, and 900 s per engine worker (tests/browser/specs/demos.js).
+      - name: Demo pages
+        run: npm run test:browser:demos -- --engines="$ENGINE" --out="$RUNNER_TEMP/demos"
+
+  aggregate:
+    name: browser matrix
+    needs: [browser, demos]
+    if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.mode == 'core') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - name: Build the aggregate checkout's source and minified identities
+        run: node scripts/test-build.js
+      # A shard that uploaded nothing is reported by the next step.
+      - name: Download the shards' results
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: browser-results-*
+          path: ${{ runner.temp }}/results
+      - name: Every engine ran every declared spec once; cases passed or were accepted
+        run: node scripts/browser-matrix.js --accept-known-failures --merge="$RUNNER_TEMP/results" --expected-context=github
+      - name: Every shard and demos job passed
+        if: ${{ !cancelled() }}
+        env:
+          BROWSER_RESULT: ${{ needs.browser.result }}
+          DEMOS_RESULT: ${{ needs.demos.result }}
+        run: |
+          echo "browser shards: $BROWSER_RESULT; demos: $DEMOS_RESULT"
+          if [ "$BROWSER_RESULT" != success ] || [ "$DEMOS_RESULT" != success ]; then
+            echo "::error title=Browser matrix::browser shards $BROWSER_RESULT, demos $DEMOS_RESULT"
+            exit 1
+          fi
+
+  full-mix-qualification-aggregate:
+    name: full-mix qualification aggregate
+    needs: [full-mix-qualification]
+    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.mode == 'full-mix-qualification' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - name: Build the aggregate checkout's source and minified identities
+        run: node scripts/test-build.js
+      - name: Download strict qualification artifacts
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: full-mix-qualification-*
+          path: ${{ runner.temp }}/results
+      - name: Require every strict engine qualification report and artifact
+        run: node scripts/browser-matrix.js --mode=full-mix-qualification --merge="$RUNNER_TEMP/results" --expected-context=github
+      - name: Every qualification engine passed
+        if: ${{ !cancelled() }}
+        env:
+          QUALIFICATION_RESULT: ${{ needs.full-mix-qualification.result }}
+        run: |
+          echo "strict qualification jobs: $QUALIFICATION_RESULT"
+          if [ "$QUALIFICATION_RESULT" != success ]; then
+            echo "::error title=Full-mix qualification::engine qualification jobs $QUALIFICATION_RESULT"
+            exit 1
+          fi

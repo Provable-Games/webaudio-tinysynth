@@ -1,0 +1,504 @@
+# Codex review. The required check is the "Codex review gate" job.
+# Model and effort come only from the Actions variables CODEX_REVIEW_MODEL and
+# CODEX_REVIEW_EFFORT; the CLI version is pinned in .github/scripts/codex-cli.
+# Setup, trust boundary and bootstrap rules: .github/scripts/README.md.
+name: Codex Review
+
+on:
+  pull_request:
+    # edited: only a base change re-runs the review (see the guards below).
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+
+permissions: {}
+
+# A title or body edit joins its own group, so it never cancels a review.
+concurrency:
+  group: codex-review-${{ github.event.pull_request.number }}${{ github.event.action == 'edited' && !github.event.changes.base && '-metadata' || '' }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  prepare:
+    name: Codex review setup
+    # A title or body edit (no base change) starts nothing.
+    if: ${{ !(github.event.action == 'edited' && !github.event.changes.base) }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      policy: ${{ steps.policy.outputs.policy }}
+      matrix: ${{ steps.policy.outputs.matrix }}
+      merge_base: ${{ steps.policy.outputs.merge_base }}
+      config_sha: ${{ steps.trust.outputs.config_sha }}
+      bootstrap: ${{ steps.trust.outputs.bootstrap }}
+    steps:
+      - name: Check out the pull request head as data
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: src
+
+      - name: Choose the trusted review configuration
+        id: trust
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # Bases that may take the configuration from the pull request head
+          # while they lack it: only main, for the one-time path that lands it.
+          BOOTSTRAP_BASE_BRANCHES: main
+        run: |
+          # begin trusted-config-selection
+          set -euo pipefail
+          if ! git -C src cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            git -C src fetch --no-tags --quiet origin "$BASE_SHA"
+          fi
+          git -C src cat-file -e "$BASE_SHA^{commit}"
+          if git -C src cat-file -e "$BASE_SHA:.github/review-agents.json" 2>/dev/null; then
+            config_sha="$BASE_SHA"
+            bootstrap=false
+          elif [[ " $BOOTSTRAP_BASE_BRANCHES " == *" $BASE_REF "* ]]; then
+            config_sha="$HEAD_SHA"
+            bootstrap=true
+            echo "::warning title=AI review bootstrap::Base revision $BASE_SHA has no .github/review-agents.json, so this review uses the review configuration from the pull request head $HEAD_SHA."
+          else
+            echo "::error title=AI review configuration::Base branch '$BASE_REF' ($BASE_SHA) has no .github/review-agents.json. Bootstrap from the pull request head is allowed only for: $BOOTSTRAP_BASE_BRANCHES. Land the review configuration on '$BASE_REF' first."
+            exit 1
+          fi
+          echo "config_sha=$config_sha" >> "$GITHUB_OUTPUT"
+          echo "bootstrap=$bootstrap" >> "$GITHUB_OUTPUT"
+          # end trusted-config-selection
+
+      - name: Check out the trusted review configuration
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.trust.outputs.config_sha }}
+          persist-credentials: false
+          path: trusted
+          sparse-checkout: |
+            .github/review-agents.json
+            .github/prompts
+            .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Decide the review policy and scope
+        id: policy
+        env:
+          CONFIG_SHA: ${{ steps.trust.outputs.config_sha }}
+          BOOTSTRAP: ${{ steps.trust.outputs.bootstrap }}
+        run: >-
+          python3 -I -B trusted/.github/scripts/review.py prepare --config-root trusted --repo-dir src
+          --event "$GITHUB_EVENT_PATH" --config-sha "$CONFIG_SHA" --bootstrap "$BOOTSTRAP"
+
+  review:
+    name: Codex review / ${{ matrix.agent_id }}
+    needs: prepare
+    # Credentials are used only for same-repository, non-draft pull requests.
+    if: >-
+      needs.prepare.outputs.policy == 'review'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && !github.event.pull_request.draft
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    steps:
+      - name: Check out the trusted review configuration
+        id: trusted
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.config_sha }}
+          persist-credentials: false
+          path: trusted
+          sparse-checkout: |
+            .github/review-agents.json
+            .github/prompts
+            .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Fingerprint the trusted configuration
+        id: fingerprint
+        run: |
+          # begin trusted-fingerprint
+          set -euo pipefail
+          digest="$(cd trusted && find .github -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
+          # end trusted-fingerprint
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the pull request head as data
+        id: source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: src
+
+      - name: Validate the central model and effort settings
+        id: settings
+        env:
+          CODEX_REVIEW_MODEL: ${{ vars.CODEX_REVIEW_MODEL }}
+          CODEX_REVIEW_EFFORT: ${{ vars.CODEX_REVIEW_EFFORT }}
+        run: python3 -I -B trusted/.github/scripts/review.py config --config-root trusted --provider codex
+
+      - name: Check the review credential
+        id: credential
+        env:
+          CODEX_AUTH_DOT_JSON: ${{ secrets.CODEX_AUTH_DOT_JSON }}
+        run: |
+          if [ -z "$CODEX_AUTH_DOT_JSON" ]; then
+            echo "::error title=AI review configuration::The CODEX_AUTH_DOT_JSON secret is not available to this workflow run."
+            exit 1
+          fi
+          if ! python3 -I -c 'import json, os; json.loads(os.environ["CODEX_AUTH_DOT_JSON"])' 2>/dev/null; then
+            echo "::error title=AI review configuration::The CODEX_AUTH_DOT_JSON secret is not valid JSON."
+            exit 1
+          fi
+
+      - name: Install the pinned Codex CLI
+        id: install
+        run: |
+          set -euo pipefail
+          echo "Node $(node --version), npm $(npm --version), $(uname -m)"
+          cli="$RUNNER_TEMP/codex-cli"
+          mkdir -p "$cli"
+          cp trusted/.github/scripts/codex-cli/package.json trusted/.github/scripts/codex-cli/package-lock.json "$cli/"
+          (cd "$cli" && npm ci --ignore-scripts --no-audit --no-fund)
+          expected="codex-cli $(jq -r '.packages["node_modules/@openai/codex"].version' "$cli/package-lock.json")"
+          actual="$("$cli/node_modules/.bin/codex" --version)"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::Installed '$actual', expected '$expected'."
+            exit 1
+          fi
+          echo "CODEX_BIN=$cli/node_modules/.bin/codex" >> "$GITHUB_ENV"
+
+      - name: Enable sandbox prerequisites
+        id: sandbox-setup
+        run: |
+          # Codex's Linux sandbox (bubblewrap) needs unprivileged user
+          # namespaces, which Ubuntu 24.04 runner images restrict via AppArmor.
+          current_userns="$(sysctl -n kernel.unprivileged_userns_clone 2>/dev/null || true)"
+          if [ -n "$current_userns" ] && [ "$current_userns" != "1" ]; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
+          current_apparmor="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true)"
+          if [ -n "$current_apparmor" ] && [ "$current_apparmor" != "0" ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+      - name: Verify the read-only sandbox
+        id: sandbox
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          export CODEX_HOME="$RUNNER_TEMP/codex-sandbox-check"
+          mkdir -p "$CODEX_HOME"
+          sandbox() { "$CODEX_BIN" sandbox -c 'sandbox_mode="read-only"' -- "$@"; }
+          # A broken sandbox makes every command fail and degrades the review.
+          if ! sandbox git -C "$GITHUB_WORKSPACE/src" rev-parse HEAD 2>/dev/null | grep -Fqx "$HEAD_SHA"; then
+            echo "::error::Commands cannot run in the Codex read-only sandbox."
+            exit 1
+          fi
+          if sandbox touch "$GITHUB_WORKSPACE/src/.sandbox-write-probe" 2>/dev/null; then
+            echo "::error::The Codex read-only sandbox allowed a write."
+            exit 1
+          fi
+          # The same HTTPS request must succeed outside the sandbox and fail inside
+          # it, so the refusal is attributable to the sandbox, not to DNS, TLS or
+          # an outage.
+          set +e
+          curl -sS --max-time 10 -o /dev/null https://api.github.com
+          control=$?
+          sandbox curl -sS --max-time 10 -o /dev/null https://api.github.com 2>/dev/null
+          sandboxed=$?
+          set -e
+          echo "Network probe: unsandboxed curl exit $control, sandboxed curl exit $sandboxed."
+          if [ "$control" -ne 0 ]; then
+            echo "::error::Network refusal is unverified: the unsandboxed control request failed (curl exit $control)."
+            exit 1
+          fi
+          if [ "$sandboxed" -eq 0 ]; then
+            echo "::error::The Codex read-only sandbox allowed network access."
+            exit 1
+          fi
+          rm -rf "$CODEX_HOME"
+
+      - name: Build the review prompt
+        id: prompt
+        env:
+          CONFIG_SHA: ${{ needs.prepare.outputs.config_sha }}
+          BOOTSTRAP: ${{ needs.prepare.outputs.bootstrap }}
+          AGENT_ID: ${{ matrix.agent_id }}
+        run: >-
+          python3 -I -B trusted/.github/scripts/review.py prompt --config-root trusted --provider codex
+          --repo-dir src --event "$GITHUB_EVENT_PATH" --agent-id "$AGENT_ID"
+          --out-dir "$RUNNER_TEMP/review" --config-sha "$CONFIG_SHA" --bootstrap "$BOOTSTRAP"
+
+      - name: Run the Codex review
+        id: run
+        env:
+          CODEX_REVIEW_MODEL: ${{ vars.CODEX_REVIEW_MODEL }}
+          CODEX_REVIEW_EFFORT: ${{ vars.CODEX_REVIEW_EFFORT }}
+          CODEX_AUTH_DOT_JSON: ${{ secrets.CODEX_AUTH_DOT_JSON }}
+        run: |
+          set -euo pipefail
+          export CODEX_HOME="$RUNNER_TEMP/codex-home"
+          rm -rf "$CODEX_HOME"
+          (umask 077 && mkdir "$CODEX_HOME" && printf '%s' "$CODEX_AUTH_DOT_JSON" > "$CODEX_HOME/auth.json")
+          unset CODEX_AUTH_DOT_JSON
+          bash trusted/.github/scripts/run-codex-review.sh "$GITHUB_WORKSPACE/trusted" \
+            "$GITHUB_WORKSPACE/src" "$RUNNER_TEMP/review/prompt.txt" "$RUNNER_TEMP/review/run"
+
+      - name: Verify the trusted configuration
+        id: verify
+        if: ${{ !cancelled() && steps.fingerprint.outcome == 'success' }}
+        env:
+          EXPECTED_DIGEST: ${{ steps.fingerprint.outputs.digest }}
+        run: |
+          # begin trusted-fingerprint
+          set -euo pipefail
+          digest="$(cd trusted && find .github -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
+          # end trusted-fingerprint
+          if [ "$digest" != "$EXPECTED_DIGEST" ]; then
+            echo "::error title=AI review integrity::The trusted review configuration changed during the review run."
+            exit 1
+          fi
+
+      - name: Record the review result
+        id: result
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' }}
+        env:
+          CODEX_REVIEW_MODEL: ${{ vars.CODEX_REVIEW_MODEL }}
+          CODEX_REVIEW_EFFORT: ${{ vars.CODEX_REVIEW_EFFORT }}
+          CODEX_AUTH_DOT_JSON: ${{ secrets.CODEX_AUTH_DOT_JSON }}
+          CONFIG_SHA: ${{ needs.prepare.outputs.config_sha }}
+          BOOTSTRAP: ${{ needs.prepare.outputs.bootstrap }}
+          MERGE_BASE: ${{ needs.prepare.outputs.merge_base }}
+          AGENT_ID: ${{ matrix.agent_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
+          OUTCOMES: >-
+            checkout=${{ steps.source.outcome }}
+            settings=${{ steps.settings.outcome }}
+            credential=${{ steps.credential.outcome }}
+            install=${{ steps.install.outcome }}
+            sandbox=${{ steps.sandbox.outcome }}
+            prompt=${{ steps.prompt.outcome }}
+            run=${{ steps.run.outcome }}
+        run: |
+          set -euo pipefail
+          steps=()
+          for outcome in $OUTCOMES; do steps+=(--step "$outcome"); done
+          run_dir="$RUNNER_TEMP/review/run"
+          python3 -I -B trusted/.github/scripts/review.py result --config-root trusted --provider codex \
+            --event "$GITHUB_EVENT_PATH" --agent-id "$AGENT_ID" --out-dir "$RUNNER_TEMP/review/out" \
+            --config-sha "$CONFIG_SHA" --bootstrap "$BOOTSTRAP" --merge-base "$MERGE_BASE" --run-url "$RUN_URL" \
+            --exit-code-file "$run_dir/exit-code" --review-file "$run_dir/review.txt" \
+            --log-file "$run_dir/codex.log" --auth-file "$RUNNER_TEMP/codex-home/auth.json" "${steps[@]}"
+
+      # One bounded retry (.github/scripts/README.md, "Retry"). The first result
+      # step asks for it only when the output is malformed and carries no review
+      # content (review_lib.retryable_output); output with a finding, a severity
+      # or a location is never retried. The retry runs the same script with the
+      # same prompt and settings in a fresh CODEX_HOME holding only the first
+      # attempt's auth.json (Codex may have refreshed its tokens), screens the
+      # output against both homes' tokens, verifies the trusted configuration
+      # again, and its result replaces the first.
+      - name: Prepare the retry
+        id: retry_setup
+        if: ${{ !cancelled() && steps.result.outputs.retry == 'true' }}
+        run: |
+          set -euo pipefail
+          mv "$RUNNER_TEMP/review/out" "$RUNNER_TEMP/review/attempt-1"
+          home="$RUNNER_TEMP/codex-home-retry"
+          rm -rf "$home"
+          (umask 077 && mkdir "$home" && cp "$RUNNER_TEMP/codex-home/auth.json" "$home/auth.json")
+
+      - name: Run the Codex review again (retry)
+        id: run_retry
+        if: ${{ !cancelled() && steps.retry_setup.outcome == 'success' }}
+        env:
+          CODEX_REVIEW_MODEL: ${{ vars.CODEX_REVIEW_MODEL }}
+          CODEX_REVIEW_EFFORT: ${{ vars.CODEX_REVIEW_EFFORT }}
+        run: |
+          set -euo pipefail
+          export CODEX_HOME="$RUNNER_TEMP/codex-home-retry"
+          bash trusted/.github/scripts/run-codex-review.sh "$GITHUB_WORKSPACE/trusted" \
+            "$GITHUB_WORKSPACE/src" "$RUNNER_TEMP/review/prompt.txt" "$RUNNER_TEMP/review/run-retry"
+
+      - name: Verify the trusted configuration after the retry
+        id: verify_retry
+        if: ${{ !cancelled() && steps.result.outputs.retry == 'true' && steps.fingerprint.outcome == 'success' }}
+        env:
+          EXPECTED_DIGEST: ${{ steps.fingerprint.outputs.digest }}
+        run: |
+          # begin trusted-fingerprint
+          set -euo pipefail
+          digest="$(cd trusted && find .github -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
+          # end trusted-fingerprint
+          if [ "$digest" != "$EXPECTED_DIGEST" ]; then
+            echo "::error title=AI review integrity::The trusted review configuration changed during the review run."
+            exit 1
+          fi
+
+      - name: Record the retry's review result
+        id: result_retry
+        if: ${{ !cancelled() && steps.verify_retry.outcome == 'success' }}
+        env:
+          CODEX_REVIEW_MODEL: ${{ vars.CODEX_REVIEW_MODEL }}
+          CODEX_REVIEW_EFFORT: ${{ vars.CODEX_REVIEW_EFFORT }}
+          CODEX_AUTH_DOT_JSON: ${{ secrets.CODEX_AUTH_DOT_JSON }}
+          CONFIG_SHA: ${{ needs.prepare.outputs.config_sha }}
+          BOOTSTRAP: ${{ needs.prepare.outputs.bootstrap }}
+          MERGE_BASE: ${{ needs.prepare.outputs.merge_base }}
+          AGENT_ID: ${{ matrix.agent_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
+          OUTCOMES: >-
+            checkout=${{ steps.source.outcome }}
+            settings=${{ steps.settings.outcome }}
+            credential=${{ steps.credential.outcome }}
+            install=${{ steps.install.outcome }}
+            sandbox=${{ steps.sandbox.outcome }}
+            prompt=${{ steps.prompt.outcome }}
+            retry-setup=${{ steps.retry_setup.outcome }}
+            run=${{ steps.run_retry.outcome }}
+        run: |
+          set -euo pipefail
+          steps=()
+          for outcome in $OUTCOMES; do steps+=(--step "$outcome"); done
+          run_dir="$RUNNER_TEMP/review/run-retry"
+          python3 -I -B trusted/.github/scripts/review.py result --config-root trusted --provider codex \
+            --event "$GITHUB_EVENT_PATH" --agent-id "$AGENT_ID" --out-dir "$RUNNER_TEMP/review/out" \
+            --config-sha "$CONFIG_SHA" --bootstrap "$BOOTSTRAP" --merge-base "$MERGE_BASE" --run-url "$RUN_URL" \
+            --exit-code-file "$run_dir/exit-code" --review-file "$run_dir/review.txt" \
+            --log-file "$run_dir/codex.log" --auth-file "$RUNNER_TEMP/codex-home/auth.json" \
+            --auth-file "$RUNNER_TEMP/codex-home-retry/auth.json" --previous-out "$RUNNER_TEMP/review/attempt-1" \
+            "${steps[@]}"
+
+      - name: Remove the Codex credential
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/codex-home" "$RUNNER_TEMP/codex-home-retry" "$RUNNER_TEMP/codex-sandbox-check"
+
+      - name: Upload the review result
+        if: >-
+          ${{ !cancelled() && steps.result.outcome == 'success'
+          && (steps.result.outputs.retry != 'true' || steps.result_retry.outcome == 'success') }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-review-${{ matrix.agent_id }}
+          path: |
+            ${{ runner.temp }}/review/out/result.json
+            ${{ runner.temp }}/review/out/review.md
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Require a completed review
+        if: ${{ !cancelled() }}
+        run: |
+          result="$RUNNER_TEMP/review/out/result.json"
+          if ! jq -e '.status == "complete"' "$result" >/dev/null 2>&1; then
+            echo "::error title=AI review::The review did not complete: $(jq -r '(.status // "missing") + ": " + ((.errors // []) | join("; "))' "$result" 2>/dev/null || echo 'no result was recorded')"
+            exit 1
+          fi
+
+  publish:
+    name: Codex review comment
+    needs: [prepare, review]
+    if: >-
+      !cancelled() && needs.prepare.outputs.policy == 'review'
+      && (needs.review.result == 'success' || needs.review.result == 'failure')
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Check out the trusted review configuration
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.config_sha }}
+          persist-credentials: false
+          path: trusted
+          sparse-checkout: |
+            .github/review-agents.json
+            .github/prompts
+            .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Download the review results
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: codex-review-*
+          path: ${{ runner.temp }}/results
+
+      - name: Publish the review comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MATRIX: ${{ needs.prepare.outputs.matrix }}
+          REVIEW_RESULT: ${{ needs.review.result }}
+        run: >-
+          python3 -I -B trusted/.github/scripts/review.py publish --config-root trusted --provider codex
+          --event "$GITHUB_EVENT_PATH" --results-dir "$RUNNER_TEMP/results" --matrix "$MATRIX"
+          --review-job-result "$REVIEW_RESULT"
+
+  gate:
+    # A title or body edit gets a different check name, so its skipped job can
+    # never stand in for the required "Codex review gate" of a real run.
+    name: ${{ github.event.action == 'edited' && !github.event.changes.base && 'Codex review gate (title or body edit, not evaluated)' || 'Codex review gate' }}
+    needs: [prepare, review, publish]
+    if: ${{ always() && !(github.event.action == 'edited' && !github.event.changes.base) }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Require review setup
+        if: needs.prepare.result != 'success'
+        env:
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+        run: |
+          echo "::error title=AI review gate::Codex review setup did not succeed ($PREPARE_RESULT)."
+          exit 1
+
+      - name: Check out the trusted review configuration
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.config_sha }}
+          persist-credentials: false
+          path: trusted
+          sparse-checkout: |
+            .github/review-agents.json
+            .github/prompts
+            .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Download the review results
+        if: needs.prepare.outputs.policy == 'review'
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: codex-review-*
+          path: ${{ runner.temp }}/results
+
+      - name: Evaluate the gate
+        env:
+          POLICY: ${{ needs.prepare.outputs.policy }}
+          MATRIX: ${{ needs.prepare.outputs.matrix }}
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+          REVIEW_RESULT: ${{ needs.review.result }}
+          PUBLISH_RESULT: ${{ needs.publish.result }}
+        run: >-
+          python3 -I -B trusted/.github/scripts/review.py gate --config-root trusted --provider codex
+          --event "$GITHUB_EVENT_PATH" --results-dir "$RUNNER_TEMP/results" --policy "$POLICY"
+          --matrix "$MATRIX" --prepare-result "$PREPARE_RESULT" --review-result "$REVIEW_RESULT"
+          --publish-result "$PUBLISH_RESULT"

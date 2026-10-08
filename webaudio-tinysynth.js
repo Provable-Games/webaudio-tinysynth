@@ -2,13 +2,64 @@
  * webaudio-tinysynth by Tatsuya Shinyagaito (g200kg)
  * https://github.com/g200kg/webaudio-tinysynth - Apache License 2.0
  *
- * Modified by Provable Games (see NOTICE):
- * - GUI and custom element removed;
- * - MIDI tempo kept fractional instead of rounded down to whole BPM;
- * - loopEnd / setLoopEnd added for looping on a bar boundary.
+ * Modified by Provable Games (https://github.com/Provable-Games/webaudio-tinysynth);
+ * see NOTICE for the changes.
  */
 ( function(window){
 "use strict";
+
+/* A lifecycle Error whose message is its stable code (D-013, D-018). */
+function CodedError(code){
+  const e=new Error(code);
+  e.code=code;
+  return e;
+}
+
+/* Whether x can be an AudioParam value or time constant: a WebIDL float, finite as float32. */
+const f32=x=>isFinite(Math.fround(x));
+
+/* Built-in buffers (#7, D-004), generation version 1 (bufferVersion): the reverb impulse
+   (convBuf), white noise (n0) and metallic noise (n1) are generated from the seed, never
+   from Math.random. The seed is mixed with fmix32 (murmur3's finalizer, a bijection on
+   32-bit integers that maps 0 to 0) into h. Each buffer has its own mulberry32 stream:
+   stream k (convBuf 0, n0 1, n1 2) starts at state h+k*2^30, which is h's sequence 2^30*k
+   draws on, so the streams never overlap and no buffer's samples depend on another's. The
+   mix keeps seeds that differ by mulberry32's increment or by 2^30 from giving shifted
+   copies of each other's buffers. The same seed, version and sample rate give the same
+   Float32 data. The impulse is made only with useReverb, and n1 when it is first read (#18);
+   neither changes any data or another buffer's stream. Any change to the generated data must
+   increment the version. */
+function mulberry32(a){
+  return ()=>{
+    a=a+0x6d2b79f5|0;
+    let t=Math.imul(a^a>>>15,1|a);
+    t=t+Math.imul(t^t>>>7,61|t)^t;
+    return ((t^t>>>14)>>>0)/4294967296;
+  };
+}
+
+/* Defines o.n1 (#18) as buffer b, filled from generator g (stream 2) when it is first read. The
+   metallic noise (64 passes of sine products) is nearly all of an install's time, and only the
+   cymbal and hi-hat timbres play it. Its stream is its own, so the data is the same whenever the
+   read happens: the first note that plays n1, or code reading noiseBuf.n1. After the read, or an
+   assignment, n1 is a plain data property. Defined at module level so that it closes over
+   nothing but o, b and g, never the synth or its context. */
+function lazyN1(o,b,g){
+  const set=v=>Object.defineProperty(o,"n1",{value:v,writable:true,enumerable:true,configurable:true});
+  Object.defineProperty(o,"n1",{enumerable:true,configurable:true,set,get:()=>{
+    const dr=b.getChannelData(0),blen=dr.length;
+    for(let jj=0;jj<64;++jj){
+      const r1=g()*10+1;
+      const r2=g()*10+1;
+      for(let i=0;i<blen;++i){
+        const dd=Math.sin((i/blen)*2*Math.PI*440*r1)*Math.sin((i/blen)*2*Math.PI*440*r2);
+        dr[i]+=dd/8;
+      }
+    }
+    set(b);
+    return b;
+  }});
+}
 
 function WebAudioTinySynthCore(target) {
   Object.assign(target,{
@@ -437,23 +488,17 @@ function WebAudioTinySynthCore(target) {
       [{w:"sine",t:0,f:1200,v:0.3,d:0.2,r:0.2,}],
 
     ],
+    /* The waveform registry (#26): name -> the caller's data, copied as Float32Arrays ([real, imag]
+       for a w* wave, [samples] for an n* wave). It outlives contexts; _mk builds each wave's
+       PeriodicWave or AudioBuffer into wave/noiseBuf for the installed context. */
+    _wv:new Map(),
     ready:()=>{
-      return new Promise((resolv)=>{
-        const timerid=setInterval(()=>{
-/*
-          if(this.debug)
-            console.log("Initialize checking.");
-*/
-          if(this.isReady){
-            clearInterval(timerid);
-            if(this.debug)
-              console.log("Initialized.");
-            resolv();
-          }
-        },100);
-      });
+      /* The synth is ready when the constructor returns; kept for compatibility. */
+      return Promise.resolve();
     },
-    init:()=>{
+    init:(ctx,dest)=>{
+      if(this._tid) // the constructor's step: once only, so no second interval or context
+        return;
       this.pg=[]; this.vol=[]; this.ex=[]; this.bend=[]; this.rpnidx=[]; this.brange=[];
       this.sustain=[]; this.notetab=[]; this.rhythm=[];
       this.masterTuningC=0; this.masterTuningF=0; this.tuningC=[]; this.tuningF=[]; this.scaleTuning=[];
@@ -468,8 +513,24 @@ function WebAudioTinySynthCore(target) {
       this.rhythm[9]=1;
       this.preroll=0.2;
       this.relcnt=0;
-      setInterval(
+      /* Lifecycle (#11, #12): the installed context, whether the synth created it (_own), the
+         one-shot sources (percussion hits and playMIDI's start-up oscillator, kept until they
+         end), the voices stopped but not yet ended (_gone), and pending work that dispose()
+         cancels: functions it calls once (a hook for URL loads, T5). */
+      this.actx=this.audioContext=null;
+      this.chvol=[]; this.chmod=[]; this.chpan=[];
+      this._own=0;
+      this._src=[];
+      this._p=[]; this._m=[]; // the latest pan and modulation values set, per channel
+      this._gone=new Set();
+      this._pend=new Set();
+      this._tid=setInterval(
         function(){
+          const c=this.actx;
+          /* Nothing to do without a realtime context: a lazy synth before first use, a disposed
+             one, or an OfflineAudioContext, whose notes end at their own times (#12). */
+          if(!c || this._off)
+            return;
           if(++this.relcnt>=3){
             this.relcnt=0;
             for(let i=this.notetab.length-1;i>=0;--i){
@@ -479,10 +540,13 @@ function WebAudioTinySynthCore(target) {
                 this.notetab.splice(i,1);
               }
             }
+            this._src=this._src.filter(v=>v.e>=c.currentTime);
           }
-          if(this.playing && this.song.ev.length>0){
-            let e=this.song.ev[this.playIndex];
-            while(this.actx.currentTime+this.preroll>this.playTime){
+          /* playMIDI only starts songs with events. At most 1000 events per callback
+             (#8): the rest follow on the next callbacks, in order, at their own times. */
+          if(this.playing){
+            let e=this.song.ev[this.playIndex],n=1e3;
+            while(n-- && this.actx.currentTime+this.preroll>this.playTime){
               if(e.m[0]==0xff51){
                 this.song.tempo=e.m[1];
                 this.tick2Time=4*60/this.song.tempo/this.song.timebase;
@@ -491,7 +555,10 @@ function WebAudioTinySynthCore(target) {
                 this.send(e.m,this.playTime);
               ++this.playIndex;
               if(this.playIndex>=this.song.ev.length){
-                if(this.loop){
+                /* Wrap only if the next pass advances (#8). Without a positive loopEnd,
+                   a song whose events share one tick would repeat at one instant
+                   forever, so it ends here as if looping were off. */
+                if(this.loop && (this.loopEnd>0 || this.playTick>this.song.ev[0].t)){
                   e=this.song.ev[this.playIndex=0];
                   if(this.loopEnd){
                     /* Pad to loopEnd at the tempo the pass ended on. Then restart at
@@ -503,6 +570,11 @@ function WebAudioTinySynthCore(target) {
                     this.tick2Time=4*60/this.song.tempo/this.song.timebase;
                     this.playTime+=e.t*this.tick2Time;
                   }
+                  /* The new pass stands at its tick 0 (see playMIDI), which sounds e.t ticks
+                     before ev[0]: at the padded end with loopEnd, else virtually (D-023). _x0:
+                     the pass's opening seconds per tick (inherited without loopEnd). */
+                  this._z=1;
+                  this._st=this.playTime-e.t*(this._x0=this.tick2Time);
                   this.playTick=e.t;
                 }
                 else{
@@ -522,21 +594,144 @@ function WebAudioTinySynthCore(target) {
       );
       if(this.debug)
         console.log("internalcontext:"+this.internalcontext)
-      if(this.internalcontext){
-        window.AudioContext = window.AudioContext || window.webkitAudioContext;
-        this.setAudioContext(new AudioContext());
-      }
+      if(ctx)
+        this.setAudioContext(ctx,dest);
+      else if(this.internalcontext && !this._lazy)
+        this._create();
       this.isReady=1;
     },
+    _create:()=>{
+      /* Create and install the synth-owned context. If installing it fails (a registered wave the
+         context refuses, #26, or any later step), the new context is closed and whatever part of
+         its graph was installed is torn down and released (_drop), so the synth is left without a
+         context, nothing stays open or referenced, and the error propagates; the next use retries. */
+      window.AudioContext = window.AudioContext || window.webkitAudioContext;
+      const c=new AudioContext();
+      try{
+        this.setAudioContext(c);
+      }catch(e){
+        this.actx==c ? this._drop(1) : c.close().catch(()=>{});
+        throw e;
+      }
+      this._own=1;
+      return this.actx;
+    },
+    prewarm:()=>{
+      /* Generates the metallic noise n1 now instead of at the first note that plays it (#18). It
+         plays nothing and neither creates nor resumes a context: nothing before a context
+         exists or after dispose(), and a later call finds it done. playMIDI() calls it first. */
+      if(!this._dead && this.actx && this.noiseBuf)
+        this.noiseBuf.n1;
+    },
+    _live:()=>{
+      /* The guard at the top of each method that makes sound or sets channel or song state
+         (send, noteOn, setProgram, setBendRange, setBend, setSustain, setModulation,
+         setChVol, setPan, setExpression, loadMIDI, locateMIDI, playMIDI): false once disposed,
+         so the method does nothing; otherwise there is a context, created now if the synth is
+         lazy (before any state is set that installing the graph would reset). */
+      return !this._dead && !!(this.actx || this._lazy && this._create());
+    },
+    _wake:()=>{
+      /* send()'s resume: at most one context.resume() per context and task, so a seek that
+         replays many events asks once (T3 review F9), and a context installed in the same
+         task is still asked. Its rejection is handled, and an OfflineAudioContext (resume()
+         rejects before rendering) or a closed context is never asked. */
+      const c=this.actx,s=c&&c.state;
+      if(this._rq!=c && !this._off && (s=="suspended" || s=="interrupted")){
+        this._rq=c;
+        Promise.resolve().then(()=>{ this._rq=0; });
+        Promise.resolve(c.resume()).catch(()=>{});
+      }
+    },
+    resume:()=>{
+      /* Resolves once the context runs: creates a lazy context, and calls context.resume()
+         at once, so it works inside a click, key or pointer handler. Rejects with the
+         context's error, or with an Error whose message and code are AUDIO_CONTEXT_CLOSED or
+         SYNTH_DISPOSED. Resolves without action on an OfflineAudioContext. */
+      return new Promise((resolv,reject)=>{
+        if(this._dead)
+          throw CodedError("SYNTH_DISPOSED");
+        const c=this.actx || this._create();
+        if(c.state=="closed")
+          throw CodedError("AUDIO_CONTEXT_CLOSED");
+        if(this._off || c.state=="running")
+          return resolv();
+        c.resume().then(resolv,reject);
+      });
+    },
+    dispose:()=>{
+      /* Idempotent and terminal; returns the same promise on every call. Clears the timer,
+         cancels pending work, stops every owned source, disconnects every owned node and
+         releases them. Closes the context only if the synth created it, and resolves after
+         that close. Afterwards the guarded methods do nothing (see the constructor). */
+      if(!this._dp){
+        this._dead=1;
+        clearInterval(this._tid);
+        this.playing=0;
+        this._pend.forEach(f=>{
+          try{ f(); }catch(e){ /* a canceller must not stop the disposal */ }
+        });
+        this._pend.clear();
+        this.song=null;
+        this._dp=this._drop(this._own);
+      }
+      return this._dp;
+    },
+    _check:(c,d)=>{
+      if(!c || typeof c.createGain!="function" || !c.destination)
+        throw new TypeError("context");
+      if(d!=undefined && (typeof d.connect!="function" || d.context && d.context!=c))
+        throw new TypeError("destination");
+    },
+    _drop:(close)=>{
+      /* Tear down the installed graph (#11): stop every voice and one-shot source, replace
+         their callbacks, disconnect them and every graph node, and release them. Returns a
+         promise that settles after the context is closed, when `close` is set. On a realtime
+         context that stays open, a source and its gain are disconnected when the source ends
+         (Chromium can keep an oscillator disconnected right after stop() from ever ending); a
+         closed or offline one dispatches no more ended events, so it is done at once. A graph
+         that failed part-way through installation (see _create) has no LFO yet. */
+      const c=this.actx,n=x=>x && x.disconnect(),now=close || this._off || c && c.state=="closed";
+      if(c){
+        this.notetab.concat(this._src,Array.from(this._gone),this.lfo ? {o:[this.lfo],g:[]} : []).forEach(v=>{
+          v.o.forEach((s,i)=>{
+            const off=()=>{ n(s); n(v.g[i]); n(v.q && v.q[i]); }; // and the operator's filter (#27)
+            s.onended=now ? null : off;
+            try{ s.stop(); }catch(e){ /* stop() again: some engines throw */ }
+            if(now)
+              off();
+          });
+        });
+        [this.out,this.comp,this.conv,this.rev].concat(this.chvol,this.chmod,this.chpan).forEach(n);
+        this.notetab=[]; this._src=[]; this._gone.clear(); this.chvol=[]; this.chmod=[]; this.chpan=[];
+        this.actx=this.audioContext=this.dest=this.out=this.comp=this.conv=this.rev=this.lfo=this.wave=this.noiseBuf=this.convBuf=null;
+      }
+      return new Promise(r=>r(c && close && c.state!="closed" && c.close())).then(()=>{},()=>{});
+    },
+    _num:(k,v,hi,i,lo)=>{
+      /* The public numeric contract (#13, D-013): a number, or a non-blank numeric string read
+         with Number(), that is finite, from lo (default 0) to hi, and an integer when i is set.
+         Returns the number. Callers check every argument before changing anything, so a
+         TypeError (not a number) or RangeError (out of range) leaves the synth as it was. */
+      const x=typeof v=="string" && v.trim() ? +v : v;
+      if(typeof x!="number")
+        throw new TypeError(k+" is not a number");
+      if(!(x>=(lo||0) && x<=hi && isFinite(x)) || i && x%1)
+        throw new RangeError(k+" out of range: "+x);
+      return x;
+    },
+    _time:(t)=>t==null ? t : this._num("time",t,1/0), // undefined, null or 0 mean now
+    _ch:(c)=>this._num("channel",c,15,1),
+    _cv:(ch,v,t,k,hi,i)=>[this._ch(ch),this._num(k,v,hi,i),this._time(t)],
     setMasterVol:(v)=>{
       if(v!=undefined)
-        this.masterVol=v;
+        this.masterVol=this._num("masterVol",v,3.4e38); // within float32, as AudioParam values are
       if(this.out)
         this.out.gain.value=this.masterVol;
     },
     setReverbLev:(v)=>{
       if(v!=undefined)
-        this.reverbLev=v;
+        this.reverbLev=this._num("reverbLev",v,4.25e37); // float32 / 8: the reverb gain is 8x
       var r=parseFloat(this.reverbLev);
       if(this.rev&&!isNaN(r))
         this.rev.gain.value=r*8;
@@ -545,68 +740,111 @@ function WebAudioTinySynthCore(target) {
       this.loop=f;
     },
     setLoopEnd:(t)=>{
-      this.loopEnd=t;
+      this.loopEnd=this._num("loopEnd",t,1/0,1); // whole ticks (D-019 F8)
     },
     setVoices:(v)=>{
-      this.voices=v;
+      this.voices=this._num("voices",v,0xffffffff,1,1);
     },
     getPlayStatus:()=>{
-      return {play:this.playing, maxTick:this.maxTick, curTick:this.playTick};
+      /* startTime (D-023): the AudioContext time at which tick 0 of the current pass sounds
+         (see playMIDI), or null when not playing. Like curTick, it follows the scheduler: it
+         moves to the next pass once the current pass's last event is scheduled, up to 0.2 s
+         before that event sounds and before any rest up to loopEnd, so it can be later than
+         currentTime. */
+      return {play:this.playing, maxTick:this.maxTick, curTick:this.playTick, startTime:this.playing?this._st:null};
     },
-    locateMIDI:(tick)=>{
-      let i,p=this.playing;
-      this.stopMIDI();
-      for(i=0;i<this.song.ev.length && tick>this.song.ev[i].t;++i){
-        var m=this.song.ev[i];
-        var ch=m.m[0]&0xf;
-        switch(m.m[0]&0xf0){
-        case 0xb0:
-          switch(m.m[1]){
-          case 1:  this.setModulation(ch,m.m[2]); break;
-          case 7:  this.setChVol(ch,m.m[2]); break;
-          case 10: this.setPan(ch,m.m[2]); break;
-          case 11: this.setExpression(ch,m.m[2]); break;
-          case 64: this.setSustain(ch,m.m[2]); break;
-          }
-          break;
-        case 0xc0: this.pg[m.m[0]&0x0f]=m.m[1]; break;
-        }
-        if(m.m[0]==0xff51)
-          this.song.tempo=m.m[1];
+    locateMIDI:(tick,load)=>{
+      if(!this._live())
+        return;
+      /* Seek (#21, D-005): stop all notes, restore the state loadMIDI installs (reset(),
+         scale tuning 0, 120 BPM), then apply the tempo and channel-state events before
+         tick, in order, through send() and without notes. Playback resumes at the first
+         event at or after tick; with none left, curTick is maxTick and play restarts.
+         Without a song this does nothing. Queued channel volume, pan and modulation
+         changes (from the scheduler's lookahead or a timed send()) are cancelled first, by
+         stopMIDI(), so they cannot override the rebuilt state. loadMIDI passes load, which
+         stops as upstream instead and keeps the upstream load calls (D-019, D-023). */
+      const s=this.song,p=this.playing;
+      let i,e;
+      if(!s)
+        return;
+      load ? this._halt() : this.stopMIDI();
+      this.reset();
+      for(i=0;i<16;)
+        this.scaleTuning[i++].fill(0);
+      for(s.tempo=120,i=0;(e=s.ev[i]) && e.t<tick;++i){
+        if(e.m[0]==0xff51)
+          s.tempo=e.m[1];
+        else if((e.m[0]&0xe0)!=0x80) // not a note-off or note-on
+          this.send(e.m);
       }
-      if(!this.song.ev[i]){
-        this.playIndex=0;
-        this.playTick=this.maxTick;
-      }
-      else{
-        this.playIndex=i;
-        this.playTick=this.song.ev[i].t;
-      }
+      this.playIndex=i; // ev.length when no event is left: playMIDI restarts the song
+      this.playTick=e?e.t:this.maxTick;
+      this._z=!(tick>0); // at tick 0, not a seek into the leading rest (playMIDI, D-023)
+      this._x0=0; // the song's own opening tempo, 120 BPM (playMIDI)
       if(p)
         this.playMIDI();
     },
     getTimbreName:(m,n)=>{
-      if(m==0)
-        return this.program[n].name;
-      else
-        return this.drummap[n-35].name;
+      return this._slot(m,n).name;
     },
     loadMIDIfromSrc:()=>{
-      this.loadMIDIUrl(this.src);
+      return this.loadMIDIUrl(this.src);
     },
-    loadMIDIUrl:(url)=>{
-      if(!url)
-        return;
-      var xhr=new XMLHttpRequest();
-      xhr.open("GET",url,true);
-      xhr.responseType="arraybuffer";
-      xhr.loadMIDI=this.loadMIDI.bind(this);
-      xhr.onload=function(e){
-        if(this.status==200){
-          this.loadMIDI(this.response);
-        }
-      };
-      xhr.send();
+    loadMIDIUrl:(url,o)=>{
+      /* Load a Standard MIDI File from a URL (#14). Returns a promise that resolves with the
+         response's ArrayBuffer once loadMIDI() has installed it. Otherwise it rejects and the
+         song is unchanged: a TypeError for a missing url or an opts.signal that is not an
+         AbortSignal; SYNTH_DISPOSED; opts.signal's reason; LOAD_SUPERSEDED when a newer
+         loadMIDIUrl() starts or a direct loadMIDI() installs a song first; HTTP_STATUS (with
+         status) for a status outside 200-299; NETWORK_ERROR; or loadMIDI()'s error. It never
+         throws, and an ignored rejection is handled. A newer call or the signal aborts the
+         request; dispose() settles the promise and discards the response when it arrives. */
+      const r=new Promise((res,rej)=>{
+        // opts.signal is read here, so a throwing getter rejects (T5.2). why: the signal's
+        // reason, or an AbortError when it has none (or a falsy one).
+        const s=o ? o.signal : null,why=()=>s.reason || (window.DOMException ? new window.DOMException("Aborted","AbortError") : Object.assign(Error("Aborted"),{name:"AbortError"}));
+        if(!url || s!=null && !(typeof s.aborted=="boolean" && typeof s.addEventListener=="function" && typeof s.removeEventListener=="function"))
+          throw new TypeError(url ? "signal" : "url"); // an AbortSignal (by its shape), undefined or null
+        if(this._dead)
+          throw CodedError("SYNTH_DISPOSED");
+        if(s && s.aborted)
+          throw why();
+        const x=new XMLHttpRequest(),s0=this.song,
+          f=(e,v)=>{ // settles once and unhooks the load
+            if(this._pend.delete(d)){
+              s && s.removeEventListener("abort",a);
+              v ? res(v) : rej(e); // v, the response, is an ArrayBuffer
+            }
+          },
+          d=(e)=>{ // dispose() calls it without e; a newer load with e, and aborts the request
+            f(CodedError(e ? "LOAD_SUPERSEDED" : "SYNTH_DISPOSED"));
+            e && x.abort();
+          },
+          a=()=>{ f(why()); x.abort(); };
+        x.open("GET",url);
+        x.responseType="arraybuffer";
+        s && s.addEventListener("abort",a);
+        x.onload=()=>{
+          if(this._pend.has(d)){
+            try{
+              if(this.song!==s0) // a direct loadMIDI() came first
+                throw CodedError("LOAD_SUPERSEDED");
+              if(x.status<200 || x.status>299)
+                throw Object.assign(CodedError("HTTP_STATUS"),{status:x.status});
+              this.loadMIDI(x.response);
+              f(0,x.response);
+            }catch(e){ f(e); }
+          }
+        };
+        x.onerror=x.onabort=()=>f(CodedError("NETWORK_ERROR"));
+        this._pend.forEach(g=>g.u && g(1)); // the newest load wins
+        d.u=1;
+        this._pend.add(d);
+        x.send();
+      });
+      r.catch(()=>{}); // fire-and-forget calls cause no unhandled rejection
+      return r;
     },
     reset:()=>{
       for(let i=0;i<16;++i){
@@ -625,138 +863,225 @@ function WebAudioTinySynthCore(target) {
       this.masterTuningF=0;
       this.rhythm[9]=1;
     },
-    stopMIDI:()=>{
-      this.playing=0;
+    _halt:()=>{
+      /* The upstream stop, kept for loadMIDI's internal stops (D-023). A load sets every
+         channel again, so nothing is left to apply on the next playMIDI(). */
+      this.playing=this._rs=0;
       for(var i=0;i<16;++i)
         this.allSoundOff(i);
     },
+    stopMIDI:()=>{
+      /* A caller's stop silences everything the transport scheduled (D-023, #11): melodic
+         voices, as upstream; every percussion hit, sounding or scheduled ahead (D-019); and
+         the queued channel volume, pan and modulation automation, cancelled from now on, so
+         nothing changes after the stop. The next playMIDI() first applies each channel's
+         latest volume, expression, pan and modulation (_rs), the state at the resume position,
+         since the cancelled changes the song had sent ahead are not sent again (review F1).
+         A seek stops the same way. Nodes a caller swapped into chvol are handled (not a
+         supported API). */
+      const c=this.actx;
+      let i,v;
+      this._halt();
+      if(c){
+        for(i=this._src.length-1;i>=0;--i){
+          if((v=this._src[i]).ch!=undefined){
+            this._src.splice(i,1);
+            if(v.e>c.currentTime) // a hit that has ended needs nothing
+              this._pruneNote(v);
+          }
+        }
+        for(i=0;i<16;++i)
+          [(this.chvol[i]||0).gain,(this.chmod[i]||0).gain,(this.chpan[i]||0).pan].forEach(a=>a && a.cancelScheduledValues(c.currentTime));
+        this._rs=1;
+      }
+    },
     playMIDI:()=>{
-      if(!this.song)
+      if(!this._live())
         return;
+      /* A song with no events other than tempo (empty, metadata-only or tempo-only)
+         stays stopped (#9). A completed song (not one just loaded at maxTick) starts a
+         new pass with the state of locateMIDI(0) (#10, D-005), but the previous pass's
+         sounding and already scheduled notes play on, as upstream (D-019): its voices are
+         kept out of the seek's reach. A song stopped before its end resumes as it is. */
+      const s=this.song,n=this.notetab,d=this._src;
+      /* The sequencer runs on the realtime timer, which cannot follow an offline render's
+         clock (#12, tasks/T4.md): schedule notes with explicit times instead. */
+      if(this._off)
+        throw CodedError("AUDIO_CONTEXT_OFFLINE");
+      if(!s || !s.ev.some(e=>e.m[0]!=0xff51))
+        return;
+      /* Before anything reads the clock (#18): a first n1 note built inside the scheduler's
+         callback can take longer than the 0.1 s start and the 0.2 s lead, and would sound after
+         the notes sent with it. The clock is read after the build, so the whole song shifts. */
+      this.prewarm();
+      if(this.playIndex && this.playTick>=this.maxTick)
+        this.notetab=[], this._src=[], this.playing=0, this.locateMIDI(0), this.notetab=n, this._src=d;
+      if(this._rs) // after a caller's stop: the channels' latest values, now (review F1)
+        for(let i=this._rs=0;i<16;++i)
+          [[this.chvol[i],"gain",this.vol[i]*this.ex[i]],[this.chmod[i],"gain",this._m[i]],[this.chpan[i],"pan",this._p[i]]].forEach(([n,k,x])=>n && n[k].setValueAtTime(x||0,this.actx.currentTime));
       const dummy=this.actx.createOscillator();
       dummy.connect(this.actx.destination);
       dummy.frequency.value=0;
       dummy.start(0);
       dummy.stop(this.actx.currentTime+0.001);
-      if(this.playTick>=this.maxTick)
-        this.playTick=0,this.playIndex=0;
-      this.playTime=this.actx.currentTime+.1;
-      this.tick2Time=4*60/this.song.tempo/this.song.timebase;
+      dummy.onended=()=>dummy.disconnect();
+      this._src.push({o:[dummy],g:[],e:this.actx.currentTime+0.001});
+      /* Start timing (#21, D-023). t: seconds from tick 0 to the next event (playTick) under
+         the pass's tempo map: the song's, from 120 BPM until its first tempo event, except
+         that a pass the default loop started opens at the tempo it inherited (_x0, set at
+         the wrap and cleared by locateMIDI), as it plays. With a positive loopEnd, a
+         pass that stands at tick 0 with nothing of it played yet (after loadMIDI(),
+         locateMIDI(0), a completed song, a loop, or a stop before its first event) keeps its
+         leading rest, as later passes do: tick 0 sounds 0.1 s from now. Otherwise the next
+         event plays 0.1 s from now, as upstream and after a seek (next-event positioning,
+         D-005), and startTime (_st) is when tick 0 would have sounded, now + 0.1 s - t. */
+      let t=0,k=0,x=this._x0||2/s.timebase,a=this.actx.currentTime+.1;
+      for(const e of s.ev.slice(0,this.playIndex+1)){
+        t+=(e.t-k)*x;
+        k=e.t;
+        if(e.m[0]==0xff51)
+          x=240/e.m[1]/s.timebase;
+      }
+      if(this.loopEnd>0 && this._z && !this.playIndex)
+        this.playTime=(this._st=a)+t;
+      else
+        this._st=(this.playTime=a)-t;
+      this.tick2Time=4*60/s.tempo/s.timebase;
       this.playing=1;
     },
     loadMIDI:(data)=>{
-      function Get2(s, i) { return (s[i]<<8) + s[i+1]; }
-      function Get3(s, i) { return (s[i]<<16) + (s[i+1]<<8) + s[i+2]; }
-      function Get4(s, i) { return (s[i]<<24) + (s[i+1]<<16) + (s[i+2]<<8) + s[i+3]; }
-      function GetStr(s, i, len) {
-        return String.fromCharCode.apply(null,s.slice(i,i+len));
+      if(!this._live())
+        return;
+      /* Parse a Standard MIDI File (format 0 or 1, ticks-per-quarter-note division)
+         into a new song, then install it. Each chunk read must lie inside the file,
+         and every read is bounded by its chunk. On failure this throws an Error whose
+         code is SMF_INVALID_HEADER, SMF_UNSUPPORTED_FORMAT, SMF_UNSUPPORTED_DIVISION,
+         SMF_TRUNCATED or SMF_MALFORMED, with offset (absolute byte offset) and, from
+         the first track chunk on, track (0-based MTrk index). Nothing is changed by
+         a failed load: the previous song, playback and channel state remain. Running
+         status is per track and is cancelled by meta and SysEx events. Unknown chunks
+         are skipped. A track without End-of-Track is accepted when its chunk ends
+         right after a complete event and is followed by the end of the file or by
+         an MTrk chunk; the track then ends at that event's tick. */
+      var s=new Uint8Array(data), n=s.length, song={copyright:"",text:"",tempo:120,timebase:0,ev:[]};
+      var TRUNCATED="SMF_TRUNCATED", MALFORMED="SMF_MALFORMED", maxTick=0, tr=-1, ntrk, len, idx, end, p, e0, tick, rs, v, k, m;
+      function Fail(code, msg, off) {
+        var e=new Error(code+": "+msg+" ("+(tr<0?"":"track "+tr+", ")+"byte "+off+")");
+        e.code=code;
+        e.offset=off;
+        if(tr>=0)
+          e.track=tr;
+        throw e;
       }
-      function Delta(s, i) {
-        var v, d;
-        v = 0;
-        datalen = 1;
-        while((d = s[i]) & 0x80) {
-          v = (v<<7) + (d&0x7f);
-          ++datalen;
-          ++i;
+      function Need(k, what, at) {
+        if(p+k>end)
+          Fail(TRUNCATED,what+" past chunk end",at);
+      }
+      function Get2(i) { return (s[i]<<8) + s[i+1]; }
+      function Get4(i) { return s[i]*0x1000000 + (s[i+1]<<16) + (s[i+2]<<8) + s[i+3]; }
+      function GetStr(i, len) {
+        for(var r="",k;len>0;i+=k,len-=k)
+          r+=String.fromCharCode.apply(null,s.subarray(i,i+(k=len<8192?len:8192)));
+        return r;
+      }
+      function Vlq() {
+        for(var v=0,k=0,d,at=p;;){
+          Need(1,"VLQ",at);
+          v=v*128+((d=s[p++])&0x7f);
+          if(d<0x80)
+            return v;
+          if(++k>3)
+            Fail(MALFORMED,"VLQ over 4 bytes",at);
         }
-        return (v<<7)+d;
       }
-      function Msg(song,tick,s,i){
-        var v=s[i];
-        datalen=1;
-        if((v&0x80)==0)
-          v=runst,datalen=0;
-        runst=v;
-        switch(v&0xf0){
-        case 0xc0: case 0xd0:
-          song.ev.push({t:tick,m:[v,s[i+datalen]]});
-          datalen+=1;
-          break;
-        case 0xf0:
-          switch(v) {
-          case 0xf0:
-          case 0xf7:
-            var len=Delta(s,i+1);
-            datastart=1+datalen;
-            var exd=Array.from(s.slice(i+datastart,i+datastart+len));
-            exd.unshift(0xf0);
-            song.ev.push({t:tick,m:exd});
-/*
-            var sysex=[];
-            for(var jj=0;jj<len;++jj)
-              sysex.push(s[i+datastart+jj].toString(16));
-            if(this.debug)
-              console.log(sysex);
-*/
-            datalen+=len+1;
+      if(Get4(0)!=0x4d546864) // "MThd"; NaN when the file is shorter than 4 bytes
+        Fail("SMF_INVALID_HEADER","no MThd header",0);
+      if(n>=8 && (len=Get4(4))<6)
+        Fail("SMF_INVALID_HEADER","header length "+len+" under 6",4);
+      if(n<8 || n<8+len)
+        Fail(TRUNCATED,"header past file end",0);
+      if((v=Get2(8))>1)
+        Fail("SMF_UNSUPPORTED_FORMAT","format "+v,8);
+      if((v=Get2(12))&0x8000 || !v)
+        Fail("SMF_UNSUPPORTED_DIVISION",(v?"SMPTE ":"")+"division 0x"+v.toString(16),12);
+      song.timebase=v*4;
+      ntrk=Get2(10);
+      for(idx=8+len,tr=0;tr<ntrk;idx=end){
+        if(idx+8>n)
+          Fail(TRUNCATED,"no track "+tr+" of "+ntrk,idx);
+        if((end=idx+8+Get4(idx+4))>n)
+          Fail(TRUNCATED,"chunk past file end",idx);
+        if(Get4(idx)!=0x4d54726b) // not "MTrk"
+          continue;
+        for(p=idx+8,tick=0,rs=0;;){
+          if(p>=end){ // no End-of-Track: accepted only at the end of the file or before a track chunk
+            if(end<n && Get4(end)!=0x4d54726b)
+              Fail(MALFORMED,"no End-of-Track",end);
             break;
-          case 0xff:
-            var len = Delta(s, i + 2);
-            datastart = 2+datalen;
-            datalen = len+datalen+2;
-            switch(s[i+1]) {
-            case 0x02: song.copyright+=GetStr(s, i + datastart, datalen - 3); break;
-            case 0x01: case 0x03: case 0x04: case 0x09:
-              song.text=GetStr(s, i + datastart, datalen - datastart);
-              break;
-            case 0x2f:
-              return 1;
-            case 0x51:
-              var val = 60000000 / Get3(s, i + 3);
-              song.ev.push({t:tick, m:[0xff51, val]});
+          }
+          tick+=Vlq();
+          Need(1,"event",e0=p);
+          if((v=s[p])<0x80){
+            if(!rs)
+              Fail(MALFORMED,"no running status",e0);
+            v=rs;
+          }
+          else
+            ++p;
+          if(v<0xf0){
+            Need(k=(v&0xe0)==0xc0?1:2,"channel message",e0);
+            for(m=k>1?[rs=v,s[p],s[p+1]]:[rs=v,s[p]];k--;)
+              if(s[p++]>0x7f)
+                Fail(MALFORMED,"bad data byte",p-1);
+            song.ev.push({t:tick,m:m});
+          }
+          else if(v==0xf0 || v==0xf7){
+            rs=0;
+            Need(len=Vlq(),"SysEx event",e0);
+            m=Array.from(s.subarray(p,p+len));
+            m.unshift(0xf0);
+            song.ev.push({t:tick,m:m});
+            p+=len;
+          }
+          else if(v==0xff){
+            rs=0;
+            Need(1,"meta event",e0);
+            k=s[p++];
+            Need(len=Vlq(),"meta event",e0);
+            if(k==0x2f){
+              if(len)
+                Fail(MALFORMED,"End-of-Track length "+len,e0);
               break;
             }
-            break;
+            if(k==0x51){
+              if(len!=3 || !(v=(s[p]<<16) + (s[p+1]<<8) + s[p+2]))
+                Fail(MALFORMED,"bad tempo",e0);
+              song.ev.push({t:tick, m:[0xff51, 60000000 / v]});
+            }
+            else if(k==0x02)
+              song.copyright+=GetStr(p, len);
+            else if(k==0x01 || k==0x03 || k==0x04 || k==0x09)
+              song.text=GetStr(p, len);
+            p+=len;
           }
-          break;
-        default:
-          song.ev.push({t:tick,m:[v,s[i+datalen],s[i+datalen+1]]});
-          datalen+=2;
+          else
+            Fail(MALFORMED,"bad status 0x"+v.toString(16),e0);
         }
-        return 0;
+        if(tick>maxTick)
+          maxTick=tick;
+        ++tr;
       }
-      this.stopMIDI();
-      var s=new Uint8Array(data);
-      var datalen = 0, datastart = 0, runst = 0x90;
-      var idx = 0;
-      var hd = s.slice(0,  4);
-      if(hd.toString()!="77,84,104,100")  //MThd
-        return;
-      var len = Get4(s, 4);
-      var fmt = Get2(s, 8);
-      var numtrk = Get2(s, 10);
-      this.maxTick=0;
-      var tb = Get2(s, 12)*4;
-      idx = (len + 8);
-      this.song={copyright:"",text:"",tempo:120,timebase:tb,ev:[]};
-      for(let tr=0;tr<numtrk;++tr){
-        hd=s.slice(idx, idx+4);
-        len=Get4(s, idx+4);
-        if(hd.toString()=="77,84,114,107") {//MTrk
-          var tick = 0;
-          var j = 0;
-          this.notetab.length = 0;
-          for(;;) {
-            tick += Delta(s, idx + 8 + j);
-            j += datalen;
-            var e = Msg(this.song, tick, s, idx + 8 + j);
-            j += datalen;
-            if(e)
-              break;
-          }
-          if(tick>this.maxTick)
-            this.maxTick=tick;
-        }
-        idx += (len+8);
-      }
-      this.song.ev.sort(function(x,y){return x.t-y.t});
-      this.reset();
-      this.locateMIDI(0);
+      song.ev.sort(function(x,y){return x.t-y.t});
+      this._halt(); // internal: the upstream calls (D-023)
+      if(tr)
+        this.notetab.length=0;
+      this.maxTick=maxTick;
+      this.song=song;
+      this.locateMIDI(0,1); // includes reset()
     },
     setQuality:(q)=>{
       if(q!=undefined)
-        this.quality=q;
+        this.quality=this._num("quality",q,1,1);
       for(let i=0;i<128;++i)
         this.setTimbre(0,i,this.program0[i]);
       for(let i=0;i<this.drummap0.length;++i)
@@ -771,20 +1096,75 @@ function WebAudioTinySynthCore(target) {
       }
     },
     setTimbre:(m,n,p)=>{
-      const defp={g:0,w:"sine",t:1,f:0,v:0.5,a:0,h:0.01,d:0.01,s:0,r:0.05,p:1,q:1,k:0};
-      function filldef(p){
-        for(n=0;n<p.length;++n){
-          for(let k in defp){
-            if(!p[n].hasOwnProperty(k) || typeof(p[n][k])=="undefined")
-              p[n][k]=defp[k];
+      /* Install a copy of timbre p (#13, ledger L-09): program n (m 0, n 0-127) or drum n
+         (m 1, n 35-81). p is a non-empty array of operators (_op). Everything is checked
+         before anything changes, and the caller's array and objects are not modified. */
+      const s=this._slot(m,n);
+      if(!Array.isArray(p) || !p.length)
+        throw new TypeError("timbre is not a non-empty array");
+      s.p=Array.from(p,this._op);
+    },
+    _slot:(m,n)=>{
+      return this._num("m",m,1,1) ? this.drummap[this._num("drum",n,81,1,35)-35] : this.program[this._num("program",n,127,1)];
+    },
+    _op:(o,i)=>{
+      /* A normalized copy of operator i. Missing or undefined fields take the defaults below,
+         and other keys are copied and ignored. w is a known wave (below). g is 0 (output),
+         1-10 (FM into operator g-1) or 11 and up (AM into operator g-11), and that operator
+         comes earlier. a, h, d, r and q (times) are >= 0 and finite as float32 (T5.2: d, r
+         and q are AudioParam time constants, WebIDL floats, and the bound keeps a note's
+         t+a+h finite); t, f, v, s, p and k are finite (_note checks what they compute). The
+         filter fields fl, ff, fq and fk are checked last (#27). */
+      const d={g:0,w:"sine",t:1,f:0,v:0.5,a:0,h:0.01,d:0.01,s:0,r:0.05,p:1,q:1,k:0},e="operator "+i+" ";
+      if(typeof o!="object" || !o)
+        throw new TypeError(e+"is not an object");
+      const c=Object.assign(Object.create(null),o); // an own __proto__ key stays data
+      for(const k in d){
+        if(c[k]===undefined)
+          c[k]=d[k];
+        if(k!="w"){
+          const T="hadrq".includes(k),x=c[k]=this._num(e+k,c[k],k=="g" ? 10+i : 1/0,k=="g",T || k=="g" ? 0 : -1/0);
+          if(T && !f32(x))
+            throw new RangeError(e+k+" out of range: "+x);
+        }
+        else{
+          /* A built-in, a name registered with setHarmonicWave/setSampleWave (#26), or, as an
+             unsupported compatibility path, an n* or w* name a caller wrote into noiseBuf or wave
+             itself, as TinyChip does (D-031); _note plays that one as before (440 basis). */
+          const w=c.w,b=typeof w=="string" && (w[0]=="n" ? this.noiseBuf : w[0]=="w" && this.wave);
+          if(!"sine square sawtooth triangle w9999 n0 n1".split(" ").includes(w) && !this._wv.has(w) && !(b && {}.hasOwnProperty.call(b,w)))
+            throw new TypeError("unknown wave: "+w);
+        }
+      }
+      if(c.g>i && c.g<11)
+        throw new RangeError(e+"g: "+c.g+" is not an earlier operator");
+      /* Fixed filter (#27, D-007, D-028; T12's checks and messages). Without fl, none of ff, fq
+         and fk. With fl ("lowpass", "highpass" or "bandpass"), an audio output (g 0), and ff,
+         and fq if given, normal positive 32-bit floats (the AudioParam type: from 2^-126; a
+         smaller low- or high-pass fq gives NaN coefficients, a smaller ff a 0 Hz or subnormal
+         cutoff); fk, if given, 0 or 1. Numeric strings are read with Number() (D-033). */
+      if(c.fl===undefined){
+        for(const k of ["ff","fq","fk"])
+          if(c[k]!==undefined)
+            throw new TypeError(k+" without fl");
+      }
+      else{
+        if(!["lowpass","highpass","bandpass"].includes(c.fl))
+          throw new TypeError("fl: "+String(c.fl));
+        if(c.g)
+          throw new TypeError("fl on a modulator");
+        for(const k of ["ff","fq","fk"]){
+          const v=c[k],x=typeof v=="string" && v.trim() ? +v : v;
+          if(k=="ff" || v!==undefined){
+            if(typeof x!="number")
+              throw new TypeError(k+": "+String(v));
+            if(!(k=="fk" ? x==0 || x==1 : x>=2**-126 && f32(x)))
+              throw new RangeError(k+": "+x);
+            c[k]=x;
           }
         }
-        return p;
       }
-      if(m && n>=35 && n<=81)
-        this.drummap[n-35].p=filldef(p);
-      if(m==0 && n>=0 && n<=127)
-        this.program[n].p=filldef(p);
+      return c;
     },
     _pruneNote:(nt)=>{
       for(let k=nt.o.length-1;k>=0;--k){
@@ -796,16 +1176,25 @@ function WebAudioTinySynthCore(target) {
         }
         nt.g[k].gain.cancelScheduledValues(0);
 
-        nt.o[k].stop();
+        try {
+          nt.o[k].stop();
+        } catch (e) { /* a percussion hit is already stopped: some engines throw */ }
         if(nt.o[k].detune) {
           try {
             this.chmod[nt.ch].disconnect(nt.o[k].detune);
-          } catch (e) {}
+          } catch (e) { /* the detune input is not connected: nothing to disconnect */ }
         }
         nt.g[k].gain.value = 0;
+        /* Release the voice's routes once it has ended (#11). Disconnecting earlier can keep
+           Chromium from ever ending (and releasing) a stopped oscillator. Until all its
+           sources have ended the voice stays in _gone, so a teardown still reaches it. */
+        const o=nt.o[k],g=nt.g[k],b=nt.q[k]; // b: the operator's filter, if any (#27)
+        o.onended=()=>{ o.disconnect(); g.disconnect(); b && b.disconnect(); --nt.l || this._gone.delete(nt); };
       }
+      nt.l=nt.o.length;
+      this._gone.add(nt);
     },
-    _limitVoices:(ch,n)=>{
+    _limitVoices:(ch,n)=>{ // eslint-disable-line no-unused-vars -- callers pass the new note; the limit is global
       this.notetab.sort(function(n1,n2){
         if(n1.f!=n2.f) return n1.f-n2.f;
         if(n1.e!=n2.e) return n2.e-n1.e;
@@ -819,30 +1208,63 @@ function WebAudioTinySynthCore(target) {
         }
       }
     },
+    _filter:(pn,f,out)=>{
+      /* An audio-output operator's fixed filter (#27, D-007 and D-028), connected to out and
+         returned. Type fl. Cutoff or centre: ff Hz, or with fk 1 ff times the note-on frequency
+         f (master, channel and scale tuning included; operator ratio and offset, bend, pitch
+         envelope and modulation excluded), clamped to 0.45 x the sample rate (tasks/T12.md).
+         fq (default Math.SQRT1_2) is a linear Q, given in dB to low- and high-pass. */
+      const b=this.actx.createBiquadFilter(),q=pn.fq||Math.SQRT1_2;
+      b.type=pn.fl;
+      b.frequency.value=Math.min(pn.fk ? f*pn.ff : pn.ff,this.actx.sampleRate*.45);
+      b.Q.value=pn.fl=="bandpass" ? q : 20*Math.log10(q);
+      b.connect(out);
+      return b;
+    },
     _note:(t,ch,n,v,p)=>{
-      let out,sc,pn;
-      const o=[],g=[],vp=[],fp=[],r=[];
+      let out,pn;
+      const o=[],g=[],vp=[],fp=[],r=[],b=[],l=[];
       const f=440*Math.pow(2,(n-69 + this.masterTuningC + this.tuningC[ch] + (this.masterTuningF + this.tuningF[ch]/8192 + this.scaleTuning[ch][n%12]))/12);
+      /* Every operator's wave is resolved first (#26): when one is missing from this context (a
+         timbre written past setTimbre), the note is dropped before a voice is stolen or a node made.
+         A buffer plays at fp/b[i]: the home pitch _mk tagged a registered wave's buffer with (D-027),
+         looping its N*k frames (l[i] seconds, before the guard frame); else 440 (n0, n1, buffers a
+         caller wrote, even over a registered name). An oscillator's b[i] is 1, so fp[i]/b[i] is the
+         frequency or playback rate of every operator, and the FM depth into it. Only n* and w*
+         names are looked up, and no Object.prototype key starts so.
+         Every AudioParam value of the voice is computed here too (T5.2): the operator's pitch, its
+         pitch-envelope target, its level vp[i] (into the channel, FM into operator j's pitch, or AM
+         into its gain; scaled by k) and its sustain level. One that is not finite as float32 (an FM
+         chain or a k that overflows at this note and tuning, or 0 times an overflow) drops the note
+         the same way, so no voice is left half made and no engine rejects a value. */
+      for(let i=0;i<p.length;++i){
+        pn=p[i];
+        const w=pn.w,x=w[0]=="n" && this.noiseBuf[w],j=pn.g>10 ? pn.g-11 : pn.g-1;
+        if(w[0]=="n" ? !x : w[0]=="w" && !this.wave[w])
+          return;
+        l[i]=x && x._l;
+        b[i]=x ? x._b || 440 : 1;
+        fp[i]=(pn.g ? fp[j] : f)*pn.t+pn.f;
+        vp[i]=(pn.g>10 ? 1 : pn.g ? fp[j]/b[j] : v*v/16384)*pn.v*Math.pow(2,(n-60)/12*pn.k);
+        if(![fp[i]/b[i],fp[i]/b[i]*pn.p,vp[i],pn.s*vp[i]].every(f32))
+          return;
+      }
       this._limitVoices(ch,n);
+      const q=[]; // the output operators' filters, by operator (#27)
       for(let i=0;i<p.length;++i){
         pn=p[i];
         const dt=t+pn.a+pn.h;
-        if(pn.g==0)
-          out=this.chvol[ch], sc=v*v/16384, fp[i]=f*pn.t+pn.f;
-        else if(pn.g>10)
-          out=g[pn.g-11].gain, sc=1, fp[i]=fp[pn.g-11]*pn.t+pn.f;
-        else if(o[pn.g-1].frequency)
-          out=o[pn.g-1].frequency, sc=fp[pn.g-1], fp[i]=fp[pn.g-1]*pn.t+pn.f;
-        else
-          out=o[pn.g-1].playbackRate, sc=fp[pn.g-1]/440, fp[i]=fp[pn.g-1]*pn.t+pn.f;
+        out=pn.g ? pn.g>10 ? g[pn.g-11].gain : o[pn.g-1].frequency || o[pn.g-1].playbackRate : this.chvol[ch];
         switch(pn.w[0]){
         case "n":
           o[i]=this.actx.createBufferSource();
           o[i].buffer=this.noiseBuf[pn.w];
           o[i].loop=true;
-          o[i].playbackRate.value=fp[i]/440;
+          if(l[i])
+            o[i].loopEnd=l[i];
+          o[i].playbackRate.value=fp[i]/b[i];
           if(pn.p!=1)
-            this._setParamTarget(o[i].playbackRate,fp[i]/440*pn.p,t,pn.q);
+            this._setParamTarget(o[i].playbackRate,fp[i]/b[i]*pn.p,t,pn.q);
           if (o[i].detune) {
             this.chmod[ch].connect(o[i].detune);
             o[i].detune.value=this.bend[ch];
@@ -865,10 +1287,7 @@ function WebAudioTinySynthCore(target) {
         }
         g[i]=this.actx.createGain();
         r[i]=pn.r;
-        o[i].connect(g[i]); g[i].connect(out);
-        vp[i]=sc*pn.v;
-        if(pn.k)
-          vp[i]*=Math.pow(2,(n-60)/12*pn.k);
+        o[i].connect(g[i]); g[i].connect(pn.g==0 && pn.fl ? (q[i]=this._filter(pn,f,out)) : out);
         if(pn.a){
           g[i].gain.value=0;
           g[i].gain.setValueAtTime(0,t);
@@ -881,16 +1300,22 @@ function WebAudioTinySynthCore(target) {
         if(this.rhythm[ch]){
 
           o[i].onended = ()=>{
+            o[i].disconnect(); g[i].disconnect(); q[i] && q[i].disconnect(); // release the hit's routes (#11, #27)
             try {
               if (o[i].detune) this.chmod[ch].disconnect(o[i].detune);
             }
-            catch(e){}
+            catch(e){ /* the detune input is not connected: nothing to disconnect */ }
           };
           o[i].stop(t+p[0].d*this.releaseRatio);
         }
       }
-      if(!this.rhythm[ch])
-        this.notetab.push({t:t,e:99999,ch:ch,n:n,o:o,g:g,t2:t+pn.a,v:vp,r:r,f:0});
+      if(!this.rhythm[ch]){ // t2: each operator's attack end (#59)
+        const nt={t:t,s:t,e:99999,ch:ch,n:n,o:o,g:g,q:q,t2:p.map(x=>t+x.a),v:vp,r:r,f:0};
+        this.notetab.push(nt);
+        return nt; // noteOn() sets s when it moved the onset
+      }
+      else // tracked until it ends, so stops, seeks and dispose() reach it (#11, D-019)
+        this._src.push({t:t,e:t+p[0].d*this.releaseRatio,ch:ch,o:o,g:g,q:q});
     },
     _setParamTarget:(p,v,t,d)=>{
       if(d!=0)
@@ -901,44 +1326,70 @@ function WebAudioTinySynthCore(target) {
     _releaseNote:(nt,t)=>{
       if(nt.ch!=9){
         for(let k=nt.g.length-1;k>=0;--k){
-          nt.g[k].gain.cancelScheduledValues(t);
-          if(t==nt.t2)
-            nt.g[k].gain.setValueAtTime(nt.v[k],t);
-          else if(t<nt.t2)
-            nt.g[k].gain.setValueAtTime(nt.v[k]*(t-nt.t)/(nt.t2-nt.t),t);
-          this._setParamTarget(nt.g[k].gain,0,t,nt.r[k]);
+          /* An operator whose attack (ending at e) has not ended at t (#59) ramps on to its
+             own level at t, v*(t-nt.t)/a, and is released from there. With a = 0 (e is the
+             note-on time) that is v. cancelScheduledValues(t) alone would remove the whole ramp
+             and leave it silent until t (upstream, which also took every operator's level from
+             the last operator's attack). The cut is kept in v and t2, so a second release (a
+             pedal-up at t) ramps the same way and a later one leaves the release running. */
+          const g=nt.g[k].gain,e=nt.t2[k];
+          g.cancelScheduledValues(t);
+          if(t<=e){
+            if(e>nt.t)
+              g.linearRampToValueAtTime(nt.v[k]*=(t-nt.t)/(e-nt.t),t);
+            else
+              g.setValueAtTime(nt.v[k],t);
+            nt.t2[k]=t;
+          }
+          this._setParamTarget(g,0,t,nt.r[k]);
         }
       }
       nt.e=t+nt.r[0]*this.releaseRatio;
       nt.f=1;
     },
     setModulation:(ch,v,t)=>{
-      this.chmod[ch].gain.setValueAtTime(v*100/127,this._tsConv(t));
+      [ch,v,t]=this._cv(ch,v,t,"value",127);
+      if(!this._live())
+        return;
+      this.chmod[ch].gain.setValueAtTime(this._m[ch]=v*100/127,this._tsConv(t));
     },
     setChVol:(ch,v,t)=>{
+      [ch,v,t]=this._cv(ch,v,t,"value",127);
+      if(!this._live())
+        return;
       this.vol[ch]=3*v*v/(127*127);
       this.chvol[ch].gain.setValueAtTime(this.vol[ch]*this.ex[ch],this._tsConv(t));
     },
     setPan:(ch,v,t)=>{
+      [ch,v,t]=this._cv(ch,v,t,"value",127);
+      if(!this._live())
+        return;
       if(this.chpan[ch])
-        this.chpan[ch].pan.setValueAtTime((v-64)/64,this._tsConv(t));
+        this.chpan[ch].pan.setValueAtTime(this._p[ch]=(v-64)/64,this._tsConv(t));
     },
     setExpression:(ch,v,t)=>{
+      [ch,v,t]=this._cv(ch,v,t,"value",127);
+      if(!this._live())
+        return;
       this.ex[ch]=v*v/(127*127);
       this.chvol[ch].gain.setValueAtTime(this.vol[ch]*this.ex[ch],this._tsConv(t));
     },
     setSustain:(ch,v,t)=>{
+      [ch,v,t]=this._cv(ch,v,t,"value",127);
+      if(!this._live())
+        return;
       this.sustain[ch]=v;
       t=this._tsConv(t);
       if(v<64){
         for(let i=this.notetab.length-1;i>=0;--i){
           const nt=this.notetab[i];
-          if(t>=nt.t && nt.ch==ch && nt.f==1)
-            this._releaseNote(nt,t);
+          if(t>=nt.s && nt.ch==ch && nt.f==1)
+            this._releaseNote(nt,Math.max(t,nt.t));
         }
       }
     },
     allSoundOff:(ch)=>{
+      ch=this._ch(ch);
       for(let i=this.notetab.length-1;i>=0;--i){
         const nt=this.notetab[i];
         if(nt.ch==ch){
@@ -948,34 +1399,44 @@ function WebAudioTinySynthCore(target) {
       }
     },
     resetAllControllers:(ch)=>{
+      ch=this._ch(ch);
       this.bend[ch]=0; this.ex[ch]=1.0;
       this.rpnidx[ch]=0x3fff; this.sustain[ch]=0;
       if(this.chvol[ch]){
         this.chvol[ch].gain.value=this.vol[ch]*this.ex[ch];
-        this.chmod[ch].gain.value=0;
+        this.chmod[ch].gain.value=this._m[ch]=0;
       }
     },
     setBendRange:(ch,v)=>{
+      [ch,v]=this._cv(ch,v,0,"bend range",16383);
+      if(!this._live())
+        return;
       this.brange[ch]=v;
     },
     setProgram:(ch,v)=>{
+      /* v indexes the program table: 0-127, or a slot a caller added to it itself, as TinyChip
+         does (unsupported compatibility path, D-031). */
+      [ch,v]=this._cv(ch,v,0,"program",1/0,1);
+      if(!(this.program[v]||0).p)
+        throw new RangeError("program out of range: "+v);
+      if(!this._live())
+        return;
       if(this.debug)
         console.log("Pg("+ch+")="+v);
       this.pg[ch]=v;
     },
     _tsConv:(t)=>{
-      if(t==undefined||t<=0){
-        t=0;
-        if(this.actx)
-          t=this.actx.currentTime;
-      }
-      else{
-        if(this.tsmode)
-          t=t*.001-this.tsdiff;
-      }
-      return t;
+      /* A time t > 0 is in seconds on the context's clock, or with tsmode in milliseconds on
+         performance.now()'s, converted and then clamped at currentTime (T5.2): a time from
+         before the context started, or already past, would otherwise be negative or past.
+         Otherwise now (0 without a context). */
+      const c=this.actx ? this.actx.currentTime : 0;
+      return t==undefined || t<=0 ? c : this.tsmode ? Math.max(t*.001-this.tsdiff,c) : t;
     },
     setBend:(ch,v,t)=>{
+      [ch,v,t]=this._cv(ch,v,t,"bend",16383);
+      if(!this._live())
+        return;
       t=this._tsConv(t);
       const br=this.brange[ch]*100/127;
       this.bend[ch]=(v-8192)*br/8192;
@@ -990,42 +1451,74 @@ function WebAudioTinySynthCore(target) {
       }
     },
     noteOff:(ch,n,t)=>{
+      [ch,n,t]=this._cv(ch,n,t,"note",127,1);
       if(this.rhythm[ch])
         return;
       t=this._tsConv(t);
       for(let i=this.notetab.length-1;i>=0;--i){
         const nt=this.notetab[i];
-        if(t>=nt.t && nt.ch==ch && nt.n==n && nt.f==0){
+        if(t>=nt.s && nt.ch==ch && nt.n==n && nt.f==0){
           nt.f=1;
           if(this.sustain[ch]<64)
-            this._releaseNote(nt,t);
+            this._releaseNote(nt,Math.max(t,nt.t));
         }
       }
     },
     noteOn:(ch,n,v,t)=>{
+      [ch,n,t]=this._cv(ch,n,t,"note",127,1);
+      v=this._num("velocity",v,127);
+      if(!this._live())
+        return;
       if(v==0){
         this.noteOff(ch,n,t);
         return;
       }
+      const p=this.rhythm[ch] ? n>=35 && n<=81 && this.drummap[n-35].p : this.program[this.pg[ch]].p;
+      /* A lazy n1 is generated here (#18), before the onset is read from the clock: _note reads it
+         after t was taken, and the stall would leave the envelope and stop times behind the clock.
+         A time that was current or future on entry and is past after the generation moves to the
+         clock; later times and times already past on entry are as given. */
+      const c=this.actx.currentTime,u=this._tsConv(t),lazy=()=>(Object.getOwnPropertyDescriptor(this.noiseBuf,"n1")||0).get,z=lazy();
+      Array.isArray(p) && p.forEach(o=>o && typeof o.w=="string" && o.w[0]=="n" && this.noiseBuf[o.w]);
       t=this._tsConv(t);
+      if(z && !lazy() && t>=c)
+        t=Math.max(t,this.actx.currentTime);
       if(this.rhythm[ch]){
         if(n>=35&&n<=81)
-          this._note(t,ch,n,v,this.drummap[n-35].p);
+          this._note(t,ch,n,v,p);
         return;
       }
-      this._note(t,ch,n,v,this.program[this.pg[ch]].p);
+      /* The voice keeps the time it was asked for, s (the clock on entry for no time), to match its
+         note-off and pedal-up; the envelope runs from the moved onset, and a release inside the stall
+         is made at that onset. Only the voice this call made: a dropped note has none. */
+      const nt=this._note(t,ch,n,v,p);
+      if(t>u && nt)
+        nt.s=u;
     },
     setTsMode:(tsmode)=>{
       this.tsmode=tsmode;
     },
     send:(msg,t)=>{    /* send midi message */
-      const ch=msg[0]&0xf;
-      const cmd=msg[0]&~0xf;
-      if(cmd<0x80||cmd>=0x100)
+      /* A message that is too short for its status (3 bytes for 0x8n, 0x9n, 0xAn, 0xBn, 0xEn and
+         0xF2; 2 for 0xCn, 0xDn, 0xF1 and 0xF3; 1 for the rest, so an empty array-like SysEx too,
+         T5.2), has no status byte or no integer length,
+         or has a data byte that is not a number 0-127 (a SysEx may end with the number 0xf7)
+         does nothing (#13). A msg that is not an object, a byte that cannot become a number
+         (Symbol, BigInt), or a bad time throws a TypeError or RangeError, before anything
+         changes. */
+      t=this._time(t);
+      if(typeof msg!="object" || !msg)
+        throw new TypeError("msg is not an array");
+      const s=msg[0],L=msg.length,ch=s&0xf,cmd=s&~0xf,
+        n=s===0xf0 ? L||1 : cmd>0xef ? (s===0xf2 ? 3 : s===0xf1 || s===0xf3 ? 2 : 1) : (cmd&0xe0)==0xc0 ? 2 : 3; // bytes the status needs
+      if(s>>>0!==s || s>>7!=1 || L>>>0!==L || L<n) // status: an integer number 0x80-0xff
         return;
-      if(this.audioContext.state=="suspended"){
-        this.audioContext.resume();
-      }
+      for(let i=1,b;i<n;++i)
+        if(!((b=msg[i])>>>0===b && b<0x80 || b===0xf7 && i==n-1 && s===0xf0))
+          return;
+      if(!this._live())
+        return;
+      this._wake();
       switch(cmd){
       case 0xb0:  /* ctl change */
         switch(msg[1]){
@@ -1122,10 +1615,87 @@ function WebAudioTinySynthCore(target) {
         imag[i]=w[i];
       return this.actx.createPeriodicWave(real,imag);
     },
+    setHarmonicWave:(w,real,imag)=>{
+      /* Registers PeriodicWave w (#26, D-006, D-028): real and imag are equal-length arrays of at
+         least 2 numbers, finite as floats. Index 0 (DC) is set to 0, and the browser normalizes
+         the peak to 1. */
+      this._reg("w",w,[real,imag],2,x=>isFinite(Math.fround(x)),"real, imag: equal-length arrays of >= 2 finite numbers");
+    },
+    setSampleWave:(w,samples)=>{
+      /* Registers single-cycle table w (#26, D-027, D-028): an array of at least 1 number in [-1, 1]. */
+      this._reg("n",w,[samples],1,x=>x>=-1 && x<=1,"samples: an array of numbers in [-1, 1]");
+    },
+    _reg:(k,w,a,m,f,s)=>{
+      /* Checks the name (D-006: k, a letter or _, then up to 30 of [A-Za-z0-9_]; a digit second is
+         reserved for built-ins), then the arrays a: each an Array or typed array of at least m
+         numbers that pass f, as long as the first (else a TypeError s if not an array, a RangeError
+         s otherwise), each read once. Copies them as Float32Arrays. A PeriodicWave's DC is set to 0,
+         and coefficients whose largest magnitude is extreme are scaled by a power of two, which the
+         browser's normalization undoes (browsers render NaN from 1e36 or a lone subnormal, and
+         Firefox keeps the NaN in the graph). Then builds the wave in the installed context; only
+         then is anything stored, so a failure changes nothing. Re-registering a name replaces it:
+         sounding voices keep the old wave, later notes get the new one. */
+      if(typeof w!="string" || w[0]!=k || !/^.[A-Za-z_]\w{0,30}$/.test(w))
+        throw new TypeError("wave name: "+w);
+      const d=a.map(x=>{
+        if(!Array.isArray(x) && !ArrayBuffer.isView(x))
+          throw new TypeError(s);
+        x=Array.from(x);
+        if(!(x.length>=m && x.length==a[0].length && x.every(v=>typeof v=="number" && f(v))))
+          throw new RangeError(s);
+        return Float32Array.from(x);
+      });
+      if(d[1]){
+        let e=0;
+        d[0][0]=d[1][0]=0;
+        d.forEach(a=>a.forEach(v=>e=Math.max(e,Math.abs(v))));
+        if(e>1e9 || e && e<1e-9){
+          e=Math.pow(2,-Math.round(Math.log2(e)));
+          d.forEach(a=>a.forEach((v,i)=>a[i]=v*e));
+        }
+      }
+      const o=this.actx && this._mk(d,this.actx);
+      this._wv.set(w,d);
+      if(o)
+        (k=="n" ? this.noiseBuf : this.wave)[w]=o;
+    },
+    _mk:(d,c)=>{
+      /* Returns registered wave d built in context c: a PeriodicWave from [real, imag], or an
+         AudioBuffer of the table [samples] with each of its N samples held for
+         k = max(1, round(sampleRate/(440*N))) frames, so its home pitch sampleRate/(N*k) is near
+         440 Hz and notes play near rate 1 with sharp steps (D-027). One guard frame, the first
+         sample again, follows the N*k frames, and _note loops only those: Chromium otherwise
+         misplays the loop's first frame for some lengths (D-031); the other engines play the same
+         either way. The buffer is tagged with its home pitch (_b) and loop end (_l). */
+      const s=d[0],N=s.length,k=Math.max(1,Math.round(c.sampleRate/(440*N)));
+      if(d[1])
+        return c.createPeriodicWave(s,d[1]);
+      const b=c.createBuffer(1,N*k+1,c.sampleRate),x=b.getChannelData(0);
+      for(let i=0;i<=N;++i) // i = N writes the guard frame (fill stops at the end)
+        x.fill(s[i%N],i*k,i*k+k);
+      b._b=c.sampleRate/(N*k);
+      b._l=N*k/c.sampleRate;
+      return b;
+    },
     getAudioContext:()=>{
       return this.actx;
     },
     setAudioContext:(actx,dest)=>{
+      /* Invalid arguments throw a TypeError before anything changes. The previous graph is
+         torn down first, and its context closed if the synth created it (#11). The new
+         context belongs to the caller and is never closed by the synth. On an
+         OfflineAudioContext, MIDI playback stops (playMIDI needs a realtime context). */
+      if(this._dead)
+        return;
+      this._check(actx,dest);
+      /* The registered waves are built for the new context first, so a failure leaves the
+         installed graph as it was (#26). */
+      const r=[...this._wv].map(([w,d])=>[w,this._mk(d,actx)]);
+      const own=this._own && actx==this.actx;
+      this._drop(this._own && !own);
+      this._own=own;
+      if((this._off=typeof actx.startRendering=="function"))
+        this.playing=0;
       this.audioContext=this.actx=actx;
       this.dest=dest;
       if(!dest)
@@ -1136,29 +1706,30 @@ function WebAudioTinySynthCore(target) {
       this.out=this.actx.createGain();
       this.comp=this.actx.createDynamicsCompressor();
       var blen=this.actx.sampleRate*.5|0;
-      this.convBuf=this.actx.createBuffer(2,blen,this.actx.sampleRate);
+      let h=this.seed; // fmix32, then stream k (see mulberry32)
+      h=Math.imul(h^h>>>16,0x85ebca6b);
+      h=Math.imul(h^h>>>13,0xc2b2ae35);
+      h^=h>>>16;
+      const rnd=k=>mulberry32(h+k*0x40000000);
+      /* The reverb impulse only with reverb on (#18); useReverb applies at each install. */
+      this.convBuf=null;
+      if(this.useReverb){
+        this.convBuf=this.actx.createBuffer(2,blen,this.actx.sampleRate);
+        const d1=this.convBuf.getChannelData(0),d2=this.convBuf.getChannelData(1);
+        let g=rnd(0);
+        for(let i=0;i<blen;++i){
+          if(i/blen<g()){
+            d1[i]=Math.exp(-3*i/blen)*(g()-.5)*.5;
+            d2[i]=Math.exp(-3*i/blen)*(g()-.5)*.5;
+          }
+        }
+      }
       this.noiseBuf={};
       this.noiseBuf.n0=this.actx.createBuffer(1,blen,this.actx.sampleRate);
-      this.noiseBuf.n1=this.actx.createBuffer(1,blen,this.actx.sampleRate);
-      var d1=this.convBuf.getChannelData(0);
-      var d2=this.convBuf.getChannelData(1);
-      var dn=this.noiseBuf.n0.getChannelData(0);
-      var dr=this.noiseBuf.n1.getChannelData(0);
-      for(let i=0;i<blen;++i){
-        if(i/blen<Math.random()){
-          d1[i]=Math.exp(-3*i/blen)*(Math.random()-.5)*.5;
-          d2[i]=Math.exp(-3*i/blen)*(Math.random()-.5)*.5;
-        }
-        dn[i]=Math.random()*2-1;
-      }
-      for(let jj=0;jj<64;++jj){
-        const r1=Math.random()*10+1;
-        const r2=Math.random()*10+1;
-        for(let i=0;i<blen;++i){
-          var dd=Math.sin((i/blen)*2*Math.PI*440*r1)*Math.sin((i/blen)*2*Math.PI*440*r2);
-          dr[i]+=dd/8;
-        }
-      }
+      lazyN1(this.noiseBuf,this.actx.createBuffer(1,blen,this.actx.sampleRate),rnd(2));
+      const dn=this.noiseBuf.n0.getChannelData(0),g=rnd(1);
+      for(let i=0;i<blen;++i)
+        dn[i]=g()*2-1;
       if(this.useReverb){
         this.conv=this.actx.createConvolver();
         this.conv.buffer=this.convBuf;
@@ -1173,6 +1744,7 @@ function WebAudioTinySynthCore(target) {
       this.comp.connect(this.dest);
       this.chvol=[]; this.chmod=[]; this.chpan=[];
       this.wave={"w9999":this._createWave("w9999")};
+      r.forEach(([w,x])=>(w[0]=="n" ? this.noiseBuf : this.wave)[w]=x);
       this.lfo=this.actx.createOscillator();
       this.lfo.frequency.value=5;
       this.lfo.start(0);
@@ -1206,16 +1778,31 @@ class WebAudioTinySynth {
     for(let k in this.properties){
       this[k]=this.properties[k].value;
     }
-    this.setQuality(1);
-    if(opt){
-      if(opt.useReverb!=undefined)
-        this.useReverb=opt.useReverb;
-      if(opt.quality!=undefined)
-        this.setQuality(opt.quality);
-      if(opt.voices!=undefined)
-        this.setVoices(opt.voices);
-    }
-    this.init();
+    /* Lifecycle options (#12), checked before anything is created: a caller-owned context
+       and destination, or lazy: true to create the internal context on first use. */
+    const {context:c,destination:d,lazy:l}=opt||{};
+    if(l!=undefined && typeof l!="boolean" || l && c!=undefined)
+      throw new TypeError("lazy");
+    if(c!=undefined || d!=undefined) // a destination without a context fails as "context"
+      this._check(c,d);
+    /* The buffer seed (#7, D-004), also checked first: an integer from 0 to 2^32-1, default
+       0. The seed and the buffer generation version are read-only properties. */
+    let {seed:s}=opt||{};
+    if(s==undefined) // null or undefined: the default, as for the other options
+      s=0;
+    if(typeof s!="number")
+      throw new TypeError("seed must be a number");
+    if(!(s>=0 && s<=4294967295 && s%1==0))
+      throw new RangeError("seed must be an integer from 0 to 4294967295");
+    Object.defineProperties(this,{seed:{value:s>>>0,enumerable:true},bufferVersion:{value:1,enumerable:true}});
+    this._lazy=l;
+    const {useReverb:r,quality:q,voices:v}=opt||{};
+    if(r!=undefined)
+      this.useReverb=r;
+    this.setQuality(q); // once (#18): undefined or null installs the default quality, 1
+    if(v!=undefined)
+      this.setVoices(v);
+    this.init(c,d);
   }
 }
 

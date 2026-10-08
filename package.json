@@ -1,6 +1,6 @@
 {
   "name": "webaudio-tinysynth",
-  "version": "1.1.4",
+  "version": "2.0.0",
   "description": "WebAudio Tiny GM Synthesizer",
   "main": "webaudio-tinysynth.js",
   "keywords": [
@@ -9,12 +9,36 @@
     "web-audio",
     "synth"
   ],
+  "files": [
+    "webaudio-tinysynth.js",
+    "webaudio-tinysynth.min.js",
+    "webaudio-tinysynth.min.js.map",
+    "LICENSE",
+    "NOTICE",
+    "README.md"
+  ],
   "directories": {
     "test": "tests"
   },
   "scripts": {
-    "test": "node tests/differential.js && node tests/tempo.js && node tests/loop-end.js",
-    "build": "terser webaudio-tinysynth.js --output webaudio-tinysynth.min.js --compress --source-map"
+    "build": "node scripts/build.js",
+    "verify": "node scripts/verify-dist.js",
+    "size": "node scripts/size.js",
+    "bench": "node scripts/bench-init.js",
+    "pack:check": "node scripts/check-pack.js",
+    "lint": "eslint .",
+    "test": "npm run test:unit && npm run test:node && npm run test:regression",
+    "test:unit": "node scripts/run-unit-tests.js --min-files=14 --min-tests=1052",
+    "test:node": "node scripts/run-node-tests.js --min-files=18 --min-tests=276",
+    "test:regression": "node scripts/run-regressions.js",
+    "test:browser": "node scripts/run-regressions.js --deadline=180 tests/browser-smoke.js \"tests/browser-smoke.js test-midi/all-gm-sounds.mid\"",
+    "test:browser:matrix": "node scripts/browser-matrix.js",
+    "test:browser:chromium": "node scripts/browser-matrix.js --engines=chromium",
+    "test:browser:firefox": "node scripts/browser-matrix.js --engines=firefox",
+    "test:browser:webkit": "node scripts/browser-matrix.js --engines=webkit",
+    "test:browser:observe": "node scripts/browser-matrix.js --specs=hang,variation",
+    "test:browser:demos": "node tests/browser/specs/demos.js",
+    "test:browser:serve": "node scripts/browser-server.js"
   },
   "repository": {
     "type": "git",
@@ -26,9 +50,24 @@
     "url": "https://github.com/g200kg/webaudio-tinysynth/issues"
   },
   "homepage": "https://github.com/g200kg/webaudio-tinysynth#readme",
-  "devDependencies": {
-    "node-minify": "^3.6.0",
-    "terser": "^5.14.0"
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": ">=24.11.0 <25",
+      "onFail": "warn"
+    },
+    "packageManager": {
+      "name": "npm",
+      "version": ">=11 <12",
+      "onFail": "warn"
+    }
   },
-  "dependencies": {}
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "eslint": "10.12.0",
+    "globals": "17.13.0",
+    "playwright-core": "1.63.0",
+    "terser": "5.51.2",
+    "vitest": "5.0.3"
+  }
 }

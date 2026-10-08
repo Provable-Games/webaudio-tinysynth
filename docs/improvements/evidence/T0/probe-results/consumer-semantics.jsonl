@@ -1,0 +1,21 @@
+{"probe":"consumer-semantics","node":"v24.19.0","root":"/workspace/webaudio-tinysynth-worktrees/t0-baseline","commit":"b70ba90d63c5ea657cb67ca98de90d7f778c29bd"}
+{"build":"webaudio-tinysynth.js","case":"fm-frequency-basis","note":69,"carrierHz":880,"modulatorHz":2645,"cairoDocFormulaWouldGive":1325,"engineFormula":"fp[target]*t+f = 880*3+5 = 2645"}
+{"build":"webaudio-tinysynth.js","case":"am-route","connections":["osc#65->gain#66","gain#66->gain#64.gain"],"modulatorGainInitial":0.25,"note":"0.25 regardless of velocity 64"}
+{"build":"webaudio-tinysynth.js","case":"output-velocity","timbre":"v 0.5, k -1","levels":{"60/127":0.492218018,"60/64":0.125,"72/127":0.246109009},"expected":{"60/127":0.492218018,"60/64":0.125,"72/127":0.246109009}}
+{"build":"webaudio-tinysynth.js","case":"melodic-voice-end","releases":[0.1,2],"noteOffAt":2,"voiceEndTime":2.35,"expectedFromOp0":2.35,"op1WouldNeed":9}
+{"build":"webaudio-tinysynth.js","case":"drum-stop-time","stops":[["osc#63",1.7000000000000002],["src#65",1.7000000000000002],["osc#67",1]],"expected":"note 36: both operators stop at 1+0.2*3.5=1.7; note 38 (d=0): stop at 1 (start time)","drumVoicesInNotetab":0,"webAudioCallsMadeByNoteOff":0}
+{"build":"webaudio-tinysynth.js","case":"voices-limit","voices":2,"afterReleased60ThenNoteOn64":[62,64],"afterNoteOn65":[64,65],"melodicNotesAfterOneDrumHit":[65],"note":"drum hits are not stored in notetab but run _limitVoices, pruning melodic notes to voices-1"}
+{"build":"webaudio-tinysynth.js","case":"reverb-master-gain","values":{"setReverbLev(0)":0,"setReverbLev(0.3)":2.4,"setReverbLev(1)":8,"setMasterVol(0.4)":0.4,"setMasterVol(0.5)":0.5,"setMasterVol(1)":1}}
+{"build":"webaudio-tinysynth.js","case":"w9999-coefficients","real":[0,0,0,0,0],"imag":[0,9,9,9,9]}
+{"build":"webaudio-tinysynth.js","case":"unknown-wave","error":"Cannot read properties of undefined (reading '_id')","mockNote":"the mock's setPeriodicWave reads w._id, so a browser error message will differ","notetabGrew":0}
+{"build":"webaudio-tinysynth.js","case":"quality-string","quality":"0","program0IsQuality1Timbre":true}
+{"build":"webaudio-tinysynth.min.js","case":"fm-frequency-basis","note":69,"carrierHz":880,"modulatorHz":2645,"cairoDocFormulaWouldGive":1325,"engineFormula":"fp[target]*t+f = 880*3+5 = 2645"}
+{"build":"webaudio-tinysynth.min.js","case":"am-route","connections":["osc#65->gain#66","gain#66->gain#64.gain"],"modulatorGainInitial":0.25,"note":"0.25 regardless of velocity 64"}
+{"build":"webaudio-tinysynth.min.js","case":"output-velocity","timbre":"v 0.5, k -1","levels":{"60/127":0.492218018,"60/64":0.125,"72/127":0.246109009},"expected":{"60/127":0.492218018,"60/64":0.125,"72/127":0.246109009}}
+{"build":"webaudio-tinysynth.min.js","case":"melodic-voice-end","releases":[0.1,2],"noteOffAt":2,"voiceEndTime":2.35,"expectedFromOp0":2.35,"op1WouldNeed":9}
+{"build":"webaudio-tinysynth.min.js","case":"drum-stop-time","stops":[["osc#63",1.7000000000000002],["src#65",1.7000000000000002],["osc#67",1]],"expected":"note 36: both operators stop at 1+0.2*3.5=1.7; note 38 (d=0): stop at 1 (start time)","drumVoicesInNotetab":0,"webAudioCallsMadeByNoteOff":0}
+{"build":"webaudio-tinysynth.min.js","case":"voices-limit","voices":2,"afterReleased60ThenNoteOn64":[62,64],"afterNoteOn65":[64,65],"melodicNotesAfterOneDrumHit":[65],"note":"drum hits are not stored in notetab but run _limitVoices, pruning melodic notes to voices-1"}
+{"build":"webaudio-tinysynth.min.js","case":"reverb-master-gain","values":{"setReverbLev(0)":0,"setReverbLev(0.3)":2.4,"setReverbLev(1)":8,"setMasterVol(0.4)":0.4,"setMasterVol(0.5)":0.5,"setMasterVol(1)":1}}
+{"build":"webaudio-tinysynth.min.js","case":"w9999-coefficients","real":[0,0,0,0,0],"imag":[0,9,9,9,9]}
+{"build":"webaudio-tinysynth.min.js","case":"unknown-wave","error":"Cannot read properties of undefined (reading '_id')","mockNote":"the mock's setPeriodicWave reads w._id, so a browser error message will differ","notetabGrew":0}
+{"build":"webaudio-tinysynth.min.js","case":"quality-string","quality":"0","program0IsQuality1Timbre":true}

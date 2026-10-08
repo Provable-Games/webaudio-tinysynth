@@ -19,6 +19,82 @@ Modifications by Provable Games, based on upstream commit
   - webaudio-tinysynth.js: added the loopEnd property and setLoopEnd()
     so a looping song can restart on a bar boundary instead of on its
     last event. With loopEnd unset (0) behavior is unchanged.
+  - webaudio-tinysynth.js: loadMIDI parses Standard MIDI Files with
+    bounded, validated reads. Malformed or unsupported input (format 2,
+    SMPTE or zero division, truncation) throws an Error with a code
+    (SMF_*) and keeps the previous song.
+  - webaudio-tinysynth.js: the sequencer handles at most 1000 events
+    per timer callback, and a looping song whose events all share one
+    tick ends after one pass instead of hanging. A song with no events
+    other than tempo stays stopped. locateMIDI() rebuilds the song's
+    tempo and channel state from the start without keeping earlier
+    overrides, and replaying a completed song restarts from its initial
+    tempo and channel state.
+  - webaudio-tinysynth.js: added resume(), dispose() and the constructor
+    options context, destination and lazy. dispose() stops and
+    disconnects every voice and node, clears the timers and closes only
+    a context the synth created; setAudioContext() tears down the
+    previous graph the same way. stopMIDI() now also stops drums and
+    queued controller changes (seeks too; loading a song keeps the
+    upstream calls). Ended voices are disconnected, send() no longer
+    leaves unhandled rejections, and on an OfflineAudioContext the
+    timer leaves scheduled notes alone and playMIDI() throws
+    AUDIO_CONTEXT_OFFLINE.
+  - webaudio-tinysynth.js: with loopEnd set, the first pass of a song
+    started from tick 0 keeps the rest before its first event, as later
+    passes already did, and getPlayStatus() has a startTime: the
+    AudioContext time at which tick 0 of the current pass sounds.
+  - webaudio-tinysynth.js: added setSampleWave() and setHarmonicWave(),
+    a registry of custom single-cycle and harmonic waveforms that
+    timbres reference by name. Sample tables are held to a home pitch
+    near 440 Hz and keep their own pitch basis; registered waves survive
+    setQuality() and context changes. setTimbre() rejects unknown wave
+    names.
+  - webaudio-tinysynth.js: added optional fixed operator filters (timbre
+    fields fl, ff, fq and fk): a BiquadFilterNode between an output
+    operator's gain and its channel, key-trackable and clamped below
+    Nyquist, released with its voice. setTimbre() rejects invalid filter
+    fields before any change.
+  - webaudio-tinysynth.js: the reverb impulse and the n0/n1 noise
+    buffers are generated from seeded mulberry32 streams (one per
+    buffer) instead of Math.random, with a fixed default seed of 0, a
+    seed constructor option and read-only seed and bufferVersion
+    properties. The generated reverb and noise texture differs from
+    upstream once and is then the same on every load.
+  - webaudio-tinysynth.js: public functions validate their arguments and
+    timbres before changing anything (TypeError/RangeError), setTimbre()
+    stores a validated copy instead of modifying the caller's objects,
+    malformed raw MIDI messages are ignored, and loadMIDIUrl() returns a
+    cancellable promise that rejects on HTTP, network and parse errors
+    and ignores stale responses.
+  - webaudio-tinysynth.js: a note whose computed AudioParam values are
+    outside the 32-bit float range is skipped instead of throwing part-way
+    through, setTimbre() bounds its time fields to that range, and
+    timestamp mode 1 clamps converted times at the current time.
+  - webaudio-tinysynth.js: a note released before an operator's attack
+    has ended now sounds: the operator follows its attack until the
+    note-off and is released from the level it reached, instead of
+    staying silent. Each operator's release starts from its own attack
+    level, not the last operator's, and a zero-length note plays the
+    release of its operators that have no attack.
+  - Demo pages (#19): the demos create their AudioContext only at the
+    first click, tap or key press and show whether audio is off,
+    blocked, on or refused; they report URL load errors by code; and
+    the soundedit.html timbre editor installs edits with setTimbre()
+    instead of changing the synth's timbre tables, and installs them
+    again after a quality change.
+  - webaudio-tinysynth.js: the metallic noise buffer n1 is generated
+    once per AudioContext installation, when it is first needed (by
+    playMIDI(), before it reads the clock; by the new prewarm(); or by
+    the first note that plays it) instead of at every install; the
+    reverb impulse is not generated when useReverb is 0 (convBuf is
+    null); and the constructor installs the built-in timbres once. The
+    generated data is unchanged for every seed. The first playMIDI()
+    per installation waits for the build (20-47 ms on a desktop) before
+    it sets the start, so the song starts slightly later and nothing
+    within it shifts. A live note sent before that starts after the
+    build with its full envelope (about 46 ms in Chromium); prewarm()
+    after resume() avoids that and removes only this deferred build.
   - webaudio-tinysynth.min.js and its source map are regenerated from
     the modified source.
   - Demo pages and README updated to use the JavaScript API; tests added.

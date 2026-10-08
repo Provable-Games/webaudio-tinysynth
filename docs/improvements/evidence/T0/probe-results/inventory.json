@@ -1,0 +1,2337 @@
+{
+  "header": {
+    "probe": "inventory",
+    "node": "v24.19.0",
+    "root": "/workspace/webaudio-tinysynth-worktrees/t0-baseline",
+    "commit": "b70ba90d63c5ea657cb67ca98de90d7f778c29bd"
+  },
+  "builds": {
+    "webaudio-tinysynth.js": {
+      "timbreHashes": {
+        "raw": {
+          "names": "f609e48dea7edf1995fd3570a1cd883757bd685f135ed461e7c603d38ad89c33",
+          "program0": "1a415930417d7e776f9279bea9538a1e8fed78c31d603971b8abf1abbc698bef",
+          "program1": "45a6f1e1d2185c64916fa875c2421500c40418a85b1959f3836d0158e6aab17a",
+          "drummap0": "b40b5263abb4456a31be11738a2f024e9139a0665fa5ae933c20bdd0f4ef5ac1",
+          "drummap1": "b3499964cfe31b2172b85920abb0bcebad78f718a72765c6029d0a8a7735db40",
+          "allTables": "a07b171ce95acbdb25033d29439e754530a991b90382ded1c1ef1edbb4463262",
+          "namesAndTables": "dc242fca112be045fd9c68bced81c80495d36f4eb3c2e99c1756cb3a3fb5143a"
+        },
+        "filled": {
+          "program0": "1fae3dbf59baeefe79e20f80ae45491754344ea47b759618409f32d0906a70b3",
+          "program1": "e3b3c66452531bfb0a7f20001e984ad465c1831e10fd776c17e8bdb1580599b9",
+          "drummap0": "42216535aed4bc2a1f7b145cf721c6f2fc7f8068960cd51abec67e8e65555a4c",
+          "drummap1": "4ffa1983bad936377ca7070433d020322ea8a29cd3a1892a5372f3dc86c09ca4",
+          "allTables": "4ae64b36a042a727364c99ce33051b3c9989685ebb1ff33bc3d063bd36eb4350"
+        },
+        "installed": {
+          "quality1": "d5c6ee6d1ecf8b81f90b674846527ca63ce99dd058a99c3a10fedf62ee5b3e62",
+          "quality0": "b73aee9babae15bda95d36cc8f9997b9952fea0342b77733b442e78cd5b533a2"
+        }
+      },
+      "surface": {
+        "prototypeOwnNames": [
+          "constructor"
+        ],
+        "staticOwnNames": [
+          "length",
+          "name",
+          "prototype"
+        ],
+        "methods": {
+          "_createWave": {
+            "arity": 1,
+            "arrow": true,
+            "private": true,
+            "documentedInReadme": false,
+            "mentionedInReadme": false
+          },
+          "_limitVoices": {
+            "arity": 2,
+            "arrow": true,
+            "private": true,
+            "documentedInReadme": false,
+            "mentionedInReadme": false
+          },
+          "_note": {
+            "arity": 5,
+            "arrow": true,
+            "private": true,
+            "documentedInReadme": false,
+            "mentionedInReadme": false
+          },
+          "_pruneNote": {
+            "arity": 1,
+            "arrow": true,
+            "private": true,
+            "documentedInReadme": false,
+            "mentionedInReadme": false
+          },
+          "_releaseNote": {
+            "arity": 2,
+            "arrow": true,
+            "private": true,
+            "documentedInReadme": false,
+            "mentionedInReadme": false
+          },
+          "_setParamTarget": {
+            "arity": 4,
+            "arrow": true,
+            "private": true,
+            "documentedInReadme": false,
+            "mentionedInReadme": false
+          },
+          "_tsConv": {
+            "arity": 1,
+            "arrow": true,
+            "private": true,
+            "documentedInReadme": false,
+            "mentionedInReadme": false
+          },
+          "allSoundOff": {
+            "arity": 1,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "getAudioContext": {
+            "arity": 0,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "getPlayStatus": {
+            "arity": 0,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "getTimbreName": {
+            "arity": 2,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "init": {
+            "arity": 0,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": false,
+            "mentionedInReadme": false
+          },
+          "loadMIDI": {
+            "arity": 1,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "loadMIDIUrl": {
+            "arity": 1,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "loadMIDIfromSrc": {
+            "arity": 0,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": false,
+            "mentionedInReadme": false
+          },
+          "locateMIDI": {
+            "arity": 1,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "noteOff": {
+            "arity": 3,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "noteOn": {
+            "arity": 4,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "playMIDI": {
+            "arity": 0,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "ready": {
+            "arity": 0,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": false,
+            "mentionedInReadme": true
+          },
+          "reset": {
+            "arity": 0,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "resetAllControllers": {
+            "arity": 1,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "send": {
+            "arity": 2,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "setAudioContext": {
+            "arity": 2,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "setBend": {
+            "arity": 3,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "setBendRange": {
+            "arity": 2,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "setChVol": {
+            "arity": 3,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "setExpression": {
+            "arity": 3,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "setLoop": {
+            "arity": 1,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "setLoopEnd": {
+            "arity": 1,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "setMasterVol": {
+            "arity": 1,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "setModulation": {
+            "arity": 3,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "setPan": {
+            "arity": 3,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "setProgram": {
+            "arity": 2,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "setQuality": {
+            "arity": 1,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "setReverbLev": {
+            "arity": 1,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "setSustain": {
+            "arity": 3,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "setTimbre": {
+            "arity": 3,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "setTsMode": {
+            "arity": 1,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "setVoices": {
+            "arity": 1,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "stopMIDI": {
+            "arity": 0,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          }
+        },
+        "properties": {
+          "masterVol": {
+            "type": "Number",
+            "default": 0.5,
+            "observer": "setMasterVol",
+            "valueAfterConstruction": 0.5
+          },
+          "reverbLev": {
+            "type": "Number",
+            "default": 0.3,
+            "observer": "setReverbLev",
+            "valueAfterConstruction": 0.3
+          },
+          "quality": {
+            "type": "Number",
+            "default": 1,
+            "observer": "setQuality",
+            "valueAfterConstruction": 1
+          },
+          "debug": {
+            "type": "Number",
+            "default": 0,
+            "observer": null,
+            "valueAfterConstruction": 0
+          },
+          "src": {
+            "type": "String",
+            "default": null,
+            "observer": "loadMIDIfromSrc",
+            "valueAfterConstruction": null
+          },
+          "loop": {
+            "type": "Number",
+            "default": 0,
+            "observer": null,
+            "valueAfterConstruction": 0
+          },
+          "loopEnd": {
+            "type": "Number",
+            "default": 0,
+            "observer": null,
+            "valueAfterConstruction": 0
+          },
+          "internalcontext": {
+            "type": "Number",
+            "default": 1,
+            "observer": null,
+            "valueAfterConstruction": 1
+          },
+          "tsmode": {
+            "type": "Number",
+            "default": 0,
+            "observer": null,
+            "valueAfterConstruction": 0
+          },
+          "voices": {
+            "type": "Number",
+            "default": 64,
+            "observer": null,
+            "valueAfterConstruction": 64
+          },
+          "useReverb": {
+            "type": "Number",
+            "default": 1,
+            "observer": null,
+            "valueAfterConstruction": 1
+          }
+        },
+        "dataFields": {
+          "actx": {
+            "type": "object",
+            "keys": [
+              "sampleRate",
+              "state",
+              "destination"
+            ]
+          },
+          "audioContext": {
+            "type": "object",
+            "keys": [
+              "sampleRate",
+              "state",
+              "destination"
+            ]
+          },
+          "bend": {
+            "type": "array",
+            "length": 16
+          },
+          "brange": {
+            "type": "array",
+            "length": 16
+          },
+          "chmod": {
+            "type": "array",
+            "length": 16
+          },
+          "chpan": {
+            "type": "array",
+            "length": 16
+          },
+          "chvol": {
+            "type": "array",
+            "length": 16
+          },
+          "comp": {
+            "type": "mock comp"
+          },
+          "conv": {
+            "type": "mock conv"
+          },
+          "convBuf": {
+            "type": "mock buf"
+          },
+          "debug": {
+            "type": "number",
+            "value": 0
+          },
+          "dest": {
+            "type": "mock destination"
+          },
+          "drummap": {
+            "type": "array",
+            "length": 47
+          },
+          "drummap0": {
+            "type": "array",
+            "length": 47
+          },
+          "drummap1": {
+            "type": "array",
+            "length": 47
+          },
+          "ex": {
+            "type": "array",
+            "length": 16
+          },
+          "internalcontext": {
+            "type": "number",
+            "value": 1
+          },
+          "isReady": {
+            "type": "number",
+            "value": 1
+          },
+          "lfo": {
+            "type": "mock osc"
+          },
+          "loop": {
+            "type": "number",
+            "value": 0
+          },
+          "loopEnd": {
+            "type": "number",
+            "value": 0
+          },
+          "masterTuningC": {
+            "type": "number",
+            "value": 0
+          },
+          "masterTuningF": {
+            "type": "number",
+            "value": 0
+          },
+          "masterVol": {
+            "type": "number",
+            "value": 0.5
+          },
+          "maxTick": {
+            "type": "number",
+            "value": 0
+          },
+          "noiseBuf": {
+            "type": "object",
+            "keys": [
+              "n0",
+              "n1"
+            ]
+          },
+          "notetab": {
+            "type": "array",
+            "length": 1
+          },
+          "out": {
+            "type": "mock gain"
+          },
+          "pg": {
+            "type": "array",
+            "length": 16
+          },
+          "playTick": {
+            "type": "number",
+            "value": 0
+          },
+          "playing": {
+            "type": "number",
+            "value": 0
+          },
+          "preroll": {
+            "type": "number",
+            "value": 0.2
+          },
+          "program": {
+            "type": "array",
+            "length": 128
+          },
+          "program0": {
+            "type": "array",
+            "length": 128
+          },
+          "program1": {
+            "type": "array",
+            "length": 128
+          },
+          "properties": {
+            "type": "object",
+            "keys": [
+              "masterVol",
+              "reverbLev",
+              "quality",
+              "debug",
+              "src",
+              "loop",
+              "loopEnd",
+              "internalcontext",
+              "tsmode",
+              "voices",
+              "useReverb"
+            ]
+          },
+          "quality": {
+            "type": "number",
+            "value": 1
+          },
+          "relcnt": {
+            "type": "number",
+            "value": 0
+          },
+          "releaseRatio": {
+            "type": "number",
+            "value": 3.5
+          },
+          "rev": {
+            "type": "mock gain"
+          },
+          "reverbLev": {
+            "type": "number",
+            "value": 0.3
+          },
+          "rhythm": {
+            "type": "array",
+            "length": 16
+          },
+          "rpnidx": {
+            "type": "array",
+            "length": 16
+          },
+          "scaleTuning": {
+            "type": "array",
+            "length": 16
+          },
+          "src": {
+            "type": "null"
+          },
+          "sustain": {
+            "type": "array",
+            "length": 16
+          },
+          "tsdiff": {
+            "type": "number",
+            "value": 0
+          },
+          "tsmode": {
+            "type": "number",
+            "value": 0
+          },
+          "tuningC": {
+            "type": "array",
+            "length": 16
+          },
+          "tuningF": {
+            "type": "array",
+            "length": 16
+          },
+          "useReverb": {
+            "type": "number",
+            "value": 1
+          },
+          "voices": {
+            "type": "number",
+            "value": 64
+          },
+          "vol": {
+            "type": "array",
+            "length": 16
+          },
+          "wave": {
+            "type": "object",
+            "keys": [
+              "w9999"
+            ]
+          }
+        },
+        "effectiveAudioParams": {
+          "out.gain (masterVol)": 0.5,
+          "rev.gain (reverbLev*8)": 2.4,
+          "chvol[0].gain": 1.86000372000744,
+          "vol[0]": 1.86000372000744,
+          "brange[0]": 256,
+          "bend[0]": 0,
+          "pg[0]": 0,
+          "rhythm (channels)": [
+            9
+          ],
+          "lfo.frequency": 5,
+          "releaseRatio": 3.5,
+          "preroll": 0.2
+        },
+        "intervalsAfterConstruction": 1,
+        "nodesCreatedByConstructor": {
+          "default": {
+            "destination": 1,
+            "gain": 36,
+            "comp": 1,
+            "buffer": 3,
+            "conv": 1,
+            "periodicWave": 1,
+            "osc": 3,
+            "pan": 16
+          },
+          "useReverb0": {
+            "destination": 1,
+            "gain": 35,
+            "comp": 1,
+            "buffer": 3,
+            "periodicWave": 1,
+            "osc": 3,
+            "pan": 16
+          }
+        },
+        "rendersOnConstruction": 3
+      },
+      "detached": {
+        "noteOn(0,60,100) detached": {
+          "ok": true,
+          "notetabGrewBy": 1,
+          "noteCalls": 1
+        },
+        "noteOff(0,60) detached": {
+          "ok": true,
+          "releasedFlag": 1
+        },
+        "send([0x91,64,90]) detached": {
+          "ok": true,
+          "noteCalls": 2
+        },
+        "setProgram(2,5) detached": {
+          "ok": true
+        },
+        "setMasterVol(0.25) detached": {
+          "ok": true
+        },
+        "setQuality(0) detached": {
+          "ok": true
+        },
+        "getTimbreName(1,35) detached": {
+          "ok": true,
+          "value": "Acoustic Bass Drum"
+        },
+        "loadMIDI/playMIDI/getPlayStatus/stopMIDI detached": {
+          "ok": true,
+          "statusWhilePlaying": {
+            "play": 1,
+            "maxTick": 480,
+            "curTick": 0
+          }
+        },
+        "setTimbre(0,3,p) detached": {
+          "ok": true
+        },
+        "ready() resolves after stepping 200 ms of mock time": {
+          "ok": true
+        }
+      },
+      "quality": {
+        "afterConstruction": {
+          "quality": 1,
+          "programsFromProgram1": 128,
+          "drumsFromDrummap1": 25,
+          "drumsFromDrummap0": 22
+        },
+        "afterSetQuality0": {
+          "quality": 0,
+          "programsFromProgram0": 128,
+          "drumsFromDrummap0": 47
+        },
+        "setTimbreKeepsCallerArray": true,
+        "setTimbreFillsDefaultsIntoCallerObject": [
+          "a",
+          "d",
+          "f",
+          "g",
+          "h",
+          "k",
+          "p",
+          "q",
+          "r",
+          "s",
+          "t",
+          "v",
+          "w"
+        ],
+        "afterSetQuality1_customProgram5Kept": false,
+        "afterSetQuality1_customDrum40Kept": false,
+        "afterSetQuality0_customProgram5Kept": false,
+        "setQuality('0') installs": {
+          "quality": "0",
+          "program0IsProgram1": true
+        },
+        "setQuality(2) installs": {
+          "quality": 2,
+          "program0IsProgram1": true
+        },
+        "outOfRangeSetTimbreIsNoOp": true
+      },
+      "exports": {
+        "global": {
+          "type": "function"
+        },
+        "amd": {
+          "defineCalls": 1,
+          "factoryReturns": "function",
+          "globalAlsoSet": "undefined",
+          "constructed": true
+        },
+        "commonjs": {
+          "exportType": "function",
+          "sameAsName": "WebAudioTinySynth",
+          "globalLeak": "undefined",
+          "constructed": true
+        },
+        "thisUndefinedWithModuleExports": {
+          "load": "ok",
+          "construct": "threw: Cannot read properties of undefined (reading 'AudioContext')"
+        },
+        "thisUndefinedNoModule": {
+          "load": "threw: Cannot set properties of undefined (setting 'WebAudioTinySynth')",
+          "construct": null
+        }
+      }
+    },
+    "webaudio-tinysynth.min.js": {
+      "timbreHashes": {
+        "raw": {
+          "names": "f609e48dea7edf1995fd3570a1cd883757bd685f135ed461e7c603d38ad89c33",
+          "program0": "1a415930417d7e776f9279bea9538a1e8fed78c31d603971b8abf1abbc698bef",
+          "program1": "45a6f1e1d2185c64916fa875c2421500c40418a85b1959f3836d0158e6aab17a",
+          "drummap0": "b40b5263abb4456a31be11738a2f024e9139a0665fa5ae933c20bdd0f4ef5ac1",
+          "drummap1": "b3499964cfe31b2172b85920abb0bcebad78f718a72765c6029d0a8a7735db40",
+          "allTables": "a07b171ce95acbdb25033d29439e754530a991b90382ded1c1ef1edbb4463262",
+          "namesAndTables": "dc242fca112be045fd9c68bced81c80495d36f4eb3c2e99c1756cb3a3fb5143a"
+        },
+        "filled": {
+          "program0": "1fae3dbf59baeefe79e20f80ae45491754344ea47b759618409f32d0906a70b3",
+          "program1": "e3b3c66452531bfb0a7f20001e984ad465c1831e10fd776c17e8bdb1580599b9",
+          "drummap0": "42216535aed4bc2a1f7b145cf721c6f2fc7f8068960cd51abec67e8e65555a4c",
+          "drummap1": "4ffa1983bad936377ca7070433d020322ea8a29cd3a1892a5372f3dc86c09ca4",
+          "allTables": "4ae64b36a042a727364c99ce33051b3c9989685ebb1ff33bc3d063bd36eb4350"
+        },
+        "installed": {
+          "quality1": "d5c6ee6d1ecf8b81f90b674846527ca63ce99dd058a99c3a10fedf62ee5b3e62",
+          "quality0": "b73aee9babae15bda95d36cc8f9997b9952fea0342b77733b442e78cd5b533a2"
+        }
+      },
+      "surface": {
+        "prototypeOwnNames": [
+          "constructor"
+        ],
+        "staticOwnNames": [
+          "length",
+          "name",
+          "prototype"
+        ],
+        "methods": {
+          "_createWave": {
+            "arity": 1,
+            "arrow": true,
+            "private": true,
+            "documentedInReadme": false,
+            "mentionedInReadme": false
+          },
+          "_limitVoices": {
+            "arity": 2,
+            "arrow": true,
+            "private": true,
+            "documentedInReadme": false,
+            "mentionedInReadme": false
+          },
+          "_note": {
+            "arity": 5,
+            "arrow": true,
+            "private": true,
+            "documentedInReadme": false,
+            "mentionedInReadme": false
+          },
+          "_pruneNote": {
+            "arity": 1,
+            "arrow": true,
+            "private": true,
+            "documentedInReadme": false,
+            "mentionedInReadme": false
+          },
+          "_releaseNote": {
+            "arity": 2,
+            "arrow": true,
+            "private": true,
+            "documentedInReadme": false,
+            "mentionedInReadme": false
+          },
+          "_setParamTarget": {
+            "arity": 4,
+            "arrow": true,
+            "private": true,
+            "documentedInReadme": false,
+            "mentionedInReadme": false
+          },
+          "_tsConv": {
+            "arity": 1,
+            "arrow": true,
+            "private": true,
+            "documentedInReadme": false,
+            "mentionedInReadme": false
+          },
+          "allSoundOff": {
+            "arity": 1,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "getAudioContext": {
+            "arity": 0,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "getPlayStatus": {
+            "arity": 0,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "getTimbreName": {
+            "arity": 2,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "init": {
+            "arity": 0,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": false,
+            "mentionedInReadme": false
+          },
+          "loadMIDI": {
+            "arity": 1,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "loadMIDIUrl": {
+            "arity": 1,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "loadMIDIfromSrc": {
+            "arity": 0,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": false,
+            "mentionedInReadme": false
+          },
+          "locateMIDI": {
+            "arity": 1,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "noteOff": {
+            "arity": 3,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "noteOn": {
+            "arity": 4,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "playMIDI": {
+            "arity": 0,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "ready": {
+            "arity": 0,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": false,
+            "mentionedInReadme": true
+          },
+          "reset": {
+            "arity": 0,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "resetAllControllers": {
+            "arity": 1,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "send": {
+            "arity": 2,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "setAudioContext": {
+            "arity": 2,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "setBend": {
+            "arity": 3,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "setBendRange": {
+            "arity": 2,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "setChVol": {
+            "arity": 3,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "setExpression": {
+            "arity": 3,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "setLoop": {
+            "arity": 1,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "setLoopEnd": {
+            "arity": 1,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "setMasterVol": {
+            "arity": 1,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "setModulation": {
+            "arity": 3,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "setPan": {
+            "arity": 3,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "setProgram": {
+            "arity": 2,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "setQuality": {
+            "arity": 1,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "setReverbLev": {
+            "arity": 1,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "setSustain": {
+            "arity": 3,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "setTimbre": {
+            "arity": 3,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "setTsMode": {
+            "arity": 1,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "setVoices": {
+            "arity": 1,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          },
+          "stopMIDI": {
+            "arity": 0,
+            "arrow": true,
+            "private": false,
+            "documentedInReadme": true,
+            "mentionedInReadme": true
+          }
+        },
+        "properties": {
+          "masterVol": {
+            "type": "Number",
+            "default": 0.5,
+            "observer": "setMasterVol",
+            "valueAfterConstruction": 0.5
+          },
+          "reverbLev": {
+            "type": "Number",
+            "default": 0.3,
+            "observer": "setReverbLev",
+            "valueAfterConstruction": 0.3
+          },
+          "quality": {
+            "type": "Number",
+            "default": 1,
+            "observer": "setQuality",
+            "valueAfterConstruction": 1
+          },
+          "debug": {
+            "type": "Number",
+            "default": 0,
+            "observer": null,
+            "valueAfterConstruction": 0
+          },
+          "src": {
+            "type": "String",
+            "default": null,
+            "observer": "loadMIDIfromSrc",
+            "valueAfterConstruction": null
+          },
+          "loop": {
+            "type": "Number",
+            "default": 0,
+            "observer": null,
+            "valueAfterConstruction": 0
+          },
+          "loopEnd": {
+            "type": "Number",
+            "default": 0,
+            "observer": null,
+            "valueAfterConstruction": 0
+          },
+          "internalcontext": {
+            "type": "Number",
+            "default": 1,
+            "observer": null,
+            "valueAfterConstruction": 1
+          },
+          "tsmode": {
+            "type": "Number",
+            "default": 0,
+            "observer": null,
+            "valueAfterConstruction": 0
+          },
+          "voices": {
+            "type": "Number",
+            "default": 64,
+            "observer": null,
+            "valueAfterConstruction": 64
+          },
+          "useReverb": {
+            "type": "Number",
+            "default": 1,
+            "observer": null,
+            "valueAfterConstruction": 1
+          }
+        },
+        "dataFields": {
+          "actx": {
+            "type": "object",
+            "keys": [
+              "sampleRate",
+              "state",
+              "destination"
+            ]
+          },
+          "audioContext": {
+            "type": "object",
+            "keys": [
+              "sampleRate",
+              "state",
+              "destination"
+            ]
+          },
+          "bend": {
+            "type": "array",
+            "length": 16
+          },
+          "brange": {
+            "type": "array",
+            "length": 16
+          },
+          "chmod": {
+            "type": "array",
+            "length": 16
+          },
+          "chpan": {
+            "type": "array",
+            "length": 16
+          },
+          "chvol": {
+            "type": "array",
+            "length": 16
+          },
+          "comp": {
+            "type": "mock comp"
+          },
+          "conv": {
+            "type": "mock conv"
+          },
+          "convBuf": {
+            "type": "mock buf"
+          },
+          "debug": {
+            "type": "number",
+            "value": 0
+          },
+          "dest": {
+            "type": "mock destination"
+          },
+          "drummap": {
+            "type": "array",
+            "length": 47
+          },
+          "drummap0": {
+            "type": "array",
+            "length": 47
+          },
+          "drummap1": {
+            "type": "array",
+            "length": 47
+          },
+          "ex": {
+            "type": "array",
+            "length": 16
+          },
+          "internalcontext": {
+            "type": "number",
+            "value": 1
+          },
+          "isReady": {
+            "type": "number",
+            "value": 1
+          },
+          "lfo": {
+            "type": "mock osc"
+          },
+          "loop": {
+            "type": "number",
+            "value": 0
+          },
+          "loopEnd": {
+            "type": "number",
+            "value": 0
+          },
+          "masterTuningC": {
+            "type": "number",
+            "value": 0
+          },
+          "masterTuningF": {
+            "type": "number",
+            "value": 0
+          },
+          "masterVol": {
+            "type": "number",
+            "value": 0.5
+          },
+          "maxTick": {
+            "type": "number",
+            "value": 0
+          },
+          "noiseBuf": {
+            "type": "object",
+            "keys": [
+              "n0",
+              "n1"
+            ]
+          },
+          "notetab": {
+            "type": "array",
+            "length": 1
+          },
+          "out": {
+            "type": "mock gain"
+          },
+          "pg": {
+            "type": "array",
+            "length": 16
+          },
+          "playTick": {
+            "type": "number",
+            "value": 0
+          },
+          "playing": {
+            "type": "number",
+            "value": 0
+          },
+          "preroll": {
+            "type": "number",
+            "value": 0.2
+          },
+          "program": {
+            "type": "array",
+            "length": 128
+          },
+          "program0": {
+            "type": "array",
+            "length": 128
+          },
+          "program1": {
+            "type": "array",
+            "length": 128
+          },
+          "properties": {
+            "type": "object",
+            "keys": [
+              "masterVol",
+              "reverbLev",
+              "quality",
+              "debug",
+              "src",
+              "loop",
+              "loopEnd",
+              "internalcontext",
+              "tsmode",
+              "voices",
+              "useReverb"
+            ]
+          },
+          "quality": {
+            "type": "number",
+            "value": 1
+          },
+          "relcnt": {
+            "type": "number",
+            "value": 0
+          },
+          "releaseRatio": {
+            "type": "number",
+            "value": 3.5
+          },
+          "rev": {
+            "type": "mock gain"
+          },
+          "reverbLev": {
+            "type": "number",
+            "value": 0.3
+          },
+          "rhythm": {
+            "type": "array",
+            "length": 16
+          },
+          "rpnidx": {
+            "type": "array",
+            "length": 16
+          },
+          "scaleTuning": {
+            "type": "array",
+            "length": 16
+          },
+          "src": {
+            "type": "null"
+          },
+          "sustain": {
+            "type": "array",
+            "length": 16
+          },
+          "tsdiff": {
+            "type": "number",
+            "value": 0
+          },
+          "tsmode": {
+            "type": "number",
+            "value": 0
+          },
+          "tuningC": {
+            "type": "array",
+            "length": 16
+          },
+          "tuningF": {
+            "type": "array",
+            "length": 16
+          },
+          "useReverb": {
+            "type": "number",
+            "value": 1
+          },
+          "voices": {
+            "type": "number",
+            "value": 64
+          },
+          "vol": {
+            "type": "array",
+            "length": 16
+          },
+          "wave": {
+            "type": "object",
+            "keys": [
+              "w9999"
+            ]
+          }
+        },
+        "effectiveAudioParams": {
+          "out.gain (masterVol)": 0.5,
+          "rev.gain (reverbLev*8)": 2.4,
+          "chvol[0].gain": 1.86000372000744,
+          "vol[0]": 1.86000372000744,
+          "brange[0]": 256,
+          "bend[0]": 0,
+          "pg[0]": 0,
+          "rhythm (channels)": [
+            9
+          ],
+          "lfo.frequency": 5,
+          "releaseRatio": 3.5,
+          "preroll": 0.2
+        },
+        "intervalsAfterConstruction": 1,
+        "nodesCreatedByConstructor": {
+          "default": {
+            "destination": 1,
+            "gain": 36,
+            "comp": 1,
+            "buffer": 3,
+            "conv": 1,
+            "periodicWave": 1,
+            "osc": 3,
+            "pan": 16
+          },
+          "useReverb0": {
+            "destination": 1,
+            "gain": 35,
+            "comp": 1,
+            "buffer": 3,
+            "periodicWave": 1,
+            "osc": 3,
+            "pan": 16
+          }
+        },
+        "rendersOnConstruction": 3
+      },
+      "detached": {
+        "noteOn(0,60,100) detached": {
+          "ok": true,
+          "notetabGrewBy": 1,
+          "noteCalls": 1
+        },
+        "noteOff(0,60) detached": {
+          "ok": true,
+          "releasedFlag": 1
+        },
+        "send([0x91,64,90]) detached": {
+          "ok": true,
+          "noteCalls": 2
+        },
+        "setProgram(2,5) detached": {
+          "ok": true
+        },
+        "setMasterVol(0.25) detached": {
+          "ok": true
+        },
+        "setQuality(0) detached": {
+          "ok": true
+        },
+        "getTimbreName(1,35) detached": {
+          "ok": true,
+          "value": "Acoustic Bass Drum"
+        },
+        "loadMIDI/playMIDI/getPlayStatus/stopMIDI detached": {
+          "ok": true,
+          "statusWhilePlaying": {
+            "play": 1,
+            "maxTick": 480,
+            "curTick": 0
+          }
+        },
+        "setTimbre(0,3,p) detached": {
+          "ok": true
+        },
+        "ready() resolves after stepping 200 ms of mock time": {
+          "ok": true
+        }
+      },
+      "quality": {
+        "afterConstruction": {
+          "quality": 1,
+          "programsFromProgram1": 128,
+          "drumsFromDrummap1": 25,
+          "drumsFromDrummap0": 22
+        },
+        "afterSetQuality0": {
+          "quality": 0,
+          "programsFromProgram0": 128,
+          "drumsFromDrummap0": 47
+        },
+        "setTimbreKeepsCallerArray": true,
+        "setTimbreFillsDefaultsIntoCallerObject": [
+          "a",
+          "d",
+          "f",
+          "g",
+          "h",
+          "k",
+          "p",
+          "q",
+          "r",
+          "s",
+          "t",
+          "v",
+          "w"
+        ],
+        "afterSetQuality1_customProgram5Kept": false,
+        "afterSetQuality1_customDrum40Kept": false,
+        "afterSetQuality0_customProgram5Kept": false,
+        "setQuality('0') installs": {
+          "quality": "0",
+          "program0IsProgram1": true
+        },
+        "setQuality(2) installs": {
+          "quality": 2,
+          "program0IsProgram1": true
+        },
+        "outOfRangeSetTimbreIsNoOp": true
+      },
+      "exports": {
+        "global": {
+          "type": "function"
+        },
+        "amd": {
+          "defineCalls": 1,
+          "factoryReturns": "function",
+          "globalAlsoSet": "undefined",
+          "constructed": true
+        },
+        "commonjs": {
+          "exportType": "function",
+          "sameAsName": "WebAudioTinySynth",
+          "globalLeak": "undefined",
+          "constructed": true
+        },
+        "thisUndefinedWithModuleExports": {
+          "load": "ok",
+          "construct": "threw: Cannot read properties of undefined (reading 'AudioContext')"
+        },
+        "thisUndefinedNoModule": {
+          "load": "threw: Cannot set properties of undefined (setting 'WebAudioTinySynth')",
+          "construct": null
+        }
+      }
+    }
+  },
+  "timbreStatsRaw": {
+    "perTable": {
+      "program0": {
+        "length": 128,
+        "timbres": 128,
+        "nulls": 0,
+        "operators": 128,
+        "maxOperatorsPerTimbre": 1
+      },
+      "program1": {
+        "length": 128,
+        "timbres": 128,
+        "nulls": 0,
+        "operators": 259,
+        "maxOperatorsPerTimbre": 4
+      },
+      "drummap0": {
+        "length": 47,
+        "timbres": 47,
+        "nulls": 0,
+        "operators": 47,
+        "maxOperatorsPerTimbre": 1
+      },
+      "drummap1": {
+        "length": 47,
+        "timbres": 25,
+        "nulls": 22,
+        "operators": 50,
+        "maxOperatorsPerTimbre": 3
+      }
+    },
+    "maxOperatorsPerTimbre": 4,
+    "fields": {
+      "v": {
+        "min": 0.003,
+        "max": 42,
+        "count": 460
+      },
+      "d": {
+        "min": 0,
+        "max": 12,
+        "count": 414
+      },
+      "r": {
+        "min": 0,
+        "max": 11,
+        "count": 170
+      },
+      "a": {
+        "min": 0.005,
+        "max": 1,
+        "count": 149
+      },
+      "s": {
+        "min": 0.002,
+        "max": 50,
+        "count": 204
+      },
+      "h": {
+        "min": 0,
+        "max": 1,
+        "count": 68
+      },
+      "p": {
+        "min": 0,
+        "max": 1.25,
+        "count": 52
+      },
+      "t": {
+        "min": 0,
+        "max": 12.5,
+        "count": 210
+      },
+      "f": {
+        "min": -2,
+        "max": 2876,
+        "count": 161
+      },
+      "g": {
+        "min": 1,
+        "max": 11,
+        "count": 137
+      },
+      "k": {
+        "min": -1.2,
+        "max": -0.7,
+        "count": 6
+      },
+      "b": {
+        "min": 0,
+        "max": 0,
+        "count": 5
+      },
+      "c": {
+        "min": 0,
+        "max": 0,
+        "count": 7
+      },
+      "q": {
+        "min": 0.1,
+        "max": 0.5,
+        "count": 6
+      }
+    },
+    "wCounts": {
+      "triangle": 92,
+      "sawtooth": 61,
+      "sine": 148,
+      "square": 107,
+      "n1": 14,
+      "n0": 53,
+      "w9999": 9
+    },
+    "gCounts": {
+      "1": 135,
+      "3": 1,
+      "11": 1
+    },
+    "unknownKeys": {
+      "b": 5,
+      "c": 7
+    },
+    "notRepresentableAt1e4": []
+  },
+  "timbreStatsFilled": {
+    "perTable": {
+      "program0": {
+        "length": 128,
+        "timbres": 128,
+        "nulls": 0,
+        "operators": 128,
+        "maxOperatorsPerTimbre": 1
+      },
+      "program1": {
+        "length": 128,
+        "timbres": 128,
+        "nulls": 0,
+        "operators": 259,
+        "maxOperatorsPerTimbre": 4
+      },
+      "drummap0": {
+        "length": 47,
+        "timbres": 47,
+        "nulls": 0,
+        "operators": 47,
+        "maxOperatorsPerTimbre": 1
+      },
+      "drummap1": {
+        "length": 47,
+        "timbres": 25,
+        "nulls": 22,
+        "operators": 50,
+        "maxOperatorsPerTimbre": 3
+      }
+    },
+    "maxOperatorsPerTimbre": 4,
+    "fields": {
+      "v": {
+        "min": 0.003,
+        "max": 42,
+        "count": 484
+      },
+      "d": {
+        "min": 0,
+        "max": 12,
+        "count": 484
+      },
+      "g": {
+        "min": 0,
+        "max": 11,
+        "count": 484
+      },
+      "t": {
+        "min": 0,
+        "max": 12.5,
+        "count": 484
+      },
+      "f": {
+        "min": -2,
+        "max": 2876,
+        "count": 484
+      },
+      "a": {
+        "min": 0,
+        "max": 1,
+        "count": 484
+      },
+      "h": {
+        "min": 0,
+        "max": 1,
+        "count": 484
+      },
+      "s": {
+        "min": 0,
+        "max": 50,
+        "count": 484
+      },
+      "r": {
+        "min": 0,
+        "max": 11,
+        "count": 484
+      },
+      "p": {
+        "min": 0,
+        "max": 1.25,
+        "count": 484
+      },
+      "q": {
+        "min": 0.1,
+        "max": 1,
+        "count": 484
+      },
+      "k": {
+        "min": -1.2,
+        "max": 0,
+        "count": 484
+      },
+      "b": {
+        "min": 0,
+        "max": 0,
+        "count": 5
+      },
+      "c": {
+        "min": 0,
+        "max": 0,
+        "count": 7
+      }
+    },
+    "wCounts": {
+      "triangle": 92,
+      "sawtooth": 61,
+      "sine": 148,
+      "square": 107,
+      "n1": 14,
+      "n0": 53,
+      "w9999": 9
+    },
+    "gCounts": {
+      "0": 347,
+      "1": 135,
+      "3": 1,
+      "11": 1
+    },
+    "unknownKeys": {
+      "b": 5,
+      "c": 7
+    },
+    "notRepresentableAt1e4": []
+  },
+  "builtinValuesOutsideConsumerRanges": [
+    {
+      "table": "program0",
+      "index": 84,
+      "op": 0,
+      "field": "d",
+      "value": 12,
+      "range": [
+        0,
+        10
+      ]
+    },
+    {
+      "table": "program0",
+      "index": 85,
+      "op": 0,
+      "field": "d",
+      "value": 12,
+      "range": [
+        0,
+        10
+      ]
+    },
+    {
+      "table": "program0",
+      "index": 86,
+      "op": 0,
+      "field": "d",
+      "value": 12,
+      "range": [
+        0,
+        10
+      ]
+    },
+    {
+      "table": "program0",
+      "index": 87,
+      "op": 0,
+      "field": "d",
+      "value": 12,
+      "range": [
+        0,
+        10
+      ]
+    },
+    {
+      "table": "program0",
+      "index": 88,
+      "op": 0,
+      "field": "d",
+      "value": 12,
+      "range": [
+        0,
+        10
+      ]
+    },
+    {
+      "table": "program0",
+      "index": 89,
+      "op": 0,
+      "field": "d",
+      "value": 12,
+      "range": [
+        0,
+        10
+      ]
+    },
+    {
+      "table": "program0",
+      "index": 90,
+      "op": 0,
+      "field": "d",
+      "value": 12,
+      "range": [
+        0,
+        10
+      ]
+    },
+    {
+      "table": "program0",
+      "index": 91,
+      "op": 0,
+      "field": "d",
+      "value": 11,
+      "range": [
+        0,
+        10
+      ]
+    },
+    {
+      "table": "program0",
+      "index": 92,
+      "op": 0,
+      "field": "d",
+      "value": 11,
+      "range": [
+        0,
+        10
+      ]
+    },
+    {
+      "table": "program0",
+      "index": 93,
+      "op": 0,
+      "field": "d",
+      "value": 11,
+      "range": [
+        0,
+        10
+      ]
+    },
+    {
+      "table": "program0",
+      "index": 94,
+      "op": 0,
+      "field": "d",
+      "value": 11,
+      "range": [
+        0,
+        10
+      ]
+    },
+    {
+      "table": "program0",
+      "index": 95,
+      "op": 0,
+      "field": "d",
+      "value": 11,
+      "range": [
+        0,
+        10
+      ]
+    },
+    {
+      "table": "program0",
+      "index": 96,
+      "op": 0,
+      "field": "d",
+      "value": 11,
+      "range": [
+        0,
+        10
+      ]
+    },
+    {
+      "table": "program0",
+      "index": 97,
+      "op": 0,
+      "field": "d",
+      "value": 11,
+      "range": [
+        0,
+        10
+      ]
+    },
+    {
+      "table": "program0",
+      "index": 98,
+      "op": 0,
+      "field": "d",
+      "value": 11,
+      "range": [
+        0,
+        10
+      ]
+    },
+    {
+      "table": "program0",
+      "index": 99,
+      "op": 0,
+      "field": "d",
+      "value": 11,
+      "range": [
+        0,
+        10
+      ]
+    },
+    {
+      "table": "program0",
+      "index": 100,
+      "op": 0,
+      "field": "d",
+      "value": 11,
+      "range": [
+        0,
+        10
+      ]
+    },
+    {
+      "table": "program0",
+      "index": 101,
+      "op": 0,
+      "field": "d",
+      "value": 11,
+      "range": [
+        0,
+        10
+      ]
+    },
+    {
+      "table": "program0",
+      "index": 102,
+      "op": 0,
+      "field": "d",
+      "value": 11,
+      "range": [
+        0,
+        10
+      ]
+    },
+    {
+      "table": "program0",
+      "index": 103,
+      "op": 0,
+      "field": "d",
+      "value": 11,
+      "range": [
+        0,
+        10
+      ]
+    },
+    {
+      "table": "program0",
+      "index": 126,
+      "op": 0,
+      "field": "d",
+      "value": 11,
+      "range": [
+        0,
+        10
+      ]
+    },
+    {
+      "table": "program1",
+      "index": 40,
+      "op": 0,
+      "field": "d",
+      "value": 11,
+      "range": [
+        0,
+        10
+      ]
+    },
+    {
+      "table": "program1",
+      "index": 40,
+      "op": 1,
+      "field": "d",
+      "value": 11,
+      "range": [
+        0,
+        10
+      ]
+    },
+    {
+      "table": "program1",
+      "index": 41,
+      "op": 0,
+      "field": "d",
+      "value": 11,
+      "range": [
+        0,
+        10
+      ]
+    },
+    {
+      "table": "program1",
+      "index": 41,
+      "op": 1,
+      "field": "d",
+      "value": 11,
+      "range": [
+        0,
+        10
+      ]
+    },
+    {
+      "table": "program1",
+      "index": 42,
+      "op": 0,
+      "field": "d",
+      "value": 11,
+      "range": [
+        0,
+        10
+      ]
+    },
+    {
+      "table": "program1",
+      "index": 42,
+      "op": 1,
+      "field": "d",
+      "value": 11,
+      "range": [
+        0,
+        10
+      ]
+    },
+    {
+      "table": "program1",
+      "index": 43,
+      "op": 0,
+      "field": "d",
+      "value": 11,
+      "range": [
+        0,
+        10
+      ]
+    },
+    {
+      "table": "program1",
+      "index": 43,
+      "op": 1,
+      "field": "d",
+      "value": 11,
+      "range": [
+        0,
+        10
+      ]
+    },
+    {
+      "table": "program1",
+      "index": 44,
+      "op": 0,
+      "field": "d",
+      "value": 11,
+      "range": [
+        0,
+        10
+      ]
+    },
+    {
+      "table": "program1",
+      "index": 55,
+      "op": 1,
+      "field": "r",
+      "value": 11,
+      "range": [
+        0,
+        10
+      ]
+    },
+    {
+      "table": "program1",
+      "index": 55,
+      "op": 3,
+      "field": "r",
+      "value": 11,
+      "range": [
+        0,
+        10
+      ]
+    },
+    {
+      "table": "program1",
+      "index": 95,
+      "op": 0,
+      "field": "d",
+      "value": 11,
+      "range": [
+        0,
+        10
+      ]
+    },
+    {
+      "table": "program1",
+      "index": 110,
+      "op": 0,
+      "field": "d",
+      "value": 11,
+      "range": [
+        0,
+        10
+      ]
+    },
+    {
+      "table": "program1",
+      "index": 124,
+      "op": 0,
+      "field": "d",
+      "value": 11,
+      "range": [
+        0,
+        10
+      ]
+    },
+    {
+      "table": "program1",
+      "index": 124,
+      "op": 1,
+      "field": "r",
+      "value": 11,
+      "range": [
+        0,
+        10
+      ]
+    },
+    {
+      "table": "program1",
+      "index": 125,
+      "op": 0,
+      "field": "d",
+      "value": 11,
+      "range": [
+        0,
+        10
+      ]
+    },
+    {
+      "table": "program1",
+      "index": 125,
+      "op": 1,
+      "field": "r",
+      "value": 11,
+      "range": [
+        0,
+        10
+      ]
+    },
+    {
+      "table": "drummap1",
+      "index": 18,
+      "op": 1,
+      "field": "r",
+      "value": 11,
+      "range": [
+        0,
+        10
+      ]
+    }
+  ],
+  "readmeDefaults": {
+    "masterVol": {
+      "readme": "0.5",
+      "code": 0.5,
+      "match": true
+    },
+    "reverbLev": {
+      "readme": "0.3",
+      "code": 0.3,
+      "match": true
+    },
+    "useReverb": {
+      "readme": "1",
+      "code": 1,
+      "match": true
+    },
+    "quality": {
+      "readme": "1",
+      "code": 1,
+      "match": true
+    },
+    "loop": {
+      "readme": "0",
+      "code": 0,
+      "match": true
+    },
+    "loopEnd": {
+      "readme": "0",
+      "code": 0,
+      "match": true
+    },
+    "tsmode": {
+      "readme": "0",
+      "code": 0,
+      "match": true
+    },
+    "voices": {
+      "readme": "64",
+      "code": 64,
+      "match": true
+    },
+    "_propertiesNotInReadmeTable": [
+      "debug",
+      "src",
+      "internalcontext"
+    ]
+  },
+  "testReliedMembers": {
+    "_note": [
+      "harness.js"
+    ],
+    "getAudioContext": [
+      "browser-smoke.js"
+    ],
+    "getPlayStatus": [
+      "browser-smoke.js",
+      "differential.js",
+      "loop-end.js",
+      "tempo.js"
+    ],
+    "loadMIDI": [
+      "browser-smoke.js",
+      "differential.js",
+      "loop-end.js",
+      "tempo.js"
+    ],
+    "loopEnd": [
+      "loop-end.js"
+    ],
+    "notetab": [
+      "differential.js"
+    ],
+    "playMIDI": [
+      "browser-smoke.js",
+      "differential.js",
+      "loop-end.js",
+      "tempo.js"
+    ],
+    "playTime": [
+      "tempo.js"
+    ],
+    "program": [
+      "browser-smoke.js"
+    ],
+    "setLoop": [
+      "browser-smoke.js",
+      "differential.js",
+      "loop-end.js",
+      "tempo.js"
+    ],
+    "setLoopEnd": [
+      "loop-end.js"
+    ],
+    "song": [
+      "browser-smoke.js"
+    ],
+    "stopMIDI": [
+      "browser-smoke.js"
+    ]
+  },
+  "canonicalization": "sha256 over UTF-8 of JSON with object keys sorted at every level; array holes/undefined/null -> null; numbers per JSON.stringify",
+  "buildsAgree": true,
+  "mismatches": []
+}

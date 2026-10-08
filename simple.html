@@ -2,14 +2,40 @@
 <html>
 <head>
 <meta charset="utf-8">
-<script src="https://unpkg.com/@webcomponents/custom-elements"></script>
-<script src="https://g200kg.github.io/webaudio-controls/webaudio-controls.js" ></script>
+<title>TinySynth Simple Test Page</title>
+<script src="./bower_components/webaudio-controls/webaudio-controls.js"></script>
 <script src="./webaudio-tinysynth.js"></script>
+<style>
+.error{
+  color:#c00;
+}
+</style>
 <script>
+var synth, kb;
+/* Notes this page is sounding, by input: each note-off goes to the note that was
+   sent, and losing focus releases them all, so no note is left stuck. */
+var held={};
 async function Init(){
-  synth=new WebAudioTinySynth();
+  /* lazy: no AudioContext exists until the first click, tap, key press or
+     change on the page, which starts audio (StartAudio). */
+  synth=new WebAudioTinySynth({lazy:true});
+  ["pointerdown","keydown","click","change"].forEach(function(type){
+    window.addEventListener(type,StartAudio,true);
+  });
+  AudioStatus();
+  setInterval(AudioStatus,250);
   kb=document.getElementById("keyboard");
   kb.addEventListener("change",KeyIn);
+  kb.addEventListener("focusout",ReleaseAll);
+  window.addEventListener("blur",ReleaseAll);
+  window.addEventListener("pagehide",ReleaseAll);
+  document.addEventListener("visibilitychange",function(){
+    if(document.visibilityState=="hidden")
+      ReleaseAll();
+  });
+  document.getElementById("file").addEventListener("cancel",function(){
+    ShowMessage("No file selected. The current song is unchanged.");
+  });
 
   await synth.ready();
 
@@ -19,19 +45,118 @@ async function Init(){
     document.getElementById("prog").appendChild(o);
   }
 }
+/* Starts audio from a user gesture: resume() creates the AudioContext inside
+   the event handler and starts it. Called again by later gestures while audio
+   is not running, for example after the browser refused to start it. */
+var audioError=null;
+function StartAudio(){
+  var c=synth.getAudioContext();
+  if(c&&c.state=="running")
+    return;
+  audioError=null;
+  synth.resume().then(AudioStatus,function(e){
+    audioError=e;
+    AudioStatus();
+  });
+  AudioStatus();
+}
+/* Shows whether audio is off, blocked, running, or failed to start. */
+function AudioStatus(){
+  var c=synth.getAudioContext(), s=c?c.state:"", text, error=false;
+  if(s=="running"){
+    text="Audio is on.";
+    audioError=null;
+  }
+  else if(s=="closed")
+    text="Audio is closed. Reload the page to start it again.";
+  else if(audioError){
+    text="Audio could not start ("+ErrorText(audioError)+"). Click, tap or press a key to try again.";
+    error=true;
+  }
+  else if(c)
+    text="Audio is blocked by the browser. Click, tap or press a key to start it.";
+  else
+    text="Audio is off. Click, tap or press a key to start it.";
+  var m=document.getElementById("audio");
+  if(m.textContent!=text||m.className!=(error?"error":"")){
+    m.textContent=text;
+    m.className=error?"error":"";
+  }
+}
+/* An error's code (and HTTP status), or its name, with its message. */
+function ErrorText(e){
+  if(!e)
+    return "unknown error";
+  if(e.code){
+    var t=e.message&&e.message.indexOf(e.code)==0?e.message:e.code+(e.message?": "+e.message:"");
+    return e.status!=undefined?t+" "+e.status:t;
+  }
+  return (e.name||"Error")+(e.message?": "+e.message:"");
+}
 function Prog(pg){
   synth.send([0xc0,pg]);
 }
-function KeyIn(e){
-  synth.send([0x90,e.note[1],e.note[0]?100:0]);
+function NoteOn(key,ch,n,v,disp){
+  NoteOff(key);
+  held[key]={ch:ch,n:n,disp:disp};
+  synth.send([0x90+ch,n,v]);
 }
+function NoteOff(key){
+  var h=held[key];
+  if(!h)
+    return;
+  delete held[key];
+  synth.send([0x80+h.ch,h.n,0]);
+  if(h.disp!=undefined)
+    kb.setNote(0,h.disp);
+}
+function ReleaseAll(){
+  /* The keyboard ends a mouse drag on a window mouseup, which a lost focus can
+     swallow; end it here, or moving the mouse later would play notes. A key it
+     still thinks is down would ignore the next press of that key. */
+  window.dispatchEvent(new MouseEvent("mouseup"));
+  kb.currentKey=-1;
+  for(var key in held)
+    NoteOff(key);
+}
+function KeyIn(e){
+  if(e.note[0])
+    NoteOn("kb"+e.note[1],0,e.note[1],100,e.note[1]);
+  else
+    NoteOff("kb"+e.note[1]);
+}
+function ShowMessage(text,error){
+  var m=document.getElementById("message");
+  m.textContent=text;
+  m.className=error?"error":"";
+}
+var loadCount=0;
 function LoadMidi(files){
+  var file=files&&files[0];
+  var load=++loadCount;
+  if(!file){
+    ShowMessage("No file selected. The current song is unchanged.");
+    return;
+  }
   var reader=new FileReader();
   reader.onload=function(){
-    synth.loadMIDI(reader.result);
+    if(load!=loadCount)
+      return;
+    try{
+      synth.loadMIDI(reader.result);
+    }
+    catch(e){
+      ShowMessage("Could not load "+file.name+" ("+e.message+"). The current song is unchanged.",true);
+      return;
+    }
+    ShowMessage("Playing "+file.name+".");
     synth.playMIDI();
   };
-  reader.readAsArrayBuffer(files[0]);
+  reader.onerror=function(){
+    if(load==loadCount)
+      ShowMessage("Could not read "+file.name+" ("+(reader.error?reader.error.message:"unknown error")+"). The current song is unchanged.",true);
+  };
+  reader.readAsArrayBuffer(file);
 }
 window.onload=function(){
   Init();
@@ -41,6 +166,7 @@ window.onload=function(){
 </head>
 <body>
 <h1>TinySynth Simple Test Page</h1>
+<div id="audio" role="status"></div>
 <ul>
   <li>Select timbre with dropdown</li>
   <li>Playable with mouse or qwerty-keyboard.</li>
@@ -50,10 +176,12 @@ Prog : <select id="prog" onchange="Prog(this.selectedIndex)"></select>
 <br/>
 <webaudio-keyboard id="keyboard" min="48"></webaudio-keyboard>
 <br/>
-MIDI file : <input type="file" accept=".mid,.midi" onchange="LoadMidi(this.files)"/>
+MIDI file : <input id="file" type="file" accept=".mid,.midi" onchange="LoadMidi(this.files)"/>
 <button onclick="synth.playMIDI()">Play</button>
 <button onclick="synth.stopMIDI()">Stop</button>
+<div id="message" role="status"></div>
 <hr/>
-Repository : <b><a href="https://github.com/g200kg/webaudio-tinysynth">https://github.com/g200kg/webaudio-tinysynth</a></b>
+Fork : <b><a href="https://github.com/Provable-Games/webaudio-tinysynth">https://github.com/Provable-Games/webaudio-tinysynth</a></b><br/>
+Upstream : <b><a href="https://github.com/g200kg/webaudio-tinysynth">https://github.com/g200kg/webaudio-tinysynth</a></b>
 </body>
 </html>

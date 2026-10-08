@@ -1,0 +1,26 @@
+2026-10-03T01:34:56Z	artifacts	exit=0	0.18s	cwd=/workspace/webaudio-tinysynth-worktrees/t0-baseline	bash /workspace/webaudio-tinysynth-worktrees/_evidence/T0/scripts/artifacts.sh
+2026-10-03T01:35:10Z	rebuild	exit=0	0.45s	cwd=/workspace/webaudio-tinysynth-worktrees/t0-baseline	bash /workspace/webaudio-tinysynth-worktrees/_evidence/T0/scripts/rebuild.sh
+2026-10-03T01:35:23Z	embedding	exit=0	0.08s	cwd=/workspace/webaudio-tinysynth-worktrees/t0-baseline	bash /workspace/webaudio-tinysynth-worktrees/_evidence/T0/scripts/embedding.sh
+2026-10-03T01:35:41Z	upstream	exit=0	3.99s	cwd=/workspace/webaudio-tinysynth-worktrees/t0-baseline	bash /workspace/webaudio-tinysynth-worktrees/_evidence/T0/scripts/upstream.sh
+2026-10-03T01:37:21Z	suites	exit=0	88.60s	cwd=/workspace/webaudio-tinysynth-worktrees/t0-baseline	bash /workspace/webaudio-tinysynth-worktrees/_evidence/T0/scripts/suites.sh
+2026-10-03T01:37:26Z	install-playwright-core	exit=0	0.41s	cwd=/workspace/webaudio-tinysynth-worktrees/_evidence/T0/tools	npm install --no-audit --no-fund --ignore-scripts playwright-core@1.62.1
+2026-10-03T01:37:30Z	browser-smoke-ws	exit=1	0.18s	cwd=/workspace/webaudio-tinysynth-worktrees/t0-baseline	timeout -s KILL 120 node tests/browser-smoke.js
+2026-10-03T01:37:30Z	browser-smoke-allgm	exit=1	0.18s	cwd=/workspace/webaudio-tinysynth-worktrees/t0-baseline	timeout -s KILL 120 node tests/browser-smoke.js test-midi/all-gm-sounds.mid
+2026-10-03T01:38:16Z	browser-smoke-ws	exit=0	2.40s	cwd=/workspace/webaudio-tinysynth-worktrees/t0-baseline	timeout -s KILL 120 node tests/browser-smoke.js
+2026-10-03T01:38:18Z	browser-smoke-allgm	exit=0	2.42s	cwd=/workspace/webaudio-tinysynth-worktrees/t0-baseline	timeout -s KILL 120 node tests/browser-smoke.js test-midi/all-gm-sounds.mid
+2026-10-03T01:38:52Z	embed-data-uri	exit=0	4.68s	cwd=/workspace/webaudio-tinysynth-worktrees/t0-baseline	timeout -s KILL 120 node docs/improvements/evidence/T0/probes/embed-data-uri.js
+2026-10-03T01:39:28Z	embed-data-uri	exit=0	7.24s	cwd=/workspace/webaudio-tinysynth-worktrees/t0-baseline	timeout -s KILL 120 node docs/improvements/evidence/T0/probes/embed-data-uri.js
+2026-10-03T01:39:48Z	embed-data-uri	exit=0	9.41s	cwd=/workspace/webaudio-tinysynth-worktrees/t0-baseline	timeout -s KILL 120 node docs/improvements/evidence/T0/probes/embed-data-uri.js
+2026-10-03T01:40:13Z	audit-pack	exit=1	6.16s	cwd=/workspace/webaudio-tinysynth-worktrees/_evidence/T0	bash scripts/audit-pack.sh
+2026-10-03T01:40:24Z	npm-pack-clean	exit=0	0.24s	cwd=/workspace/webaudio-tinysynth-worktrees/_evidence/T0/scratch/pack-clean	npm pack --dry-run --json
+2026-10-03T01:41:59Z	probe-issue-4	exit=0	7.74s	cwd=/workspace/webaudio-tinysynth-worktrees/t0-baseline	timeout -s KILL 60 node docs/improvements/evidence/T0/probes/issue-4-unterminated-tracks.js
+2026-10-03T01:42:30Z	probe-issue-6	exit=0	10.33s	cwd=/workspace/webaudio-tinysynth-worktrees/t0-baseline	timeout -s KILL 60 node docs/improvements/evidence/T0/probes/issue-6-time-division.js
+2026-10-03T01:43:02Z	probe-issue-8	exit=0	4.30s	cwd=/workspace/webaudio-tinysynth-worktrees/t0-baseline	timeout -s KILL 60 node docs/improvements/evidence/T0/probes/issue-8-zero-duration-loop.js
+2026-10-03T01:43:08Z	probe-issue-9	exit=0	5.40s	cwd=/workspace/webaudio-tinysynth-worktrees/t0-baseline	timeout -s KILL 60 node docs/improvements/evidence/T0/probes/issue-9-empty-song.js
+2026-10-03T01:43:41Z	probe-issue-10	exit=0	2.23s	cwd=/workspace/webaudio-tinysynth-worktrees/t0-baseline	timeout -s KILL 60 node docs/improvements/evidence/T0/probes/issue-10-replay-tempo.js
+2026-10-03T01:43:49Z	probe-issue-21	exit=0	7.44s	cwd=/workspace/webaudio-tinysynth-worktrees/t0-baseline	timeout -s KILL 60 node docs/improvements/evidence/T0/probes/issue-21-seek-state.js
+2026-10-03T01:46:13Z	inventory	exit=0	5.87s	cwd=/workspace/webaudio-tinysynth-worktrees/t0-baseline	bash -c timeout -s KILL 60 node docs/improvements/evidence/T0/probes/inventory.js > docs/improvements/evidence/T0/inventory.json; echo "inventory exit=$?"
+2026-10-03T01:47:05Z	probes-run-all	exit=0	38.73s	cwd=/workspace/webaudio-tinysynth-worktrees/t0-baseline	docs/improvements/evidence/T0/probes/run-all.sh docs/improvements/evidence/T0/probe-results
+2026-10-03T01:48:31Z	probe-consumer-semantics	exit=0	8.96s	cwd=/workspace/webaudio-tinysynth-worktrees/t0-baseline	timeout -s KILL 60 node docs/improvements/evidence/T0/probes/consumer-semantics.js
+2026-10-03T01:48:57Z	probe-consumer-semantics	exit=0	12.19s	cwd=/workspace/webaudio-tinysynth-worktrees/t0-baseline	timeout -s KILL 60 node docs/improvements/evidence/T0/probes/consumer-semantics.js
+2026-10-03T01:49:58Z	probes-run-all	exit=0	47.68s	cwd=/workspace/webaudio-tinysynth-worktrees/t0-baseline	docs/improvements/evidence/T0/probes/run-all.sh docs/improvements/evidence/T0/probe-results

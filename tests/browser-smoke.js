@@ -1,32 +1,39 @@
 #!/usr/bin/env node
 /*
- * Offline browser smoke test (manual; not part of `npm test`).
+ * Offline browser smoke test (npm run test:browser; not part of `npm test`).
  *
  * Opens a page in headless Chromium with every network request aborted.
- * The page inlines webaudio-tinysynth.js (then webaudio-tinysynth.min.js)
- * and a MIDI fixture. It constructs the synth, calls loadMIDI and
- * playMIDI, and asserts:
+ * The page inlines webaudio-tinysynth.js (then the minified build of the
+ * current source, from scripts/test-build.js) and a MIDI fixture. It
+ * constructs the synth, calls loadMIDI and playMIDI, and asserts:
  *   - getPlayStatus().play === 1 and maxTick > 0 right after playMIDI;
  *   - the AudioContext is running and curTick advances;
  *   - window.WebAudioTinySynth exists and no <webaudio-tinysynth> element is defined;
  *   - no page errors, no console errors, and zero network requests.
  *
- * Needs playwright-core and a matching Chromium. Install them outside the
- * repo, for example:
- *   (cd /some/scratch && npm i playwright-core@1.62.1 && npx playwright-core install chromium)
- *   PLAYWRIGHT_CORE=/some/scratch/node_modules/playwright-core node tests/browser-smoke.js [fixture.mid]
+ * Needs the pinned playwright-core devDependency and its Chromium:
+ *   npm ci && npx playwright-core install --with-deps --only-shell chromium
+ *   npm run test:browser          (or: node tests/browser-smoke.js [fixture.mid])
+ * A missing browser or system library fails the test; it is never skipped.
+ * PLAYWRIGHT_CORE=/path/to/playwright-core selects another installation.
+ *
+ * Limitation: Chromium runs with --autoplay-policy=no-user-gesture-required,
+ * so passing does not show that audio starts after a normal user gesture.
  */
 "use strict";
 const fs = require("fs");
 const path = require("path");
 
 const ROOT = path.resolve(__dirname, "..");
+const testBuild = require("../scripts/test-build");
 const { chromium } = require(process.env.PLAYWRIGHT_CORE || "playwright-core");
 const fixture = process.argv[2] || "ws.mid";
 const midiB64 = fs.readFileSync(path.resolve(ROOT, fixture)).toString("base64");
 
+const BUILDS = { "webaudio-tinysynth.js": path.join(ROOT, "webaudio-tinysynth.js"), "webaudio-tinysynth.min.js": testBuild.existingMinPath() };
+
 function page(scriptFile) {
-  const js = fs.readFileSync(path.join(ROOT, scriptFile), "utf8").replace(/<\/script/gi, "<\\/script");
+  const js = fs.readFileSync(BUILDS[scriptFile], "utf8").replace(/<\/script/gi, "<\\/script");
   return `<!doctype html><html><head><meta charset="utf-8"><title>tinysynth smoke</title>
 <script>${js}</script></head><body>
 <script>
@@ -69,7 +76,7 @@ window.smoke = async () => {
       p.on("console", (m) => { if (m.type() === "error") errors.push("console: " + m.text()); });
 
       await p.setContent(page(scriptFile));
-      const r = await p.evaluate(() => window.smoke());
+      const r = await p.evaluate(() => window.smoke()); // eslint-disable-line no-undef -- runs in the page
       await ctx.close();
 
       const checks = [

@@ -1,0 +1,347 @@
+{
+  "consumer": {
+    "repo": "/workspace/onchain-tinysynth",
+    "head": "71fce2853d52f40f081d834a086f72f98068de60",
+    "sha256": {
+      "src/types.cairo": "911bcb358176116fc14d29b573b3e2aab8f0335dead3c2efdb819ded5dadc908",
+      "README.md": "21f3208aa6acea543ab9ab44917b3a8a71ae9ffcfd42f6309d33ba40167cd4ab"
+    },
+    "fixedPointScale": 10000,
+    "status": "schema is a proposal (types.cairo header: ranges finalized in consumer issues #1-#3)",
+    "hashBasis": "sha256 of the HEAD 71fce28 blobs (working tree was clean when read)",
+    "laterWorkingTreeChanges": "During T0 (about 01:40-01:51Z) another actor modified the consumer checkout without committing: README.md +4 lines (Examples section, working-tree sha256 ac744639...), untracked examples/beast_consumer/. Not used for this mapping; not modified by T0."
+  },
+  "engine": {
+    "commit": "b70ba90d63c5ea657cb67ca98de90d7f778c29bd",
+    "timbreDefaults": {
+      "g": 0,
+      "w": "sine",
+      "t": 1,
+      "f": 0,
+      "v": 0.5,
+      "a": 0,
+      "h": 0.01,
+      "d": 0.01,
+      "s": 0,
+      "r": 0.05,
+      "p": 1,
+      "q": 1,
+      "k": 0
+    }
+  },
+  "settings": [
+    {
+      "consumer": "SynthSettings.quality",
+      "type": "u8 0..=1",
+      "engine": "new WebAudioTinySynth({quality}) or setQuality(q)",
+      "conversion": "Number(q)",
+      "engineDefault": 1,
+      "questions": [
+        "Q14"
+      ]
+    },
+    {
+      "consumer": "SynthSettings.reverb",
+      "type": "u8 percent 0..=100, 0 = off, suggested 30",
+      "engine": "setReverbLev(x) -> rev.gain = 8*x; useReverb (constructor only)",
+      "conversion": "presumably x = reverb/100 (30 -> 0.3 -> wet gain 2.4; 100 -> 8.0)",
+      "engineDefault": 0.3,
+      "questions": [
+        "Q5"
+      ]
+    },
+    {
+      "consumer": "SynthSettings.master_vol",
+      "type": "u8 percent of full scale 0..=100, suggested 40",
+      "engine": "setMasterVol(x) -> out.gain = x",
+      "conversion": "presumably x = master_vol/100",
+      "engineDefault": 0.5,
+      "questions": [
+        "Q6"
+      ]
+    },
+    {
+      "consumer": "SynthSettings.voices",
+      "type": "u8 1..=64",
+      "engine": "new WebAudioTinySynth({voices}) or setVoices(v)",
+      "conversion": "identity",
+      "engineDefault": 64,
+      "questions": [
+        "Q10"
+      ]
+    },
+    {
+      "consumer": "SynthSettings.timbres",
+      "type": "Span<Timbre>, proposed max 32, unique (drum, slot)",
+      "engine": "setTimbre(m, n, p) after quality is applied (setQuality resets all programs/drums)",
+      "conversion": "one setTimbre call per Timbre",
+      "questions": [
+        "Q15"
+      ]
+    },
+    {
+      "consumer": "Timbre.drum",
+      "type": "bool",
+      "engine": "setTimbre m",
+      "conversion": "false -> 0, true -> 1"
+    },
+    {
+      "consumer": "Timbre.slot",
+      "type": "u8: program 0..=127 or drum note 35..=81",
+      "engine": "setTimbre n; program[n] or drummap[n-35] (47 entries); out-of-range n is silently ignored",
+      "conversion": "identity",
+      "questions": [
+        "Q9"
+      ]
+    },
+    {
+      "consumer": "Timbre.operators",
+      "type": "Span<Operator> 1..=8",
+      "engine": "setTimbre p (array of operator objects); no engine limit; built-ins use at most 4",
+      "conversion": "array of objects, order preserved"
+    }
+  ],
+  "operator": [
+    {
+      "consumer": "route",
+      "engineField": "g",
+      "type": "u8: 0 out, 1..=10 FM of op route, 11..=18 AM of op route-10",
+      "conversion": "identity (integer)",
+      "engineSemantics": "0: to channel volume; 1..10: FM into o[g-1].frequency (or playbackRate/440 for an n* target); >10: AM into gain of op g-11; target must already exist (earlier op) or note-on throws",
+      "builtinValues": [
+        0,
+        1,
+        3,
+        11
+      ],
+      "questions": [
+        "Q7",
+        "Q12"
+      ]
+    },
+    {
+      "consumer": "wave",
+      "engineField": "w",
+      "conversion": "Sine 'sine', Square 'square', Sawtooth 'sawtooth', Triangle 'triangle', WhiteNoise 'n0', MetallicNoise 'n1', Harmonics -> registered 'w...' name (#26, proposed), Samples -> registered 'n...' name (#26, proposed)",
+      "builtinValues": [
+        "sine",
+        "square",
+        "sawtooth",
+        "triangle",
+        "n0",
+        "n1",
+        "w9999"
+      ],
+      "questions": [
+        "Q1",
+        "Q2",
+        "Q13"
+      ]
+    },
+    {
+      "consumer": "volume",
+      "engineField": "v",
+      "type": "u32 fixed 0..=100.0",
+      "conversion": "v = volume / 10000",
+      "engineSemantics": "output op: v * velocity^2/16384 * 2^((note-60)/12*k); FM: depth Hz = v * target op freq (* key scaling); AM: depth = v (no velocity scaling)",
+      "builtinRange": [
+        0.003,
+        42
+      ]
+    },
+    {
+      "consumer": "ratio",
+      "engineField": "t",
+      "type": "u32 fixed 0..=64.0",
+      "conversion": "t = ratio / 10000",
+      "engineSemantics": "output op freq = noteFreq*t + f; FM/AM modulator freq = targetOpFreq*t + f",
+      "builtinRange": [
+        0,
+        12.5
+      ],
+      "questions": [
+        "Q7"
+      ]
+    },
+    {
+      "consumer": "offset_hz",
+      "engineField": "f",
+      "type": "i32 fixed -20000.0..=20000.0",
+      "conversion": "f = offset_hz / 10000",
+      "builtinRange": [
+        -2,
+        2876
+      ]
+    },
+    {
+      "consumer": "attack",
+      "engineField": "a",
+      "type": "u32 fixed s 0..=10.0",
+      "conversion": "a = attack / 10000",
+      "engineSemantics": "linear ramp 0 -> level over a; a=0 sets level at note-on",
+      "builtinRange": [
+        0,
+        1
+      ]
+    },
+    {
+      "consumer": "hold",
+      "engineField": "h",
+      "type": "u32 fixed s 0..=10.0",
+      "conversion": "h = hold / 10000",
+      "engineSemantics": "decay starts at t+a+h",
+      "builtinRange": [
+        0,
+        1
+      ]
+    },
+    {
+      "consumer": "decay",
+      "engineField": "d",
+      "type": "u32 fixed s 0..=10.0",
+      "conversion": "d = decay / 10000",
+      "engineSemantics": "setTargetAtTime(s*level, t+a+h, d); d=0 jumps; drums stop at t + 3.5*d of operator 0",
+      "builtinRange": [
+        0,
+        12
+      ],
+      "questions": [
+        "Q8",
+        "Q11"
+      ]
+    },
+    {
+      "consumer": "sustain",
+      "engineField": "s",
+      "type": "u32 fixed 0..=100.0 (multiple of volume)",
+      "conversion": "s = sustain / 10000",
+      "builtinRange": [
+        0,
+        50
+      ]
+    },
+    {
+      "consumer": "release",
+      "engineField": "r",
+      "type": "u32 fixed s 0..=10.0",
+      "conversion": "r = release / 10000",
+      "engineSemantics": "per-op setTargetAtTime(0, off, r); voice end = off + 3.5*r of operator 0 for all ops; ignored on rhythm channels",
+      "builtinRange": [
+        0,
+        11
+      ],
+      "questions": [
+        "Q8",
+        "Q11"
+      ]
+    },
+    {
+      "consumer": "pitch_ratio",
+      "engineField": "p",
+      "type": "u32 fixed 0..=16.0",
+      "conversion": "p = pitch_ratio / 10000",
+      "engineSemantics": "if p != 1: frequency (or playbackRate) setTargetAtTime(start*p, note-on, q)",
+      "builtinRange": [
+        0,
+        1.25
+      ]
+    },
+    {
+      "consumer": "pitch_time",
+      "engineField": "q",
+      "type": "u32 fixed s 0..=10.0",
+      "conversion": "q = pitch_time / 10000",
+      "engineSemantics": "time constant; q=0 jumps",
+      "builtinRange": [
+        0.1,
+        1
+      ]
+    },
+    {
+      "consumer": "key_scale",
+      "engineField": "k",
+      "type": "i32 fixed -8.0..=8.0",
+      "conversion": "k = key_scale / 10000",
+      "builtinRange": [
+        -1.2,
+        0
+      ]
+    },
+    {
+      "consumer": "filter",
+      "engineField": "fl/ff/fk/fq (proposed in #27; absent at b70ba90)",
+      "conversion": "see filter rows",
+      "questions": [
+        "Q3",
+        "Q4"
+      ]
+    }
+  ],
+  "waveform": [
+    {
+      "consumer": "Harmonics(Span<u16>) 1..=64",
+      "engine": "proposed setHarmonicWave(name, real, imag) (#26); precedent _createWave: real all 0, imag[0]=0 (DC), imag[i]=harmonic i; w9999 -> real [0,0,0,0,0], imag [0,9,9,9,9]",
+      "conversion": "imag = [0, h[0], ..., h[n-1]] (length n+1 <= 65), real = zeros(n+1)",
+      "questions": [
+        "Q1"
+      ]
+    },
+    {
+      "consumer": "Samples(Span<i8>) 2..=256",
+      "engine": "proposed setSampleWave(name, samples) (#26), buffer looped at playbackRate = freq/440",
+      "conversion": "undecided: x/128, x/127 or affine (x+128)/127.5-1",
+      "questions": [
+        "Q2"
+      ]
+    }
+  ],
+  "filter": [
+    {
+      "consumer": "Filter.kind LowPass/HighPass/BandPass",
+      "engine": "fl 'lowpass'/'highpass'/'bandpass' (#27 proposal)",
+      "conversion": "enum -> string"
+    },
+    {
+      "consumer": "Filter.cutoff u32 fixed: Hz 20..=20000 or multiple 0.25..=16",
+      "engine": "ff (#27)",
+      "conversion": "ff = cutoff / 10000",
+      "questions": [
+        "Q4"
+      ]
+    },
+    {
+      "consumer": "Filter.key_track bool",
+      "engine": "fk (#27)",
+      "conversion": "false -> 0, true -> 1",
+      "questions": [
+        "Q4"
+      ]
+    },
+    {
+      "consumer": "Filter.q u32 fixed 0.1..=30",
+      "engine": "fq (#27) -> BiquadFilterNode.Q (dB for lowpass/highpass, linear for bandpass)",
+      "conversion": "undecided",
+      "questions": [
+        "Q3"
+      ]
+    }
+  ],
+  "questions": {
+    "Q1": "Harmonics: element 0 is harmonic 1 while Web Audio index 0 is DC; confirm imag (sine) vs real placement, whether u16 is a raw relative amplitude or /10000 fixed-point, that unsigned values cannot express sign/phase (e.g. alternating-sign triangle series), and that the engine limit counts 65 coefficients for 64 harmonics.",
+    "Q2": "Samples: the i8 -> float map is ambiguous (x/128 gives -1..0.9922; x/127 gives -1.0079..1; affine gives -1..1 with 0 -> 0.0039). The consumer promises exact sample-and-hold chip waves; #26's contract only promises preserved character within measured tolerances (buffer playback interpolates).",
+    "Q3": "Filter Q: consumer q is a unitless 0.1..30; Web Audio lowpass/highpass Q is in dB, bandpass Q is linear. Pick linear Q with a documented LP/HP conversion, or per-type native values.",
+    "Q4": "Filter key tracking: basis (note frequency with tuning, or operator frequency note*t+f; bend and pitch envelope excluded for a fixed filter). 16x key-tracked cutoffs exceed 22,050 Hz for notes >= 89 at 44.1 kHz, and a fixed 20 kHz cutoff exceeds Nyquist below 40 kHz; a clamp policy is needed.",
+    "Q5": "Reverb: percent -> reverbLev = reverb/100 is implied by the 30 <-> 0.3 defaults, but setReverbLev multiplies by 8 (default wet gain 2.4; 100% -> 8.0). '0 turns reverb off' could mean setReverbLev(0) (convolver stays in the graph) or useReverb:0 (constructor-only, no convolver).",
+    "Q6": "Master volume: percent of full scale -> masterVol = master_vol/100 (out gain) is implied; full scale 1.0 is twice the engine default 0.5. Confirm the mapping and whether >0.5 is intended to be reachable.",
+    "Q7": "Modulator frequency: the Cairo doc says note_frequency*ratio+offset_hz for every operator; the engine uses the target operator's frequency for FM/AM operators (measured 2645 Hz vs 1325 Hz by the doc formula).",
+    "Q8": "Voice lifetime uses operator 0 only: melodic voices end at note-off + 3.5*r[0]; drum voices stop at note-on + 3.5*d[0] and ignore note-off, release and sustain; a drum with d[0]=0 is silent. The Cairo doc describes release per operator.",
+    "Q9": "Drum slots 35..81 match the engine's 47-entry drummap; GM2 notes outside it are unreachable, and drum timbres sound only on rhythm channels (channel 10 unless GS SysEx changes it). Confirm 35..81 stays the contract.",
+    "Q10": "Voices: the engine prunes released notes before the oldest held ones, drums are not stored as voices, and each drum hit prunes melodic voices to voices-1. The consumer doc says the oldest note is cut.",
+    "Q11": "Range coverage: consumer d/r max 10.0 excludes built-in values 11 and 12 (39 operator fields in 32 built-in timbres across program0/program1/drummap1); every other built-in value fits and is exact at 1e-4. Decide whether built-ins must be re-expressible.",
+    "Q12": "Route 9-10 cannot target anything with at most 8 operators; targets must be earlier operators or note-on throws.",
+    "Q13": "Determinism: the consumer's consistency claim fails at b70ba90 for every sound when reverb > 0, not only noise waveforms, because the reverb impulse is also Math.random (#7 default-seed policy).",
+    "Q14": "Quality must be passed as a Number: setQuality('0') installs the quality-1 tables because a non-empty string is truthy.",
+    "Q15": "setTimbre keeps and mutates the caller's arrays (fills defaults in place); the consumer page should pass fresh objects.",
+    "Q16": "Lifecycle: the constructor always creates an AudioContext (internalcontext has no option) and plays a velocity-1 warm-up note; the consumer's tap-to-start page has to construct inside the gesture or rely on resume() in send() (#12)."
+  }
+}
