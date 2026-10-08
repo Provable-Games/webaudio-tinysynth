@@ -1047,6 +1047,28 @@ function mutateKnownDrumFailure(files) {
   return { report: c, resultPath: rel };
 }
 
+function mutateKnownGm125Q1Failure(files, { pairIndex = 1 } = {}) {
+  return mutateKnownRenderFailure(files, { descriptor: false, caseId: "render q1 48000",
+    item: knownFailurePolicy.RENDER_GROUP + " program 125 source/min", pairIndex });
+}
+
+function mutateKnownDrum54AndGm125Q1Failures(files) {
+  const drum = mutateKnownDrumFailure(files);
+  const drumSummary = structuredClone(drum.report.observations[knownFailurePolicy.FAILURE_OBSERVATION]);
+  const drumChecks = structuredClone(drum.report.checks);
+  const gm = mutateKnownGm125Q1Failure(files, { pairIndex: 3 });
+  const c = gm.report;
+  const summary = c.observations[knownFailurePolicy.FAILURE_OBSERVATION];
+  summary.failures = [...drumSummary.failures, ...summary.failures];
+  summary.firstAttemptFailures = 3;
+  summary.intermittent = 3;
+  summary.diagnosticRenderAttempts = 3;
+  summary.rendersIncludingFirstAttempts = summary.items + 3;
+  summary.diagnosticBudget.unspent = 3;
+  c.checks = [...drumChecks, ...c.checks];
+  return { report: c, resultPath: gm.resultPath };
+}
+
 function mutateKnownDrum58Failure(files, { withProgram127 = false } = {}) {
   let gm;
   if (withProgram127) {
@@ -1398,6 +1420,69 @@ test("drum-54 exception preserves both first failures and rejects other scopes o
     assert.equal(rejected.status, 1, rejected.out);
     assert.match(rejected.out, /PCM retention record|PCM WAV is missing or invalid|does not compare against the kept first source/);
   }
+});
+
+test("q1/48 kHz WebKit GM125 exception is exact and composes only with complete drum-54 evidence", () => {
+  const strict = merged((files) => { mutateKnownGm125Q1Failure(files); });
+  assert.equal(strict.status, 1, strict.out);
+
+  let rawCase, rawJson;
+  const accepted = merged((files) => {
+    rawCase = mutateKnownGm125Q1Failure(files).report;
+    rawJson = JSON.stringify(rawCase);
+  }, TEST_REFERENCE_BYTES, null, "core", "core", {}, true);
+  assert.equal(accepted.status, 0, accepted.out);
+  assert.match(accepted.out, /webkit-gm125-q1-48000-first-attempt/);
+  assert.equal(JSON.stringify(rawCase), rawJson);
+  assert.equal(rawCase.status, "fail");
+  assert.equal(rawCase.checks.filter((check) => check.ok === false).length, 1);
+
+  const classify = (engine, c) => knownFailurePolicy.classifyKnownCase(engine, c);
+  for (const [scope, mutate, engine = "webkit"] of [
+    ["engine", () => {}, "firefox"],
+    ["quality", (c) => { c.id = "render q0 48000"; c.dims.quality = 0; }],
+    ["rate", (c) => { c.id = "render q1 44100"; c.dims.sampleRate = 44100; }],
+    ["case", (c) => { c.id = "render q1 44100"; }],
+    ["program", (c) => { c.observations[knownFailurePolicy.FAILURE_OBSERVATION].failures[0].item = knownFailurePolicy.RENDER_GROUP + " program 124 source/min"; }],
+    ["check", (c) => { c.checks[0].name = "unlisted GM parity check"; }],
+    ["extra-check", (c) => { c.checks.push({ name: "unrelated assertion", ok: false, detail: "still blocking" }); }],
+    ["measurement", (c) => { c.observations.measurements[knownFailurePolicy.RENDER_GROUP + "/min"].rms.pop(); }],
+    ["missing-measurement", (c) => { delete c.observations.measurements[knownFailurePolicy.RENDER_GROUP + "/source"]; }],
+  ]) {
+    const c = structuredClone(rawCase);
+    mutate(c);
+    assert.equal(classify(engine, c), null, scope + " remains blocking");
+  }
+
+  const combined = merged((files) => { mutateKnownDrum54AndGm125Q1Failures(files); },
+    TEST_REFERENCE_BYTES, null, "core", "core", {}, true);
+  assert.equal(combined.status, 0, combined.out);
+  assert.match(combined.out, /webkit-drum54-q1-48000-first-attempt/);
+  assert.match(combined.out, /webkit-gm125-q1-48000-first-attempt/);
+
+  const partialDrum = merged((files) => {
+    const c = mutateKnownDrum54AndGm125Q1Failures(files).report;
+    const summary = c.observations[knownFailurePolicy.FAILURE_OBSERVATION];
+    summary.failures = summary.failures.filter((failure) => !failure.item.endsWith(" repeat"));
+    summary.firstAttemptFailures = summary.intermittent = 2;
+    summary.diagnosticRenderAttempts = 2;
+    summary.rendersIncludingFirstAttempts = summary.items + 2;
+    summary.diagnosticBudget.unspent = 4;
+    c.checks = c.checks.filter((check) => !check.name.includes(": a repeat render in a fresh page matches"));
+  }, TEST_REFERENCE_BYTES, null, "core", "core", {}, true);
+  assert.equal(partialDrum.status, 1, partialDrum.out);
+
+  const unrelated = merged((files) => {
+    const c = mutateKnownGm125Q1Failure(files).report;
+    c.checks.push({ name: "unrelated q1 regression", ok: false, detail: "must remain blocking" });
+  }, TEST_REFERENCE_BYTES, null, "core", "core", {}, true);
+  assert.equal(unrelated.status, 1, unrelated.out);
+
+  let missingWav;
+  const missing = merged((files) => { missingWav = mutateKnownGm125Q1Failure(files).wavPaths[1]; },
+    TEST_REFERENCE_BYTES, (dir) => fs.rmSync(path.join(dir, missingWav)), "core", "core", {}, true);
+  assert.equal(missing.status, 1, missing.out);
+  assert.match(missing.out, /known first-attempt PCM WAV is missing or invalid/);
 });
 
 test("known-failure opt-in is core-only and full-mix qualification remains strict", () => {

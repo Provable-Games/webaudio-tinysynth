@@ -919,9 +919,9 @@ function WebAudioTinySynthCore(target) {
       /* A song with no events other than tempo (empty, metadata-only or tempo-only)
          stays stopped (#9). A completed song (not one just loaded at maxTick) starts a
          new pass with the state of locateMIDI(0) (#10, D-005), but the previous pass's
-         sounding and already scheduled notes play on, as upstream (D-019): its voices are
-         kept out of the seek's reach. A song stopped before its end resumes as it is. */
-      const s=this.song,n=this.notetab,d=this._src;
+         sounding and already scheduled notes play on, as upstream (D-019): their ownership
+         sets are kept out of the seek's reach. A song stopped before its end resumes as it is. */
+      const s=this.song,n=this.notetab,d=this._src,g=this._gone;
       /* The sequencer runs on the realtime timer, which cannot follow an offline render's
          clock (#12, tasks/T4.md): schedule notes with explicit times instead. */
       if(this._off)
@@ -935,8 +935,19 @@ function WebAudioTinySynthCore(target) {
       /* Before the song clock is anchored (#18, #68): build a first n1 note before choosing one
          shared start time for the whole first batch. */
       this.prewarm();
-      if(this.playIndex && this.playTick>=this.maxTick)
-        this.notetab=[], this._src=[], this.playing=0, this.locateMIDI(0), this.notetab=n, this._src=d;
+      if(this.playIndex && this.playTick>=this.maxTick){
+        this.notetab=[];
+        this._src=[];
+        this._gone=new Set();
+        this.playing=0;
+        try{
+          this.locateMIDI(0);
+        }finally{
+          this.notetab=n;
+          this._src=d;
+          this._gone=g;
+        }
+      }
       if(this._rs) // after a caller's stop: the channels' latest values, now (review F1)
         for(let i=this._rs=0;i<16;++i)
           [[this.chvol[i],"gain",this.vol[i]*this.ex[i]],[this.chmod[i],"gain",this._m[i]],[this.chpan[i],"pan",this._p[i]]].forEach(([n,k,x])=>n && n[k].setValueAtTime(x||0,this.actx.currentTime));

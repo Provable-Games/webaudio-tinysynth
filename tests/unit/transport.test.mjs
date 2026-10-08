@@ -175,6 +175,45 @@ describe.each(variants)("$name: replaying a completed song (#10)", (variant) => 
     expect(seek.neverStarted).toBe(seek.scheduled); // a user seek still stops every voice
   });
 
+  test("a completed replay preserves a prior voice with a future controller stop", () => {
+    const s = synthFor(variant);
+    const made = [];
+    const note = s.synth._note;
+    s.synth._note = (...args) => {
+      const voice = note(...args);
+      if (voice) made.push(voice);
+      return voice;
+    };
+    s.synth.loadMIDI(H.toArrayBuffer(H.makeMidi(PPQ, [noteOn(0, 0, 60, 100), cc(192, 0, 120, 0)])));
+    s.synth.setLoop(0);
+    s.synth.playMIDI();
+
+    expect(s.synth.getPlayStatus().play).toBe(0); // both MIDI events were submitted synchronously
+    const prior = made[0];
+    const stops = () => s.trace.map((line) => JSON.parse(line))
+      .filter(([op, id]) => op === "stop" && id === prior.o[0]._id).map(([, , time]) => time);
+    const expectStops = (expected) => {
+      const actual = stops();
+      expect(actual).toHaveLength(expected.length);
+      actual.forEach((time, i) => expected[i] === null ? expect(time).toBeNull() : expect(time).toBeCloseTo(expected[i], 9));
+    };
+    expect(prior.t).toBeCloseTo(0.1, 9);
+    expect(prior._stopAt).toBeCloseTo(0.3, 9);
+    expect(s.synth._gone.has(prior)).toBe(true);
+    expectStops([0.3]);
+
+    s.env.skip(150);
+    s.synth.playMIDI();
+    expect(s.synth.getPlayStatus().initialStartTime).toBeCloseTo(0.25, 9);
+    expect(s.synth._gone.has(prior)).toBe(true);
+    expectStops([0.3]);
+
+    // Explicit Stop still reaches the preserved prior-pass voice.
+    s.synth.stopMIDI();
+    expectStops([0.3, null]);
+    expect(s.synth._gone.has(prior)).toBe(true);
+  });
+
   test("a stopped song keeps manual overrides when resumed, and loses them on replay after its end", () => {
     const s = synthFor(variant);
     s.synth.loadMIDI(H.toArrayBuffer(H.makeMidi(PPQ, ISSUE10.ev)));
