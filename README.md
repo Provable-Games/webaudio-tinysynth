@@ -150,12 +150,13 @@ Settings are changed with the functions below (`setMasterVol()`, `setReverbLev()
 >  **voices** : max number of voices.  
 >  **context** : an AudioContext or OfflineAudioContext to use instead of creating one. It stays yours: the synth never closes it.  
 >  **destination** : with `context`, the AudioNode to play into. default is `context.destination`.  
+>  **autoResume** : boolean, default `true`. With `false`, MIDI sends never resume a suspended or interrupted AudioContext, and the sequencer waits while its context is not running. Call public `resume()` from the user gesture to start or resume audio. `getAudioContext().suspend()` pauses the audio clock, envelopes and scheduled voices without reloading the song; resume does not rebuild them. This option applies to eager, lazy and supplied contexts.  
 >  **lazy** : if `true`, no AudioContext is created until `resume()`, or until the first call that plays a note or sets MIDI state: `send()`, `noteOn()`, the channel `set...` functions, `reset()`, `loadMIDI()`, `locateMIDI()` or `playMIDI()`. Other calls do not create it, and `getAudioContext()` returns `null` until then. Call `resume()` from the click that starts audio, and call `loadMIDI()` and `reset()` in that click handler or after `resume()`: called earlier, they create the AudioContext outside the gesture (it then starts suspended until `resume()`).  
 >  **seed** : an integer from `0` to `4294967295` that fixes the reverb impulse and the noise buffers (`n0`, `n1`). default is `0` (also for `null`). The same seed, `bufferVersion` and sample rate give the same buffer data on every load and in every instance; the data differs between sample rates (the buffers are 0.5 s long).  
 >  On an OfflineAudioContext, schedule notes with explicit times; `playMIDI()` throws there. Every note scheduled before the render counts against `voices`, so call `setVoices()` with at least the number of notes, or the earliest ones are dropped.
 >
 >  For example, `new WebAudioTinySynth({quality:0, useReverb:0, voices:32})`  
->  An invalid `context`, `destination` or `lazy` throws a `TypeError`, and an invalid `seed` a `TypeError` (not a number) or a `RangeError` (not an integer from 0 to 4294967295), before anything is created.
+>  An invalid `context`, `destination`, `lazy` or `autoResume` throws a `TypeError`, and an invalid `seed` a `TypeError` (not a number) or a `RangeError` (not an integer from 0 to 4294967295), before anything is created.
 
 **getAudioContext()**  
 > Get current in-use AudioContext.

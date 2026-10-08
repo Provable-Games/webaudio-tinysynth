@@ -3,7 +3,7 @@
  * https://github.com/g200kg/webaudio-tinysynth - Apache License 2.0
  *
  * Modified by Provable Games (https://github.com/Provable-Games/webaudio-tinysynth);
- * see NOTICE for the changes.
+ * see NOTICE for the changes, including app-controlled AudioContext suspension.
  */
 ( function(window){
 "use strict";
@@ -529,7 +529,7 @@ function WebAudioTinySynthCore(target) {
           const c=this.actx;
           /* Nothing to do without a realtime context: a lazy synth before first use, a disposed
              one, or an OfflineAudioContext, whose notes end at their own times (#12). */
-          if(!c || this._off)
+          if(!c || this._off || !this._autoResume && c.state!="running")
             return;
           if(++this.relcnt>=3){
             this.relcnt=0;
@@ -637,7 +637,7 @@ function WebAudioTinySynthCore(target) {
          task is still asked. Its rejection is handled, and an OfflineAudioContext (resume()
          rejects before rendering) or a closed context is never asked. */
       const c=this.actx,s=c&&c.state;
-      if(this._rq!=c && !this._off && (s=="suspended" || s=="interrupted")){
+      if(this._autoResume && this._rq!=c && !this._off && (s=="suspended" || s=="interrupted")){
         this._rq=c;
         Promise.resolve().then(()=>{ this._rq=0; });
         Promise.resolve(c.resume()).catch(()=>{});
@@ -1780,7 +1780,10 @@ class WebAudioTinySynth {
     }
     /* Lifecycle options (#12), checked before anything is created: a caller-owned context
        and destination, or lazy: true to create the internal context on first use. */
-    const {context:c,destination:d,lazy:l}=opt||{};
+    const {context:c,destination:d,lazy:l,autoResume:a}=opt||{};
+    if(a!=undefined && typeof a!="boolean")
+      throw new TypeError("autoResume");
+    this._autoResume=a!==false;
     if(l!=undefined && typeof l!="boolean" || l && c!=undefined)
       throw new TypeError("lazy");
     if(c!=undefined || d!=undefined) // a destination without a context fails as "context"
